@@ -1,0 +1,11 @@
+websockets>=11.0
+pyserial>=3.5
+requests>=2.25.1
+adafruit-ampy>=1.0.7
+rshell>=0.0.28
+esptool>=4.0
+mpremote
+mpflash
+micropython-rp2-pico_w-stubs
+
+ 

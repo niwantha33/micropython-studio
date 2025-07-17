@@ -1,0 +1,62 @@
+{
+  "name": "micropython-ide",
+  "displayName": "MicroPython IDE",
+  "description": "MicroPython IDE for VS Code",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onCommand: micropython-ide.runCode",
+    "onCommand: micropython-ide.createProject"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "micropython-ide.runCode",
+        "title": "MicroPython: Run Code"
+      },
+      {
+        "command": "micropython-ide.createProject",
+        "title": "MicroPython: Create Project"
+      },
+      {
+        "command": "micropython-ide.installDependencies",
+        "title": "MicroPython: Install Required Dependencies"
+      },
+      {
+        "command": "micropython-ide.setupEnvironment",
+        "title": "MicroPython: Setup Development Environment"
+      },
+      {
+        "command": "micropython-ide.detectDevice",
+        "title": "MicroPython: Detect Devices"
+      }
+    ]
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
+    "test": "node ./test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.1",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.75.0",
+    "@vscode/test-electron": "^2.3.9",
+    "eslint": "^8.57.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "axios": "^1.10.0",
+    "child_process": "^1.0.2",
+    "ws": "^8.18.3"
+  }
+}
