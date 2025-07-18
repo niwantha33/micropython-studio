@@ -49,7 +49,11 @@
       },
       {
         "command": "micropython-ide.refreshMcuFolder",
-        "title": "MicroPython: Mount Project to MCU"
+        "title": "MicroPython: Refresh Project"
+      },
+       {
+        "command": "micropython-ide.mountMcuFolder",
+        "title": "MicroPython: Mount Device"
       }
     ],
     "menus": {
@@ -63,6 +67,11 @@
       "explorer/context": [
         {
           "command": "micropython-ide.refreshMcuFolder",
+          "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.mountMcuFolder",
           "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
           "group": "navigation"
         },
