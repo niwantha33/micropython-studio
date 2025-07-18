@@ -3,6 +3,7 @@
   "displayName": "MicroPython IDE",
   "description": "MicroPython IDE for VS Code",
   "version": "0.0.1",
+  "publisher": "Niwantha Meepage",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -23,6 +24,10 @@
       }
     ],
     "commands": [
+      {
+        "command": "micropython-ide.syncMcuFolder",
+        "title": "MicroPython: Auto Sync MCU"
+      },
       {
         "command": "micropython-ide.runCode",
         "title": "MicroPython: Run Code"
@@ -54,16 +59,13 @@
        {
         "command": "micropython-ide.mountMcuFolder",
         "title": "MicroPython: Mount Device"
+      },
+      {
+        "command": "micropython-ide.runOnMcu",
+        "title": "MicroPython: Run Current Script on MCU"
       }
     ],
-    "menus": {
-       "scm/title": [
-        {
-          "submenu": "git.commit",
-          "group": "2_main@1",
-          "when": "scmProvider == git"
-        }
-      ],
+    "menus": {        
       "explorer/context": [
         {
           "command": "micropython-ide.refreshMcuFolder",
