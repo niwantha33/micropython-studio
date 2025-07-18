@@ -6,6 +6,6 @@ rshell>=0.0.28
 esptool>=4.0
 mpremote
 mpflash
-micropython-rp2-pico_w-stubs
+ 
 
  

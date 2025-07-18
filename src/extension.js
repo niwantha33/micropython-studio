@@ -19,7 +19,7 @@ const debugChannel = vscode.window.createOutputChannel("MicroPython Debug");
 function activate(context) {
     checkPythonAvailability();
     // Auto-start Flask server if venv exists
-    autoStartServer(context);
+    // autoStartServer(context);        
 
     // Register commands
     let setupEnvCommand = vscode.commands.registerCommand('micropython-ide.setupEnvironment', async () => {
@@ -66,118 +66,285 @@ function activate(context) {
         vscode.window.showInformationMessage("Installing MicroPython dependencies...");
     });
 
+
     let detectDeviceCommand = vscode.commands.registerCommand('micropython-ide.detectDevice', async () => {
 
-        const venvPython = getVenvPythonPath(context);
-        const command = `${venvPython} -m mpremote connect list`;
-
-        const { exec } = require('child_process');
-
-        exec(command, async (error, stdout, stderr) => {
-            if (error) {
-                vscode.window.showErrorMessage(`Error detecting devices: ${stderr}`);
-                return;
-            }
-
-            const rawOutput = stdout.trim();
-            if (!rawOutput) {
-                vscode.window.showInformationMessage('No MicroPython devices found.');
-                return;
-            }
-
-            const lines = rawOutput.split('\n').filter(line => line.trim());
-
-            const devices = lines.map(line => {
-                const parts = line.trim().split(/\s+/);
-                const port = parts[0];
-                const vidpid = parts[2];
-
-                let mcuType = 'Unknown Device';
-                if (vidpid === '2e8a:0005') mcuType = 'RP2040';
-                else if (vidpid.includes('10c4') || vidpid.includes('0403')) mcuType = 'ESP32';
-                else if (vidpid.includes('0483')) mcuType = 'STM32';
-
-                return {
-                    label: port,
-                    description: mcuType
-                };
+        try {
+            const projectName = await vscode.window.showInputBox({
+                prompt: 'Enter project name',
+                placeHolder: 'e.g. my-micropython-project',
+                validateInput: value => value ? null : 'Project name is required'
             });
 
-            const selected = await vscode.window.showQuickPick(devices, {
-                placeHolder: 'Select a connected MicroPython device'
-            });
-
-            if (!selected) {
-                vscode.window.showInformationMessage('No device selected.');
+            if (!projectName) {
+                vscode.window.showInformationMessage('Project creation cancelled.');
                 return;
             }
 
-            const selectedDevice = selected.label;
-            const mcuType = selected.description;
+            const mcuOptions = ['esp32', 'rp2040', 'rp2050', 'stm32'];
+            const selectedMcu = await vscode.window.showQuickPick(mcuOptions, {
+                placeHolder: 'Select target microcontroller'
+            });
 
-            // Save to device_util.in inside the project folder
-            const projectPath = await vscode.window.showOpenDialog({
+            if (!selectedMcu) {
+                vscode.window.showInformationMessage('Project creation cancelled.');
+                return;
+            }
+
+            const folderUri = await vscode.window.showOpenDialog({
                 canSelectFiles: false,
                 canSelectFolders: true,
                 canSelectMany: false,
-                openLabel: 'Select Project Folder'
+                openLabel: 'Select Project Folder Location'
             });
 
-            if (!projectPath || projectPath.length === 0) {
-                vscode.window.showErrorMessage('No project folder selected.');
+            if (!folderUri || folderUri.length === 0) {
+                vscode.window.showInformationMessage('No folder selected.');
                 return;
             }
 
-            const selectedProjectFolder = projectPath[0].fsPath;
-            const projectName = path.basename(selectedProjectFolder);
-            const deviceUtilPath = path.join(selectedProjectFolder, 'device_util.in');
+            const parentPath = folderUri[0].fsPath;
+            const projectDir = path.join(parentPath, projectName);
+            const mcuDir = path.join(parentPath, `mcu_${selectedMcu}`);
+            const dividerFolderName = '.helper';
+            const dividerFolderDir = path.join(parentPath, dividerFolderName);
 
-            // Save to device_util.in
-            try {
-                await fs.writeFile(deviceUtilPath, selectedDevice, 'utf8');
-                vscode.window.showInformationMessage(`Device saved to: ${deviceUtilPath}`);
-            } catch (writeError) {
-                vscode.window.showErrorMessage(`Failed to save device file: ${writeError.message}`);
-                return;
-            }
+            const projectExists = await fs.access(projectDir)
+                .then(() => true)
+                .catch(() => false);
 
-            // Save to .code-workspace file
-            const workspaceFilePath = path.join(selectedProjectFolder, `${projectName}.code-workspace`);
+            if (projectExists) {
+                vscode.window.showInformationMessage(`Project "${projectName}" already exists. Updating device info...`);
+            } else {
+                // Create project folder and structure
+                await fs.mkdir(projectDir, { recursive: true });
+                await fs.mkdir(mcuDir, { recursive: true });
+                await fs.mkdir(dividerFolderDir, { recursive: true });
 
-            const workspaceContent = {
-                "folders": [
-                    {
-                        "path": projectName,
-                        "name": `📁 ${projectName}`
+                await fs.writeFile(
+                    path.join(mcuDir, '_device_root.txt'),
+                    `This folder represents the root filesystem of your MicroPython device (${selectedMcu}).\n[Read-only view - files here are stored on your MCU]`,
+                    'utf8'
+                );
+
+                await fs.writeFile(path.join(mcuDir, '.mcu'), selectedMcu, 'utf8');
+
+                await fs.writeFile(path.join(projectDir, 'main.py'), `# MicroPython Project\nprint("New project created for ${selectedMcu}")`);
+
+                const settingsDir = path.join(projectDir, '.vscode');
+                await fs.mkdir(settingsDir, { recursive: true });
+                await fs.writeFile(path.join(settingsDir, 'settings.json'), JSON.stringify({
+                    "files.associations": {
+                        "mcu_rp2040": "darkorange",
+                        "mcu_rp2050": "orangered",
+                        "mcu_esp32": "green",
+                        "mcu_stm32": "royalblue",
+                        "**/.helper": "gray"
                     },
-                    {
-                        "path": 'mcu_rp2040',
-                        "name": `🖥️ Device (${mcuType})`
-                    }
-                ],
-                "settings": {
-                    "micropython-ide": {
-                        "selectedDevice": selectedDevice,
-                        "mcuType": mcuType
-                    }
-                }
-            };
+                    "files.exclude": {
+                        "**/.helper": true
+                    },
+                    "python.languageServer": "Pylance",
+                    "python.analysis.typeCheckingMode": "basic",
+                    "python.analysis.diagnosticSeverityOverrides": {
+                        "reportMissingModuleSource": "none"
+                    },
+                    "python.analysis.typeshedPaths": [
+                        "${workspaceFolder}/.micropython-venv/Lib/site-packages"
 
-            try {
-                await fs.writeFile(workspaceFilePath, JSON.stringify(workspaceContent, null, 2));
-                vscode.window.showInformationMessage(`Saved device info to workspace file`);
-            } catch (writeError) {
-                vscode.window.showErrorMessage(`Failed to update workspace file: ${writeError.message}`);
+                    ],
+                }, null, 2));
             }
 
-            // Save to globalState for later use
-            context.globalState.update('selectedMicroPythonDevice', selectedDevice);
-            vscode.window.showInformationMessage(`Device ${selectedDevice} saved for project ${projectName}`);
-        });
+            // Detect device
+            const venvPython = getVenvPythonPath(context);
+            const command = `${venvPython} -m mpremote connect list`;
+
+            const { exec } = require('child_process');
+
+            exec(command, async (error, stdout, stderr) => {
+                if (error) {
+                    vscode.window.showErrorMessage(`Error detecting devices: ${stderr}`);
+                    return;
+                }
+
+                const rawOutput = stdout.trim();
+                if (!rawOutput) {
+                    vscode.window.showInformationMessage('No MicroPython devices found.');
+                    return;
+                }
+
+                const lines = rawOutput.split('\n').filter(line => line.trim());
+
+                const devices = lines.map(line => {
+                    const parts = line.trim().split(/\s+/);
+                    const port = parts[0];
+                    const vidpid = parts[2];
+
+                    let mcuType = 'Unknown Device';
+                    if (vidpid === '2e8a:0005') mcuType = 'RP2040';
+                    else if (vidpid.includes('10c4') || vidpid.includes('0403')) mcuType = 'ESP32';
+                    else if (vidpid.includes('0483')) mcuType = 'STM32';
+
+                    return {
+                        label: port,
+                        description: mcuType
+                    };
+                });
+
+                const selected = await vscode.window.showQuickPick(devices, {
+                    placeHolder: 'Select a connected MicroPython device'
+                });
+
+                if (!selected) {
+                    vscode.window.showInformationMessage('No device selected.');
+                    return;
+                }
+
+                const selectedDevice = selected.label;
+                const mcuType = selected.description;
+
+                const deviceUtilPath = path.join(projectDir, 'device.cfg');
+
+                try {
+                    const device_data = `[device]\nport = ${selectedDevice}\nmcu = ${selectedMcu}\nlast_sync = ${new Date().toISOString()}`;
+                    await fs.writeFile(deviceUtilPath, device_data, 'utf8');
+                    vscode.window.showInformationMessage(`Device saved to: ${deviceUtilPath}`);
+                } catch (writeError) {
+                    vscode.window.showErrorMessage(`Failed to save device file: ${writeError.message}`);
+                    return;
+                }
+
+                const workspaceFilePath = path.join(parentPath, `${projectName}.code-workspace`);
+
+                // Try to get repo name
+                const repoName = await getGitRepoName(parentPath) || projectName;
+
+                const workspaceContent = {
+                    "folders": [
+                        { "path": projectName, "name": `📁 ${repoName}` },
+                        { "path": dividerFolderName, "name": `──────────────────────` },
+                        { "path": `mcu_${selectedMcu}`, "name": `🖥️ Device (${selectedMcu.toUpperCase()})` }
+                    ],
+                    "settings": {
+                        "micropython-ide": {
+                            "selectedDevice": selectedDevice,
+                            "mcuType": mcuType
+                        }
+                    }
+                };
+
+                try {
+                    await fs.writeFile(workspaceFilePath, JSON.stringify(workspaceContent, null, 2));
+                    vscode.window.showInformationMessage(`Saved device info to workspace file`);
+                } catch (writeError) {
+                    vscode.window.showErrorMessage(`Failed to update workspace file: ${writeError.message}`);
+                }
+
+                context.globalState.update('selectedMicroPythonDevice', selectedDevice);
+                vscode.window.showInformationMessage(`Device ${selectedDevice} saved for project ${projectName}`);
+
+                // Open workspace
+                await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspaceFilePath), { forceNewWindow: false });
+
+                const action = await vscode.window.showInformationMessage(
+                    'Reload window to refresh folder names and settings?',
+                    'Reload'
+                );
+                if (action === 'Reload') {
+                    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+                }
+            });
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to create or update project: ${error.message}`);
+        }
     });
     context.subscriptions.push(detectDeviceCommand);
 
+    let mountMcuFolderCommand = vscode.commands.registerCommand('micropython-ide.mountMcuFolder', async (folderUri) => {
+        const mcuFolderPath = folderUri.fsPath;
+        // console.log()`cd "${mcuFolderPath}"`)
+        const selectedDevice = context.globalState.get('selectedMicroPythonDevice');
 
+        if (!selectedDevice) {
+            vscode.window.showErrorMessage('No device selected. Detect and select one first.');
+            return;
+        }
+
+        const venvPython = getVenvPythonPath(context);
+        const terminal = vscode.window.createTerminal("MicroPython Mount");
+        terminal.show();
+        console.log(`cd "${fixGitBashPath(mcuFolderPath)}"`);
+        terminal.sendText(`cd "${fixGitBashPath(mcuFolderPath)}"`);
+        terminal.sendText(`${venvPython} -m mpremote connect ${selectedDevice} mount .`);
+        
+    });
+    context.subscriptions.push(mountMcuFolderCommand);
+
+    let refreshMcuFolderCommand = vscode.commands.registerCommand('micropython-ide.refreshMcuFolder', async (folderUri) => {
+        const mcuFolderPath = folderUri.fsPath;
+        const projectPath = path.dirname(mcuFolderPath);
+        const selectedMcu = path.basename(mcuFolderPath).replace(/^mcu_/, '');
+
+        // Step 1: Read COM port from device_com.ini
+        const deviceIniPath = path.join(projectPath, 'device_com.ini');
+        let selectedDevice = null;
+
+        try {
+            const data = await fs.readFile(deviceIniPath, 'utf8');
+            const portMatch = data.match(/port\s*=\s*(.+)/);
+            selectedDevice = portMatch ? portMatch[1].trim() : null;
+        } catch {
+            selectedDevice = context.globalState.get('selectedMicroPythonDevice') || null;
+        }
+
+        if (!selectedDevice) {
+            const action = await vscode.window.showErrorMessage(
+                'No device port found. Detect and select one first.',
+                'Detect Device'
+            );
+            if (action === 'Detect Device') {
+                await vscode.commands.executeCommand('micropython-ide.detectAndSaveDevice');
+            }
+            return;
+        }
+
+        const venvPython = getVenvPythonPath(context);
+        const terminal = vscode.window.createTerminal("MicroPython File Downloader");
+        terminal.show();
+        terminal.sendText(`cd "${fixGitBashPath(projectPath)}"`);
+
+        // Step 2: Clear mcu_* folder before refresh (optional)
+        await fs.rm(mcuFolderPath, { recursive: true, force: true });
+        await fs.mkdir(mcuFolderPath, { recursive: true });
+
+        // Step 3: Download all files and directories from device
+        terminal.sendText(`${venvPython} -m mpremote connect ${selectedDevice} fs ls`);
+        terminal.sendText(`${venvPython} -m mpremote connect ${selectedDevice} fs cp -r : ${fixGitBashPath(mcuFolderPath)}`);
+
+
+        // Step 4: Show success message and reload
+        const action = await vscode.window.showInformationMessage(
+            `Downloaded all files from ${selectedDevice}. Reload to refresh Explorer?`,
+            'Reload'
+        );
+        if (action === 'Reload') {
+            await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
+    });
+    context.subscriptions.push(refreshMcuFolderCommand);
+
+  let uploadToMcuDisposable = vscode.commands.registerCommand('micropython-ide.uploadToMcu', (resource) => {
+        // Your logic for uploading to MCU, using 'resource' for the clicked path
+        if (resource && resource.fsPath) {
+            vscode.window.showInformationMessage(`Uploading ${resource.fsPath} to MCU!`);
+        } else {
+            vscode.window.showWarningMessage('No resource selected for upload.');
+        }
+    });
+    context.subscriptions.push(uploadToMcuDisposable);
+
+    
     let createProjectCommand = vscode.commands.registerCommand('micropython-ide.createProject', async () => {
         try {
             const projectName = await vscode.window.showInputBox({
@@ -242,9 +409,20 @@ function activate(context) {
                     "mcu_stm32": "royalblue",
                     "**/.helper": "gray"
                 },
+
+                "python.languageServer": "Pylance",
+                "python.analysis.typeCheckingMode": "basic",
+                "python.analysis.diagnosticSeverityOverrides": {
+                    "reportMissingModuleSource": "none"
+                },
+                "python.analysis.typeshedPaths": [
+                    "${workspaceFolder}/.micropython-venv/Lib/site-packages"
+
+                ],
                 "files.exclude": {
                     "**/.helper": true
-                }
+                },
+
             }, null, 2));
 
             const workspaceFileName = `${projectName}.code-workspace`;
@@ -327,12 +505,34 @@ function executeCode(code) {
         debugChannel.appendLine(`WebSocket error: ${err.message}`);
     });
 }
+
+async function getDevicePortFromIni(context) {
+    const iniPath = path.join(context.extensionPath, 'device.cfg');
+    try {
+        const data = await fs.readFile(iniPath, 'utf8');
+        const portMatch = data.match(/port\s*=\s*(.+)/);
+        return portMatch ? portMatch[1].trim() : null;
+    } catch {
+        return context.globalState.get('selectedMicroPythonDevice') || null;
+    }
+}
 // Helper: Get Python path in venv
 function getVenvPythonPath(context) {
     const isWindows = process.platform === 'win32';
     return isWindows
         ? `"${path.join(context.extensionPath, '.micropython-venv', 'Scripts', 'python.exe')}"`
         : `"${path.join(context.extensionPath, '.micropython-venv', 'bin', 'python')}"`;
+}
+function fixGitBashPath(winPath) {
+    // Replace backslashes with forward slashes
+    let fixed = winPath.replace(/\\/g, '/');
+    // Convert drive letter (C:\ -> /c/)
+    fixed = fixed.replace(/^([a-zA-Z]):\//, (match, letter) =>
+        `/` + letter.toLowerCase() + `/`
+    );
+    // Remove extra slashes
+    fixed = fixed.replace(/\/\/+/g, '/');
+    return fixed;
 }
 // Helper: Detect working Python command
 async function getPythonCommand() {
@@ -358,8 +558,11 @@ async function getPythonCommand() {
 async function setupVirtualEnv(context) {
     const venvFolder = '.micropython-venv';
     const venvPath = path.join(context.extensionPath, venvFolder);
+
     const pythonExecutable = await getPythonCommand();
+
     const requirementsPath = path.join(context.extensionPath, 'requirements.txt');
+    console.log(requirementsPath)
 
     try {
         await fs.access(venvPath);
@@ -378,7 +581,11 @@ async function setupVirtualEnv(context) {
         if (await fs.access(requirementsPath).catch(() => false)) {
             terminal.sendText(`${venvPython} -m pip install -r requirements.txt`);
         } else {
-            terminal.sendText(`${venvPython} -m pip install websockets pyserial pyserial adafruit-ampy rshell esptool mpremote mpflash micropython-rp2-pico_w-stubs`);
+            terminal.sendText(`${venvPython} -m pip install websockets pyserial pyserial adafruit-ampy rshell esptool mpremote mpflash`);
+
+            terminal.sendText(`${venvPython} -m  pip install micropython-stubber`);
+
+            terminal.sendText(`${venvPython} -m  pip install -U micropython-rp2-pico_w-stubs`);
         }
 
         return venvPython;

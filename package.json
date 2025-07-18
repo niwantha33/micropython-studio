@@ -11,10 +11,17 @@
   ],
   "activationEvents": [
     "onCommand: micropython-ide.runCode",
-    "onCommand: micropython-ide.createProject"
+    "onCommand: micropython-ide.refreshMcuFolder"
   ],
   "main": "./src/extension.js",
   "contributes": {
+        "viewsWelcome": [
+      {
+        "view": "scm",
+        "contents": "In order to use git features, you can open a folder containing a git repository or clone from a URL.\n[Open Folder](command:vscode.openFolder)\n[Clone Repository](command:git.clone)\nTo learn more about how to use git and source control in VS Code [read our docs](https://aka.ms/vscode-scm).",
+        "when": "config.git.enabled && git.state == initialized && workbenchState == empty"
+      }
+    ],
     "commands": [
       {
         "command": "micropython-ide.runCode",
@@ -35,8 +42,37 @@
       {
         "command": "micropython-ide.detectDevice",
         "title": "MicroPython: Detect Devices"
+      },
+      {
+        "command": "micropython-ide.uploadToMcu",
+        "title": "MicroPython: Upload to MCU"
+      },
+      {
+        "command": "micropython-ide.refreshMcuFolder",
+        "title": "MicroPython: Mount Project to MCU"
       }
-    ]
+    ],
+    "menus": {
+       "scm/title": [
+        {
+          "submenu": "git.commit",
+          "group": "2_main@1",
+          "when": "scmProvider == git"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "micropython-ide.refreshMcuFolder",
+          "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
+          "group": "navigation"
+        },
+         {
+          "command": "micropython-ide.uploadToMcu",
+           "when": "resourceFilename",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "lint": "eslint .",
@@ -56,7 +92,6 @@
   },
   "dependencies": {
     "axios": "^1.10.0",
-    "child_process": "^1.0.2",
     "ws": "^8.18.3"
   }
 }
