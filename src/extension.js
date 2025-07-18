@@ -132,10 +132,10 @@ function activate(context) {
             if (!syncFolder) {
                 vscode.window.showErrorMessage('sync_folder not found in device.cfg');
                 return;
-            }    
+            }
 
             console.log("Sync folder:", syncMcuFolder);
-             setupAutoSync(context, syncMcuFolder, port);
+            setupAutoSync(context, syncMcuFolder, port);
             // Verify sync folder exists
             if (!syncMcuFolder) {
                 vscode.window.showErrorMessage(`Sync folder not found: ${syncMcuFolder}`);
