@@ -11,11 +11,31 @@
     "Programming Languages"
   ],
   "activationEvents": [
+    "onCommand: micropython-ide.setupEnvironment",
     "onCommand: micropython-ide.runCode",
-    "onCommand: micropython-ide.refreshMcuFolder"
+    "onCommand: micropython-ide.refreshMcuFolder",
+    "onCommand: micropython-ide.runUtil",
+    "onCommand: micropython-ide.mountMcuFolder"
   ],
   "main": "./src/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "micropython-ide-launch",
+          "title": "Launch MicroPython IDE",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "micropython-ide-launch": [
+        {
+          "id": "micropython-ide-launch-view",
+          "name": "MicroPython IDE"
+        }
+      ]
+    },
     "viewsWelcome": [
       {
         "view": "scm",
@@ -24,6 +44,14 @@
       }
     ],
     "commands": [
+      {
+        "command": "micropython-ide.launchIde",
+        "title": "Launch MicroPython IDE",
+        "icon": {
+          "light": "resources/icon.svg",
+          "dark": "resources/icon.svg"
+        }
+      },
       {
         "command": "micropython-ide.syncMcuFolder",
         "title": "MicroPython: Auto Sync MCU"
@@ -61,8 +89,20 @@
         "title": "MicroPython: Mount Device"
       },
       {
+        "command": "micropython-ide.unmountMcuFolder",
+        "title": "MicroPython: Unmount Device"
+      },
+      {
         "command": "micropython-ide.runOnMcu",
         "title": "MicroPython: Run Current Script on MCU"
+      },
+      {
+        "command": "micropython-ide.stopRun",
+        "title": "MicroPython: Stop Running Script on MCU"
+      },
+      {
+        "command": "micropython-ide.runUtil",
+        "title": "MicroPython: Update RTC for current time"
       }
     ],
     "menus": {
@@ -77,9 +117,19 @@
           "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
           "group": "navigation"
         },
+         {
+          "command": "micropython-ide.unmountMcuFolder",
+          "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
+          "group": "navigation"
+        },
         {
           "command": "micropython-ide.uploadToMcu",
           "when": "resourceFilename",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.launchIde",
+          "when": "view == micropython-ide-launch",
           "group": "navigation"
         }
       ]
