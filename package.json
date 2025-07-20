@@ -4,6 +4,10 @@
   "description": "MicroPython IDE for VS Code",
   "version": "0.0.1",
   "publisher": "Niwantha Meepage",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/niwantha33/micropython-studio.git"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -117,7 +121,7 @@
           "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
           "group": "navigation"
         },
-         {
+        {
           "command": "micropython-ide.unmountMcuFolder",
           "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
           "group": "navigation"
