@@ -6,9 +6,11 @@ rshell>=0.0.28
 esptool>=4.0
 mpremote
 mpflash
+mpy_cross
 micropython-stubber
 micropython-stdlib-stubs
 micropython-rp2-pico_w-stubs
+code2flow
 
  
 

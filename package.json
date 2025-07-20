@@ -2,7 +2,7 @@
   "name": "micropython-ide",
   "displayName": "MicroPython IDE",
   "description": "MicroPython IDE for VS Code",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "Niwantha Meepage",
   "repository": {
     "type": "git",
@@ -107,6 +107,10 @@
       {
         "command": "micropython-ide.runUtil",
         "title": "MicroPython: Update RTC for current time"
+      },
+      {
+        "command": "micropython-ide.codeflow",
+        "title": "MicroPython: Create Workflow - main.py"
       }
     ],
     "menus": {
@@ -134,6 +138,11 @@
         {
           "command": "micropython-ide.launchIde",
           "when": "view == micropython-ide-launch",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.codeflow",
+          "when": "explorerResourceIsFolder",
           "group": "navigation"
         }
       ]
