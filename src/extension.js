@@ -21,7 +21,8 @@ const WS_PORT = 8765;
 
 
 
-let mpremoteTerminal;
+let mpremoteTerminal = null;
+
 const mcuOptions = [
     "AE722F80F55D5XX",
     "RA6M5",
@@ -60,11 +61,13 @@ const mcuOptions = [
     "stm32wl"
 ];
 
+let isSyncFunctionActive = false;
+
 function getMpremoteTerminal() {
     if (!mpremoteTerminal || mpremoteTerminal.exitStatus) {
         mpremoteTerminal = vscode.window.createTerminal("micropython-studio");
     }
-    // mpremoteTerminal.show();
+    mpremoteTerminal.show();
     return mpremoteTerminal;
 }
 
@@ -124,6 +127,24 @@ function activate(context) {
     //-------------------------------------*-*Command Activation- Section*-*-----------------------------------------------------'    
     //                                                                                                                           '
     //---------------------------------------------------------------------------------------------------------------------------'
+    let copyToDeviceFolderCommand = vscode.commands.registerCommand('micropython-ide.copyToDevice', async (folderUri) => {
+        vscode.window.showInformationMessage('Copying to device...');
+        // 1. get the clicked folder or path 
+        const copyfile = folderUri.fsPath;
+        console.log("MCU Folder Path:", copyfile);
+
+    });
+    context.subscriptions.push(copyToDeviceFolderCommand);
+
+    let copyToProjectFolderCommand = vscode.commands.registerCommand('micropython-ide.copyToMainProject', async (folderUri) => {
+        vscode.window.showInformationMessage('Copying to project folder...');
+        // 1. get the clicked folder or path 
+        const copyfile = folderUri.fsPath;
+        console.log("MCU Folder Path:", copyfile);
+
+    });
+    context.subscriptions.push(copyToProjectFolderCommand);
+
     let launchIdeCommand = vscode.commands.registerCommand('micropython-ide.launchIde', async () => {
         // Replace with your actual IDE launch logic
         const projectPath = await vscode.window.showOpenDialog({
@@ -181,11 +202,13 @@ function activate(context) {
         let syncMcuFolder;
 
         syncMcuFolder = await getSyncFolderPath(context);
+        console.log("Sync MCU Folder:", syncMcuFolder);
 
         console.log("Root path:", syncMcuFolder)
 
         if (!syncMcuFolder) {
-            vscode.window.showErrorMessage('Could not find MCU sync folder');
+            vscode.window.showErrorMessage('Could not find sync folder');
+            vscode.window.showInformationMessage('Please open a project working file (xxx.py) first, then try again.');
             return;
         }
 
@@ -228,18 +251,30 @@ function activate(context) {
             }
 
             console.log("Sync folder:", syncMcuFolder);
-            setupAutoSync(context, syncMcuFolder, port);
+            if (!isSyncFunctionActive) {
+
+                setupAutoSync(context, syncMcuFolder, port);
+                isSyncFunctionActive = true;
+
+            } else {
+                // If sync folder is already set, just show info
+                vscode.window.showInformationMessage(`Sync folder already set: ${syncMcuFolder}`);
+            }
 
             // Verify sync folder exists
             if (!syncMcuFolder) {
                 vscode.window.showErrorMessage(`Sync folder not found: ${syncMcuFolder}`);
                 return;
+            } else {
+                console.log("Sync folder exists:", syncMcuFolder);
+                vscode.window.showInformationMessage(`Sync folder found: ${syncMcuFolder} Active auto-sync enabled!`);
             }
 
         } catch (error) {
             vscode.window.showErrorMessage(`Sync failed: ${error.message}`);
             console.error("Sync error:", error);
         }
+
     });
     context.subscriptions.push(syncMcuFolderCommand);
     let runOnMcuCommand = vscode.commands.registerCommand('micropython-ide.runOnMcu', async () => {
@@ -806,6 +841,8 @@ function setupAutoSync(context, syncFolderPath, port) {
     const outputChannel = vscode.window.createOutputChannel("Auto Sync");
     outputChannel.show();
 
+    const terminal = getMpremoteTerminal();
+
     // Debounce to prevent rapid consecutive syncs
     const syncQueue = new Map();
     const debounceTime = 1000; // 1 second
@@ -818,15 +855,18 @@ function setupAutoSync(context, syncFolderPath, port) {
         syncQueue.set(filePath, setTimeout(() => {
             const relativePath = path.relative(syncFolderPath, filePath);
             const devicePath = `:${relativePath.replace(/\\/g, '/')}`;
+            vscode.window.showInformationMessage(`Syncing ${filePath} to device...`);
+            outputChannel.appendLine(`[SYNC] Uploading ${filePath} → ${devicePath}`);
 
-            const command = `${venvPython} -m mpremote connect ${port} cp "${filePath}" "${devicePath}"`;
-            exec(command, (error) => {
-                if (error) {
-                    outputChannel.appendLine(`[ERROR] Sync failed for ${filePath}: ${error.message}`);
-                } else {
-                    outputChannel.appendLine(`[SYNC] Uploaded ${filePath} → ${devicePath}`);
-                }
-            });
+            const command = `"${venvPython}" -m mpremote connect ${port} cp "${filePath}" "${devicePath}"`;
+            terminal.sendText(command);
+            // exec(command, (error) => {
+            //     if (error) {
+            //         outputChannel.appendLine(`[ERROR] Sync failed for ${filePath}: ${error.message}`);
+            //     } else {
+            //         outputChannel.appendLine(`[SYNC] Uploaded ${filePath} → ${devicePath}`);
+            //     }
+            // });
 
             syncQueue.delete(filePath);
         }, debounceTime));
@@ -846,15 +886,20 @@ function setupAutoSync(context, syncFolderPath, port) {
         const filePath = uri.fsPath;
         const relativePath = path.relative(syncFolderPath, filePath);
         const devicePath = `:${relativePath.replace(/\\/g, '/')}`;
+        vscode.window.showInformationMessage(`File deleted: ${filePath}. Removing from device...`);
+        // terminal.show();
+        // go to command line 
 
-        const command = `${venvPython} -m mpremote connect ${port} rm "${devicePath}"`;
-        exec(command, (error) => {
-            if (error) {
-                outputChannel.appendLine(`[ERROR] Delete failed for ${devicePath}: ${error.message}`);
-            } else {
-                outputChannel.appendLine(`[DELETE] Removed ${devicePath}`);
-            }
-        });
+        const command = `$"{venvPython}" -m mpremote connect ${port} rm "${devicePath}"`;
+        // 2. List files on device
+        terminal.sendText(command);
+        // exec(command, (error) => {
+        //     if (error) {
+        //         outputChannel.appendLine(`[ERROR] Delete failed for ${devicePath}: ${error.message}`);
+        //     } else {
+        //         outputChannel.appendLine(`[DELETE] Removed ${devicePath}`);
+        //     }
+        // });
     });
 
     context.subscriptions.push(watcher);

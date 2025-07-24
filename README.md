@@ -1,6 +1,8 @@
 # MicroPython Studio - VS Code Extension
 
-![MicroPython Studio Banner](https://via.placeholder.com/800x200?text=MicroPython+Studio+Banner)
+<img src="../micropython-studio/resource/project_logo.png" alt="MicroPython Studio Banner" width="600"/>
+
+
 
 A powerful IDE extension for MicroPython development with hardware integration, device management, and seamless workflow tools.
 

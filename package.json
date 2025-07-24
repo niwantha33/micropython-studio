@@ -2,7 +2,7 @@
   "name": "micropython-ide",
   "displayName": "MicroPython IDE",
   "description": "MicroPython IDE for VS Code",
-  "version": "0.0.2",
+  "version": "0.0.6",
   "publisher": "Niwantha Meepage",
   "repository": {
     "type": "git",
@@ -29,6 +29,11 @@
           "id": "micropython-ide-launch",
           "title": "Launch MicroPython IDE",
           "icon": "resources/icon.svg"
+        },
+        {
+          "id": "micropythonSidebar",
+          "title": "MicroPython",
+          "icon": "resources/icon.svg"
         }
       ]
     },
@@ -37,6 +42,13 @@
         {
           "id": "micropython-ide-launch-view",
           "name": "MicroPython IDE"
+        }
+      ],
+      "micropythonSidebar": [
+        {
+          "id": "micropythonView",
+          "name": "Device Manager",
+          "type": "tree"
         }
       ]
     },
@@ -111,6 +123,14 @@
       {
         "command": "micropython-ide.codeflow",
         "title": "MicroPython: Create Workflow - main.py"
+      },
+      {
+        "command": "micropython-ide.copyToDevice",
+        "title": "Micropython: Copy to Device Folder"
+      },
+      {
+        "command": "micropython-ide.copyToMainProject",
+        "title": "Micropython: Copy to Project Folder"
       }
     ],
     "menus": {
@@ -132,7 +152,7 @@
         },
         {
           "command": "micropython-ide.uploadToMcu",
-          "when": "resourceFilename",
+          "when": "!(resource =~ /mcu_.*/)",
           "group": "navigation"
         },
         {
@@ -143,6 +163,16 @@
         {
           "command": "micropython-ide.codeflow",
           "when": "explorerResourceIsFolder",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.copyToDevice",
+          "when": "!explorerResourceIsFolder && !(resource =~ /mcu_.*/)",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.copyToMainProject",
+          "when": "!explorerResourceIsFolder &&  resource =~ /mcu_.*/",
           "group": "navigation"
         }
       ]
