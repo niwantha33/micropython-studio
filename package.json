@@ -2,7 +2,7 @@
   "name": "micropython-ide",
   "displayName": "MicroPython IDE",
   "description": "MicroPython IDE for VS Code",
-  "version": "0.0.6",
+  "version": "0.2.6",
   "publisher": "Niwantha Meepage",
   "repository": {
     "type": "git",
@@ -18,7 +18,7 @@
     "onCommand: micropython-ide.setupEnvironment",
     "onCommand: micropython-ide.runCode",
     "onCommand: micropython-ide.refreshMcuFolder",
-    "onCommand: micropython-ide.runUtil",
+    "onCommand: micropython-ide.openShell",
     "onCommand: micropython-ide.mountMcuFolder"
   ],
   "main": "./src/extension.js",
@@ -93,12 +93,8 @@
         "title": "MicroPython: Detect Devices"
       },
       {
-        "command": "micropython-ide.uploadToMcu",
-        "title": "MicroPython: Upload to MCU"
-      },
-      {
         "command": "micropython-ide.refreshMcuFolder",
-        "title": "MicroPython: Refresh Project"
+        "title": "MicroPython: _Refresh Project"
       },
       {
         "command": "micropython-ide.mountMcuFolder",
@@ -117,12 +113,12 @@
         "title": "MicroPython: Stop Running Script on MCU"
       },
       {
-        "command": "micropython-ide.runUtil",
-        "title": "MicroPython: Update RTC for current time"
+        "command": "micropython-ide.openShell",
+        "title": "MicroPython: Open Device Shell"
       },
       {
         "command": "micropython-ide.codeflow",
-        "title": "MicroPython: Create Workflow - main.py"
+        "title": "MicroPython: CodeFlow Graph"
       },
       {
         "command": "micropython-ide.copyToDevice",
@@ -151,28 +147,23 @@
           "group": "navigation"
         },
         {
-          "command": "micropython-ide.uploadToMcu",
-          "when": "!(resource =~ /mcu_.*/)",
-          "group": "navigation"
-        },
-        {
           "command": "micropython-ide.launchIde",
           "when": "view == micropython-ide-launch",
           "group": "navigation"
         },
         {
           "command": "micropython-ide.codeflow",
-          "when": "explorerResourceIsFolder",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.copyToDevice",
           "when": "!explorerResourceIsFolder && !(resource =~ /mcu_.*/)",
           "group": "navigation"
         },
         {
+          "command": "micropython-ide.copyToDevice",
+          "when": "!(resource =~ /mcu_.*/)",
+          "group": "navigation"
+        },
+        {
           "command": "micropython-ide.copyToMainProject",
-          "when": "!explorerResourceIsFolder &&  resource =~ /mcu_.*/",
+          "when": "resource =~ /mcu_.*/",
           "group": "navigation"
         }
       ]

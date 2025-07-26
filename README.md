@@ -1,6 +1,6 @@
 # MicroPython Studio - VS Code Extension
 
-<img src="../micropython-studio/resource/project_logo.png" alt="MicroPython Studio Banner" width="600"/>
+<img src="../micropython-studio/resource/project_logo.png" alt="MicroPython Studio Banner" width="300"/>
 
 
 

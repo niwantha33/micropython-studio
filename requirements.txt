@@ -7,10 +7,15 @@ esptool>=4.0
 mpremote
 mpflash
 mpy_cross
-micropython-stubber
-micropython-stdlib-stubs
-micropython-rp2-pico_w-stubs
 code2flow
+micropython-rp2-rpi_pico_w-stubs  --target typings --no-user
+micropython-rp2-rpi_pico2-stubs
+micropython-esp32-stubs==1.25.0.*
+micropython-stm32-stubs
+
+
+
+
 
  
 
