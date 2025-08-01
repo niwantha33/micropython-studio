@@ -2,7 +2,7 @@
   "name": "micropython-ide",
   "displayName": "MicroPython IDE",
   "description": "MicroPython IDE for VS Code",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "Niwantha Meepage",
   "repository": {
     "type": "git",
@@ -27,13 +27,8 @@
       "activitybar": [
         {
           "id": "micropython-ide-launch",
-          "title": "Launch MicroPython IDE",
-          "icon": "resources/icon.svg"
-        },
-        {
-          "id": "micropythonSidebar",
-          "title": "MicroPython",
-          "icon": "resources/icon.svg"
+          "title": "Launch MicroPython Studio",
+          "icon": "resource/icon.svg"
         }
       ]
     },
@@ -41,14 +36,7 @@
       "micropython-ide-launch": [
         {
           "id": "micropython-ide-launch-view",
-          "name": "MicroPython IDE"
-        }
-      ],
-      "micropythonSidebar": [
-        {
-          "id": "micropythonView",
-          "name": "Device Manager",
-          "type": "tree"
+          "name": "MicroPython Studio"
         }
       ]
     },
@@ -62,10 +50,10 @@
     "commands": [
       {
         "command": "micropython-ide.launchIde",
-        "title": "Launch MicroPython IDE",
+        "title": "Launch MicroPython Studio",
         "icon": {
-          "light": "resources/icon.svg",
-          "dark": "resources/icon.svg"
+          "light": "resource/icon.svg",
+          "dark": "resource/icon.svg"
         }
       },
       {
@@ -121,12 +109,16 @@
         "title": "MicroPython: CodeFlow Graph"
       },
       {
-        "command": "micropython-ide.copyToDevice",
-        "title": "Micropython: Copy to Device Folder"
+        "command": "micropython-ide.copToLogicFolder",
+        "title": "Micropython: Copy to Logic Device"
       },
       {
         "command": "micropython-ide.copyToMainProject",
-        "title": "Micropython: Copy to Project Folder"
+        "title": "Micropython: Copy to Project"
+      },
+      {
+        "command": "micropython-ide.copyToMcuDevice",
+        "title": "Micropython: Copy to Microcontroller"
       }
     ],
     "menus": {
@@ -157,12 +149,17 @@
           "group": "navigation"
         },
         {
-          "command": "micropython-ide.copyToDevice",
+          "command": "micropython-ide.copToLogicFolder",
           "when": "!(resource =~ /mcu_.*/)",
           "group": "navigation"
         },
         {
           "command": "micropython-ide.copyToMainProject",
+          "when": "resource =~ /mcu_.*/",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.copyToMcuDevice",
           "when": "resource =~ /mcu_.*/",
           "group": "navigation"
         }

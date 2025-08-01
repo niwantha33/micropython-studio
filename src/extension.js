@@ -7,6 +7,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const WebSocket = require('ws');
 const os = require('os');
+
 // user app js files 
 
 
@@ -135,6 +136,7 @@ function copyFolderRecursive(src, dest) {
     }
 }
 
+
 // Main activation function
 function activate(context) {
     checkPythonAvailability();
@@ -157,7 +159,12 @@ function activate(context) {
     });
     context.subscriptions.push(openShellCommand);
 
-    let copyToDeviceFolderCommand = vscode.commands.registerCommand('micropython-ide.copyToDevice', async (folderUri) => {
+    let copyToMcuDeviceCommand = vscode.commands.registerCommand('micropython-ide.copyToMcuDevice', async (folderUri) => {
+    });
+
+    context.subscriptions.push(copyToMcuDeviceCommand);
+
+    let copyToLogicFolderCommand = vscode.commands.registerCommand('micropython-ide.copToLogicFolder', async (folderUri) => {
         vscode.window.showInformationMessage('Copying to device...');
 
         const sourcePath = folderUri.fsPath;
@@ -211,7 +218,7 @@ function activate(context) {
             vscode.window.showInformationMessage(`File copied to Logic Device (${mcuFolder.name})`);
         }
     });
-    context.subscriptions.push(copyToDeviceFolderCommand);
+    context.subscriptions.push(copyToLogicFolderCommand);
 
     let copyToProjectFolderCommand = vscode.commands.registerCommand('micropython-ide.copyToMainProject', async (folderUri) => {
         vscode.window.showInformationMessage('Copying to project folder...');
