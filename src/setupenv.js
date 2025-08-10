@@ -1,3 +1,11 @@
+/**
+ * setupenv.js
+ * setup virtual environment and install neccessary files 
+ * @license MIT
+ * @version 1.0
+ * @author  Niwantha Meepage 
+ */
+
 const vscode = require('vscode');
 const { exec } = require('child_process');
 const path = require('path');
