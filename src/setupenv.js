@@ -12,7 +12,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const os = require('os');
 // user defined functions 
-const  {runCommand} =require('./runcommand');
+const  {runCommand} =require('./runCommand');
 
 // Helper: Detect working Python command
 async function getPythonCommand() {

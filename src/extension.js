@@ -4,7 +4,7 @@ const vscode = require('vscode');
 const { exec } = require('child_process');
  
 // user defined functions 
-const { setupVirtualEnv } = require('./setupenv');
+const { setupVirtualEnv } = require('./setupEnv');
 
 // At the top-level (module scope)
 const outputChannel = vscode.window.createOutputChannel("MicroPython IDE");
