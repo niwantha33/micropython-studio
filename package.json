@@ -15,11 +15,7 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onCommand: micropython-ide.setupEnvironment",
-    "onCommand: micropython-ide.refreshMcuFolder",
-    "onCommand: micropython-ide.openShell",
-    "onCommand: micropython-ide.mountMcuFolder",
-    "onCommand: micropython-ide.openExistingProjectFolder"
+    "onCommand: micropython-ide.setupEnvironment"
   ],
   "main": "./src/extension.js",
   "contributes": {
@@ -47,132 +43,14 @@
         "when": "true"
       }
     ],
-    "commands": [
-      {
-        "command": "micropython-ide.updateDevicePort",
-        "title": "Open MicroPython Project"
-      },
-      {
-        "command": "micropython-ide.openExistingProjectFolder",
-        "title": "Open MicroPython Project"
-      },
-      {
-        "command": "micropython-ide.launchIde",
-        "title": "Launch MicroPython Studio"
-      },
-      {
-        "command": "micropython-ide.syncMcuFolder",
-        "title": "MicroPython: Sync Logic->Mcu Files"
-      },
+    "commands": [    
       {
         "command": "micropython-ide.setupEnvironment",
         "title": "MicroPython: Setup Development Environment"
-      },
-      {
-        "command": "micropython-ide.createNewProject",
-        "title": "MicroPython: Create a New Project"
-      },
-      {
-        "command": "micropython-ide.refreshMcuFolder",
-        "title": "MicroPython: _Refresh Project"
-      },
-      {
-        "command": "micropython-ide.mountMcuFolder",
-        "title": "MicroPython: Mount Device"
-      },
-      {
-        "command": "micropython-ide.unmountMcuFolder",
-        "title": "MicroPython: Unmount Device"
-      },
-      {
-        "command": "micropython-ide.runThisScriptOnMcuConsole",
-        "title": "MicroPython: Run Current Script on MCU"
-      },
-      {
-        "command": "micropython-ide.stopRun",
-        "title": "MicroPython: Stop Running Script on MCU"
-      },
-      {
-        "command": "micropython-ide.openShell",
-        "title": "MicroPython: Open Device Shell"
-      },
-      {
-        "command": "micropython-ide.codeflow",
-        "title": "MicroPython: CodeFlow Graph"
-      },
-      {
-        "command": "micropython-ide.copToLogicFolder",
-        "title": "Micropython: Copy to Logic Device"
-      },
-      {
-        "command": "micropython-ide.copyToMainProject",
-        "title": "Micropython: Copy to Project"
-      },
-      {
-        "command": "micropython-ide.copyToMcuDevice",
-        "title": "Micropython: Copy to Microcontroller"
-      },
-      {
-        "command": "micropython-ide.removeFileOrFolder",
-        "title": "Micropython: Remove This From Mcu"
-      },
-      {
-        "command": "micropython-ide.createFolderInMcu",
-        "title": "Micropython: Create This Folder In Mcu"
       }
     ],
     "menus": {
       "explorer/context": [
-        {
-          "command": "micropython-ide.refreshMcuFolder",
-          "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.mountMcuFolder",
-          "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.unmountMcuFolder",
-          "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.launchIde",
-          "when": "view == micropython-ide-launch",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.codeflow",
-          "when": "!explorerResourceIsFolder && !(resource =~ /mcu_.*/)",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.copToLogicFolder",
-          "when": "!(resource =~ /mcu_.*/)",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.copyToMainProject",
-          "when": "resource =~ /mcu_.*/",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.copyToMcuDevice",
-          "when": "resource =~ /mcu_.*/",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.removeFileOrFolder",
-          "when": "resource =~ /mcu_.*/",
-          "group": "navigation"
-        },
-        {
-          "command": "micropython-ide.createFolderInMcu",
-          "when": "resource =~ /mcu_.*/",
-          "group": "navigation"
-        }
       ]
     }
   },
