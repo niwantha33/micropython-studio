@@ -1,6 +1,8 @@
 // vsce package
 // code --install-extension my-extension-0.0.1.vsix
 const vscode = require('vscode');
+
+const { TextDecoder, TextEncoder } = require('util');
 const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
@@ -14,8 +16,11 @@ const os = require('os');
 // Global variables
 let wsClient = null;
 let serverProcess = null;
-let outputChannel = vscode.window.createOutputChannel("MicroPython IDE");
-outputChannel.show(true); // Opens the channel so the user sees output
+
+// At the top-level (module scope)
+const outputChannel = vscode.window.createOutputChannel("MicroPython IDE");
+
+let deviceFolderPath = null;
 
 let mpremoteTerminal = null;
 
@@ -61,6 +66,11 @@ let isSyncFunctionActive = false;
 let global_mcu_port = null;
 let global_syncFolderPath = null;
 
+function getOutputChannel() {
+    outputChannel.show(true); // Opens the channel so the user sees output
+    return outputChannel;
+}
+
 function getMpremoteTerminal() {
     if (!mpremoteTerminal || mpremoteTerminal.exitStatus) {
         mpremoteTerminal = vscode.window.createTerminal({
@@ -75,8 +85,8 @@ function showButtonsInTaskbar(context) {
     // Create Activity Bar icon
     const activeBaronMcuButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     activeBaronMcuButton.text = `$(folder) Open Project`;
-    activeBaronMcuButton.tooltip = `Run current script on MicroPython device`;
-    activeBaronMcuButton.command = 'micropython-ide.launchIde';
+    activeBaronMcuButton.tooltip = `Open Existing Workspace`;
+    activeBaronMcuButton.command = 'micropython-ide.openExistingProjectFolder';
     context.subscriptions.push(activeBaronMcuButton);
     activeBaronMcuButton.show();
 
@@ -99,7 +109,7 @@ function showButtonsInTaskbar(context) {
     // runOnMcuButton.backgroundColor='blue'
     // runOnMcuButton.color = 'green'
     runOnMcuButton.tooltip = `Run current script on MicroPython device`;
-    runOnMcuButton.command = 'micropython-ide.runOnMcu';
+    runOnMcuButton.command = 'micropython-ide.runThisScriptOnMcuConsole';
     context.subscriptions.push(runOnMcuButton);
     runOnMcuButton.show();
 
@@ -111,9 +121,6 @@ function showButtonsInTaskbar(context) {
     stopOnMcuButton.command = 'micropython-ide.stopRun';
     context.subscriptions.push(stopOnMcuButton);
     stopOnMcuButton.show();
-
-
-
 }
 
 // Helper function to copy folders recursively
@@ -136,11 +143,192 @@ function copyFolderRecursive(src, dest) {
     }
 }
 
+async function getConfigValue(configPath, section, key) {
+    const uri = vscode.Uri.file(configPath);
+    const decoder = new TextDecoder('utf-8');
 
+    try {
+        const data = await vscode.workspace.fs.readFile(uri);
+        const text = decoder.decode(data);
+        const lines = text.split(/\r?\n/);
+
+        let inSection = false;
+
+        for (const line of lines) {
+            // Match section header: [device]
+            const sectionMatch = line.trim().match(/^\[(\w+)\]$/);
+            if (sectionMatch) {
+                inSection = sectionMatch[1] === section;
+                continue;
+            }
+
+            // If we're in the right section, look for key = value
+            if (inSection) {
+                const keyMatch = line.trim().match(new RegExp(`^\\s*${key}\\s*=\\s*(.*)$`));
+                if (keyMatch) {
+                    let value = keyMatch[1].trim();
+
+                    // Remove surrounding quotes if present
+                    if ((value.startsWith('"') && value.endsWith('"')) ||
+                        (value.startsWith("'") && value.endsWith("'"))) {
+                        value = value.slice(1, -1);
+                    }
+
+                    return value;
+                }
+            }
+        }
+
+        // Key not found
+        return null;
+    } catch (err) {
+        console.error(`❌ Error reading config: ${err.message}`);
+        return null;
+    }
+}
+
+async function updateCfgComponent(cfgFilePath, section, key, newValue) {
+    console.log(`Updating ${cfgFilePath} -> [${section}] ${key} = "${newValue}"`);
+
+    const uri = vscode.Uri.file(cfgFilePath);
+    const decoder = new TextDecoder('utf-8');
+    const encoder = new TextEncoder();
+
+    try {
+        // Read file using VSCode API
+        const data = await vscode.workspace.fs.readFile(uri);
+        const text = decoder.decode(data);
+        const lines = text.split(/\r?\n/);
+
+        let inSection = false;
+        let modified = false;
+        let foundKey = false;
+        let sectionExists = false;
+
+        const newLines = lines.map(line => {
+            const sectionMatch = line.trim().match(/^\[(\w+)\]$/);
+            if (sectionMatch) {
+                inSection = sectionMatch[1] === section;
+                if (inSection) sectionExists = true;
+            }
+
+            if (inSection) {
+                const keyMatch = line.trim().match(new RegExp(`^\\s*${key}\\s*=.*`));
+                if (keyMatch) {
+                    foundKey = true;
+                    modified = true;
+                    return `${key} = "${newValue}"`;
+                }
+            }
+
+            return line;
+        });
+
+        // Add key if not found
+        if (sectionExists && !foundKey) {
+            newLines.push(`${key} = "${newValue}"`);
+            modified = true;
+        }
+
+        // Write back using VSCode API
+        if (modified) {
+            const newText = newLines.join('\n');
+            await vscode.workspace.fs.writeFile(uri, encoder.encode(newText));
+            console.log(`✅ Updated ${key} in [${section}] to "${newValue}"`);
+        } else {
+            console.log(`⚠️ No changes made to ${key}`);
+        }
+    } catch (err) {
+        console.error(`❌ Error updating config: ${err.message}`);
+    }
+}
+
+function getComPortNumber(context) {
+    console.log(context);
+}
+
+function ensureRemoteDir(remotePath) {
+    return new Promise(async (resolve, reject) => {
+        const parts = remotePath.split('/').filter(p => p);
+        let current = '';
+
+        for (const part of parts) {
+            current += `/${part}`;
+            try {
+                await runMpremote(['connect', global_mcu_port, 'fs', 'mkdir', `:${current}`]);
+            } catch (err) {
+                // Ignore "File exists" or similar
+                if (!err.message.includes('File exists') && !err.message.includes('already exists')) {
+                    console.warn(`Warning creating dir :${current}: ${err.message}`);
+                }
+            }
+        }
+
+        resolve();
+    });
+}
+
+function walkSync(dir, results = []) {
+    let files;
+    try {
+        files = fsSync.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+        console.error(`Cannot read directory: ${dir}`, err);
+        return results;
+    }
+
+    for (const file of files) {
+        const filePath = path.join(dir, file.name).replace(/\\/g, '/');
+        try {
+            if (file.isDirectory()) {
+                walkSync(filePath, results);
+            } else if (file.isFile()) {
+                results.push(filePath);
+            }
+        } catch (err) {
+            console.warn(`Skipping file: ${filePath}`, err);
+        }
+    }
+
+    return results;
+}
+
+function runMpremote(args) {
+    return new Promise((resolve, reject) => {
+        const venvFolder = getVenvPythonPathFolder();
+        const venvPython = getVenvPythonPath(venvFolder);
+        const outputChannel = getOutputChannel();
+
+        // Build command
+
+        const command = `"${venvPython}" -m mpremote  ${args.join(' ')}`;
+
+        console.log(`🔧 Running: ${command}`); // Debug log
+
+        exec(command, { maxBuffer: 1024 * 500 }, (error, stdout, stderr) => {
+            if (error) {
+                console.error(`❌ mpremote error: ${error.message}`);
+                outputChannel.appendLine(`❌ mpremote error: ${error.message}`);
+                return reject(error.message);
+            }
+
+            if (stderr && !stderr.includes('No device found')) {
+                outputChannel.appendLine(`⚠️ mpremote stderr: ${stderr}`);
+                console.warn(`⚠️ mpremote stderr: ${stderr}`);
+            }
+            if (stdout.trim()) {
+                outputChannel.appendLine(`📤 mpremote output:\n${stdout.trim()}`);
+            }
+
+            resolve(stdout.trim());
+        });
+    });
+}
 // Main activation function
 function activate(context) {
     checkPythonAvailability();
     showButtonsInTaskbar(context);
+    getComPortNumber(context);
     //---------------------------------------------------------------------------------------------------------------------------.
     //                                                                                                                           '
     //-------------------------------------*-*Command Activation- Section*-*-----------------------------------------------------'    
@@ -159,7 +347,62 @@ function activate(context) {
     });
     context.subscriptions.push(openShellCommand);
 
-    let copyToMcuDeviceCommand = vscode.commands.registerCommand('micropython-ide.copyToMcuDevice', async (folderUri) => {
+    let copyToMcuDeviceCommand = vscode.commands.registerCommand('micropython-ide.copyToMcuDevice', async (uri) => {
+        const localPath = uri.fsPath;
+        const baseName = path.basename(localPath);
+        const stat = fsSync.statSync(localPath);
+
+        try {
+            // ✅ Ensure port is available — suggest closing serial monitor
+            // This is critical: only one process can use COM11 at a time
+
+            // 🔹 Replace backslashes with forward slashes (required for mpremote)
+            const safeLocalPath = localPath.replace(/\\/g, '/');
+
+            if (stat.isFile()) {
+                // ✅ Copy single file
+                await runMpremote([
+                    'connect', global_mcu_port,
+                    'fs', 'cp',
+                    safeLocalPath,
+                    `:${baseName}`
+                ]);
+                vscode.window.showInformationMessage(`📄 ${baseName} copied to device.`);
+            }
+
+            if (stat.isDirectory()) {
+                const entries = walkSync(localPath);
+
+                for (const file of entries) {
+                    const relPath = path.relative(localPath, file).replace(/\\/g, '/');
+                    const remotePath = `:${baseName}/${relPath}`.replace(/\\/g, '/').replace(/\/+/g, '/');
+
+                    const remoteDir = path.dirname(remotePath);
+                    await ensureRemoteDir(remoteDir); // Safe recursive mkdir
+
+                    const safeFile = file.replace(/\\/g, '/');
+                    await runMpremote([
+                        'connect', global_mcu_port,
+                        'fs', 'cp',
+                        safeFile,
+                        remotePath
+                    ]);
+                }
+
+                vscode.window.showInformationMessage(`📁 Folder '${baseName}' uploaded to device.`);
+            }
+        } catch (err) {
+            if (err.message.includes('failed to access') || err.message.includes('Permission denied')) {
+                vscode.window.showErrorMessage(
+                    '❌ Cannot access the device. Please:\n' +
+                    '1. Close the Serial Monitor\n' +
+                    '2. Ensure no other program is using the port\n' +
+                    '3. Try again'
+                );
+            } else {
+                vscode.window.showErrorMessage(`Upload failed: ${err.message}`);
+            }
+        }
     });
 
     context.subscriptions.push(copyToMcuDeviceCommand);
@@ -274,7 +517,7 @@ function activate(context) {
     });
     context.subscriptions.push(copyToProjectFolderCommand);
 
-    let launchIdeCommand = vscode.commands.registerCommand('micropython-ide.launchIde', async () => {
+    let openExistinProjectCommand = vscode.commands.registerCommand('micropython-ide.openExistingProjectFolder', async () => {
         // Replace with your actual IDE launch logic
         const projectPath = await vscode.window.showOpenDialog({
             canSelectFolders: true,
@@ -285,33 +528,70 @@ function activate(context) {
         if (!projectPath || projectPath.length === 0) {
             return;
         }
-
         const selectedProject = projectPath[0].fsPath;
-
         // Example: Open the project in a new VS Code window
         const workspaceFile = path.join(selectedProject, `${path.basename(selectedProject)}.code-workspace`);
-
         try {
             await fs.access(workspaceFile);
             await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspaceFile), { forceNewWindow: true });
         } catch {
 
-            await vscode.commands.executeCommand('micropython-ide.runUtil');
+            await vscode.commands.executeCommand('micropython-ide.syncRtcWithMcu');
         }
     });
+    context.subscriptions.push(openExistinProjectCommand);
+
+    let launchIdeCommand = vscode.commands.registerCommand('micropython-ide.launchIde', async () => {
+        try {
+            await vscode.commands.executeCommand('micropython-ide.refreshMcuFolder');
+
+        } catch {
+            vscode.window.showErrorMessage('Micropython Studio Launching Error!');
+        }
+    });
+
     context.subscriptions.push(launchIdeCommand);
-    const utilMcuCommand = vscode.commands.registerCommand('micropython-ide.runUtil', async () => {
+
+    let updateComPortCommand = vscode.commands.registerCommand('micropython-ide.updateDevicePort', async () => {
+        const lsOutput = await runMpremote(['list']);
+        if (lsOutput) {
+            const lines = lsOutput.split(/\r?\n/);
+            for (const line of lines) {
+                // Trim whitespace from the line
+                const trimmedLine = line.trim();
+                const deviceMatch = trimmedLine.match(/^(COM\d+)\s+([0-9A-Fa-f]+)\s+([0-9A-Fa-f]{4}:[0-9A-Fa-f]{4})\s+(\S+)(?:\s+(.*))?$/);
+                if (deviceMatch) {
+                    // If a match is found, extract the groups
+                    const comPort = deviceMatch[1];
+                    const deviceId = deviceMatch[2];
+                    if (deviceFolderPath) {
+                        const devicePort = getConfigValue(deviceFolderPath, 'device', 'port');
+                        if (devicePort != comPort) {
+                            await updateCfgComponent(deviceFolderPath, 'device', 'port', comPort);
+                        }
+                        await updateCfgComponent(deviceFolderPath, 'device', 'deviceId', deviceId);
+                    }
+                }
+            }
+        } else {
+            vscode.window.showErrorMessage('No Device Found\nConnect the Device and Retry');
+        }
+    });
+
+    context.subscriptions.push(updateComPortCommand);
+
+
+    const utilMcuCommand = vscode.commands.registerCommand('micropython-ide.syncRtcWithMcu', async () => {
     });
     context.subscriptions.push(utilMcuCommand);
+
     const stopCommand = vscode.commands.registerCommand('micropython-ide.stopRun', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
             vscode.window.showErrorMessage('No active file to run.');
             return;
         }
-
         const filePath = editor.document.fileName;
-
         const fileDir = path.dirname(filePath);
         const venvFolder = getVenvPythonPathFolder();
         const venvPython = getVenvPythonPath(venvFolder);
@@ -319,9 +599,7 @@ function activate(context) {
         const terminal = getMpremoteTerminal();
         // terminal.show();
         terminal.sendText(`cd "${fixGitBashPath(fileDir)}"`);
-
-
-        terminal.sendText(`"${venvPython}" -m mpremote resume reset`);
+        terminal.sendText(`"${venvPython}" -m mpremote connect ${global_mcu_port} resume reset`);
     });
     context.subscriptions.push(stopCommand);
     const syncMcuFolderCommand = vscode.commands.registerCommand('micropython-ide.syncMcuFolder', async () => {
@@ -406,7 +684,8 @@ function activate(context) {
 
     });
     context.subscriptions.push(syncMcuFolderCommand);
-    let runOnMcuCommand = vscode.commands.registerCommand('micropython-ide.runOnMcu', async () => {
+
+    let runThisScriptOnMcuConsoleCommand = vscode.commands.registerCommand('micropython-ide.runThisScriptOnMcuConsole', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
             vscode.window.showErrorMessage('No active file to run.');
@@ -465,38 +744,18 @@ function activate(context) {
 
         vscode.window.showInformationMessage(`Running ${fileName} on ${selectedDevice}`);
     });
-    context.subscriptions.push(runOnMcuCommand);
+    context.subscriptions.push(runThisScriptOnMcuConsoleCommand);
     let setupEnvCommand = vscode.commands.registerCommand('micropython-ide.setupEnvironment', async () => {
         await setupVirtualEnv(context);
     });
     context.subscriptions.push(setupEnvCommand);
-    let runCodeCommand = vscode.commands.registerCommand('micropython-ide.runCode', async () => {
-        // await handleRunCode(context);
-        vscode.window.showInformationMessage('RunCode command triggered');
-        // 1. Start server only when needed
-        if (!await isServerRunning()) {
-            const started = await startServer(context);
-            if (!started) {
-                vscode.window.showErrorMessage('Failed to start server');
-                return;
-            }
-        }
-        // 2. Execute user code
-        const code = await getActiveEditorCode();
-        vscode.window.showInformationMessage(code)
-        console.log(code);
-        if (code) {
-            executeCode(code);
-        }
 
-    });
-    context.subscriptions.push(runCodeCommand);
     let installDepsCommand = vscode.commands.registerCommand('micropython-ide.installDependencies', async () => {
 
         vscode.window.showWarningMessage("Use ... MicroPython: Setup Development Environment to install dependencies.");
     });
     context.subscriptions.push(installDepsCommand);
-    let detectDeviceCommand = vscode.commands.registerCommand('micropython-ide.detectDevice', async () => {
+    let createNewProjectCommand = vscode.commands.registerCommand('micropython-ide.createNewProject', async () => {
         try {
             const projectName = await vscode.window.showInputBox({
                 prompt: 'Enter project name',
@@ -533,8 +792,37 @@ function activate(context) {
                 await fs.mkdir(helperDir, { recursive: true });
                 await fs.mkdir(settingsDir, { recursive: true });
 
-                await fs.writeFile(path.join(projectDir, 'main.py'), `# MicroPython Project\nprint("New project created for ${selectedMcu}")`);
-                await fs.writeFile(path.join(projectDir, 'pylintrc'), `[MESSAGES CONTROL]\ndisable=E0401, W0511, W0718, I1101, C0301, E1101, C0116\n[DESIGN]\nmax-args=10\nmax-locals=15\nmax-returns=5\nmax-statements=50\nmax-line-length=120\n[FORMAT]\nindent-string='    '\n[REPORTS]\noutput-format=text\nreports=no\n`);
+                await fs.writeFile(path.join(projectDir, 'main.py'), `# MicroPython Projecti\nmport os\n\nprint("New project created for ${selectedMcu}")`);
+                await fs.writeFile(
+                    path.join(projectDir, '.pylintrc'),
+                    `
+# Pylint Configuration for MicroPython Project
+[MESSAGES CONTROL]
+# Disable common false positives in MicroPython
+disable=E0401,        # Import error (micropython modules not found)
+         W0511,       # NotImplemented warning
+         W0718,       # Broad exception caught
+         I1101,       # Unable to import (for C modules)
+         C0301,       # Line too long
+         E1101,       # Instance of 'module' has no 'xxx' member
+         C0116        # Missing function docstring
+
+[DESIGN]
+max-args=10
+max-locals=15
+max-returns=5
+max-statements=50
+max-line-length=120
+
+[FORMAT]
+# Use 4 spaces for indentation
+indent-string='    '
+
+[REPORTS]
+output-format=text
+reports=no
+`.trim()
+                );
                 // await fs.writeFile(path.join(mcuDir, '_device_root.txt'),
                 //     `This folder represents the root filesystem of your MicroPython device (${selectedMcu}).\n[Read-only view - files here are stored on your MCU]`,
                 //     'utf8');
@@ -545,6 +833,7 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
 
             const { exec } = require('child_process');
+
             const command = `${venvPython} -m mpremote connect list`;
 
             exec(command, async (error, stdout, stderr) => {
@@ -574,9 +863,30 @@ function activate(context) {
 
                 const selectedDevice = selected.label;
                 const now = new Date().toISOString();
-                const deviceCfgContent = `[device]\nport = ${selectedDevice}\nmcu = ${selectedMcu}\nsync_folder = ${syncFolder}\nroot_folder = ${projectName}\nproject_created = ${now}\nlast_sync = ${now}\ndevice_firmware = Micropython`;
-
                 const deviceCfgPath = path.join(projectDir, 'device.cfg');
+
+                deviceFolderPath = deviceCfgPath;
+
+                const deviceCfgContent = `
+[device]
+port = ${selectedDevice}
+mcu = ${selectedMcu}
+sync_folder = ${syncFolder}
+root_folder = ${projectName}
+project_created = ${now}
+last_sync = ${now}
+device_firmware = Micropython
+deviceId=''
+
+[filePath]
+projectDir = "${parentPath}"
+ProjectFolder = "${projectDir}"
+logicFolder = "${mcuDir}"
+virtualEnv = "${venvFolder}"
+virtualPython = "${venvPython}"
+`.trim();
+
+
                 await fs.writeFile(deviceCfgPath, deviceCfgContent, 'utf8');
 
                 const workspaceFilePath = path.join(parentPath, `${projectName}.code-workspace`);
@@ -668,7 +978,8 @@ function activate(context) {
             vscode.window.showErrorMessage(`Failed to create or update project: ${err.message}`);
         }
     });
-    context.subscriptions.push(detectDeviceCommand);
+    context.subscriptions.push(createNewProjectCommand);
+
     const mountMcuFolderCommand = vscode.commands.registerCommand('micropython-ide.mountMcuFolder', async (folderUri) => {
         const mcuFolderPath = folderUri.fsPath;
         const parentPath = path.dirname(mcuFolderPath);
@@ -704,7 +1015,10 @@ function activate(context) {
         // 3. Copy all files from device to sync folder (NOTE: manually copy files; no wildcards)
         terminal.sendText(`"${venvPython}" -m mpremote connect ${port} resume fs cp -r : "${fixGitBashPath(syncFolderPath)}"`);
     });
+
     context.subscriptions.push(mountMcuFolderCommand);
+
+
     const unmountMcuFolderCommand = vscode.commands.registerCommand('micropython-ide.unmountMcuFolder', async (folderUri) => {
         const mcuFolderPath = folderUri.fsPath;
         const parentPath = path.dirname(mcuFolderPath);
@@ -735,6 +1049,7 @@ function activate(context) {
         terminal.sendText(`"${venvPython}" -m mpremote connect ${port} resume umount`);
     });
     context.subscriptions.push(unmountMcuFolderCommand);
+
     let uploadToMcuDisposable = vscode.commands.registerCommand('micropython-ide.uploadToMcu', (resource) => {
         // Your logic for uploading to MCU, using 'resource' for the clicked path
         if (resource && resource.fsPath) {
@@ -743,7 +1058,9 @@ function activate(context) {
             vscode.window.showWarningMessage('No resource selected for upload.');
         }
     });
+
     context.subscriptions.push(uploadToMcuDisposable);
+
     // TODO: update with latest code 
     let createProjectCommand = vscode.commands.registerCommand('micropython-ide.createProject', async () => {
         try {
@@ -863,20 +1180,39 @@ max-attributes=10  # Set your preferred threshold`);
         }
     });
     context.subscriptions.push(createProjectCommand);
+
     let refreshMcuFolderCommand = vscode.commands.registerCommand('micropython-ide.refreshMcuFolder', async (resource) => {
-        vscode.window.showInformationMessage("Refresh MicroPython Tools...");
+
+        vscode.window.showInformationMessage("Refresh MicroPython Configuration Settings...");
+
         console.log("Refreshing MCU folder...", resource);
+
         const mcuFolderPath = resource.fsPath
+
         const parentPath = path.dirname(mcuFolderPath);
+
         console.log("Parent path:", parentPath);
 
         const configPath = await findDeviceConfig(parentPath);
+
+        deviceFolderPath = configPath;
+
+        await updateCfgComponent(configPath, 'filePath', 'projectDir', parentPath);
+
+        const projectFolder = path.dirname(configPath);
+        await updateCfgComponent(configPath, 'filePath', 'ProjectFolder', projectFolder);
+        await updateCfgComponent(configPath, 'filePath', 'logicFolder', mcuFolderPath);
+        const venvFolder = getVenvPythonPathFolder();
+        await updateCfgComponent(configPath, 'filePath', 'virtualEnv', venvFolder);
+        const venvPython = getVenvPythonPath(venvFolder);
+        await updateCfgComponent(configPath, 'filePath', 'virtualPython', venvPython);
 
         if (!configPath) {
             vscode.window.showErrorMessage('device.cfg not found near selected mcu_ folder.');
             return;
         }
         const { port, syncFolder } = await parseDeviceConfig(configPath);
+
         if (!port || !syncFolder) {
             vscode.window.showErrorMessage('Missing port or sync_folder in device.cfg');
             return;
@@ -884,18 +1220,13 @@ max-attributes=10  # Set your preferred threshold`);
         global_mcu_port = port;
         global_syncFolderPath = syncFolder;
         console.log("Port:", global_mcu_port, "Sync Folder:", global_syncFolderPath);
+
         const newTimestamp = new Date().toISOString();
-
         updateLastSync(configPath, newTimestamp);
-
-
-        // const micropythonStudioDir = path.join(appDataDir, '.micropython-studio');
-        // const terminal = vscode.window.createTerminal("MicroPython Sync");
-        // terminal.show();
-        // terminal.sendText(`cd "${fixGitBashPath(micropythonStudioDir)}"`);
-
     });
+
     context.subscriptions.push(refreshMcuFolderCommand);
+
     let codeflowMcuFolderCommand = vscode.commands.registerCommand('micropython-ide.codeflow', async (fUri) => {
         const fsPath = fUri.fsPath;
         const messageShow = `Generating Codeflow Graph for: ${fsPath}`;
@@ -984,8 +1315,7 @@ async function prepareSyncFolder(syncFolderPath) {
 function setupAutoSync(context, syncFolderPath, port) {
     const venvFolder = getVenvPythonPathFolder();
     const venvPython = getVenvPythonPath(venvFolder);
-    const outputChannel = vscode.window.createOutputChannel("Auto Sync");
-    outputChannel.show();
+    const outputChannel = getOutputChannel();
 
     const terminal = getMpremoteTerminal();
 
@@ -1076,24 +1406,7 @@ async function getActiveEditorCode() {
     }
     return editor.document.getText();
 }
-function executeCode(code) {
-    const ws = new WebSocket(`ws://localhost:${WS_PORT}`);
 
-    ws.on('open', () => {
-
-        ws.send(code);
-    });
-
-    ws.on('message', (data) => {
-        const output = vscode.window.createOutputChannel("MicroPython Output");
-        output.appendLine(data.toString());
-        output.show();
-    });
-
-    ws.on('error', (err) => {
-
-    });
-}
 async function getDevicePortFromIni(context) {
     const iniPath = path.join(context.extensionPath, 'device.cfg');
     try {
@@ -1160,8 +1473,7 @@ async function setupVirtualEnv(context) {
         }
 
         const pythonExecutable = await getPythonCommand();
-        const outputChannel = vscode.window.createOutputChannel('Venv Setup');
-        outputChannel.show();
+        const outputChannel = getOutputChannel();
         outputChannel.appendLine('Setting up MicroPython virtual environment...');
 
         // 1. Create virtual environment
@@ -1400,10 +1712,11 @@ function connectWebSocket(code) {
     if (wsClient) {
         wsClient.close();
     }
-
+    const outputChannel = getOutputChannel();
     wsClient = new WebSocket(`ws://127.0.0.1:${WS_PORT}`);
     console.log('Connect New Socket:${wsClient}');
     wsClient.on('open', () => {
+
         outputChannel.appendLine("Connected to execution server");
         wsClient.send(code);
     });

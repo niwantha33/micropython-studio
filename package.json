@@ -16,10 +16,10 @@
   ],
   "activationEvents": [
     "onCommand: micropython-ide.setupEnvironment",
-    "onCommand: micropython-ide.runCode",
     "onCommand: micropython-ide.refreshMcuFolder",
     "onCommand: micropython-ide.openShell",
-    "onCommand: micropython-ide.mountMcuFolder"
+    "onCommand: micropython-ide.mountMcuFolder",
+    "onCommand: micropython-ide.openExistingProjectFolder"
   ],
   "main": "./src/extension.js",
   "contributes": {
@@ -42,43 +42,35 @@
     },
     "viewsWelcome": [
       {
-        "view": "scm",
-        "contents": "In order to use git features, you can open a folder containing a git repository or clone from a URL.\n[Open Folder](command:vscode.openFolder)\n[Clone Repository](command:git.clone)\nTo learn more about how to use git and source control in VS Code [read our docs](https://aka.ms/vscode-scm).",
-        "when": "config.git.enabled && git.state == initialized && workbenchState == empty"
+        "view": "micropython-ide-launch-view",
+        "contents": "Welcome to MicroPython Studio!\n[Setup Environment](command:micropython-ide.setupEnvironment)\n[Create A Project](command:micropython-ide.createNewProject)\n\n[Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n\n[Update Device Port](command:micropython-ide.updateDevicePort)",
+        "when": "true"
       }
     ],
     "commands": [
       {
+        "command": "micropython-ide.updateDevicePort",
+        "title": "Open MicroPython Project"
+      },
+      {
+        "command": "micropython-ide.openExistingProjectFolder",
+        "title": "Open MicroPython Project"
+      },
+      {
         "command": "micropython-ide.launchIde",
-        "title": "Launch MicroPython Studio",
-        "icon": {
-          "light": "resource/icon.svg",
-          "dark": "resource/icon.svg"
-        }
+        "title": "Launch MicroPython Studio"
       },
       {
         "command": "micropython-ide.syncMcuFolder",
-        "title": "MicroPython: Auto Sync MCU"
-      },
-      {
-        "command": "micropython-ide.runCode",
-        "title": "MicroPython: Run Code"
-      },
-      {
-        "command": "micropython-ide.createProject",
-        "title": "MicroPython: Create Project"
-      },
-      {
-        "command": "micropython-ide.installDependencies",
-        "title": "MicroPython: Install Required Dependencies"
+        "title": "MicroPython: Sync Logic->Mcu Files"
       },
       {
         "command": "micropython-ide.setupEnvironment",
         "title": "MicroPython: Setup Development Environment"
       },
       {
-        "command": "micropython-ide.detectDevice",
-        "title": "MicroPython: Detect Devices"
+        "command": "micropython-ide.createNewProject",
+        "title": "MicroPython: Create a New Project"
       },
       {
         "command": "micropython-ide.refreshMcuFolder",
@@ -93,7 +85,7 @@
         "title": "MicroPython: Unmount Device"
       },
       {
-        "command": "micropython-ide.runOnMcu",
+        "command": "micropython-ide.runThisScriptOnMcuConsole",
         "title": "MicroPython: Run Current Script on MCU"
       },
       {
@@ -119,6 +111,14 @@
       {
         "command": "micropython-ide.copyToMcuDevice",
         "title": "Micropython: Copy to Microcontroller"
+      },
+      {
+        "command": "micropython-ide.removeFileOrFolder",
+        "title": "Micropython: Remove This From Mcu"
+      },
+      {
+        "command": "micropython-ide.createFolderInMcu",
+        "title": "Micropython: Create This Folder In Mcu"
       }
     ],
     "menus": {
@@ -160,6 +160,16 @@
         },
         {
           "command": "micropython-ide.copyToMcuDevice",
+          "when": "resource =~ /mcu_.*/",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.removeFileOrFolder",
+          "when": "resource =~ /mcu_.*/",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.createFolderInMcu",
           "when": "resource =~ /mcu_.*/",
           "group": "navigation"
         }
