@@ -12,10 +12,11 @@
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Debuggers"
   ],
-  "activationEvents": [
-    "onCommand: micropython-ide.setupEnvironment"
+  "activationEvents": [   
+   
   ],
   "main": "./src/extension.js",
   "contributes": {
@@ -39,18 +40,33 @@
     "viewsWelcome": [
       {
         "view": "micropython-ide-launch-view",
-        "contents": "Welcome to MicroPython Studio!\n[Setup Environment](command:micropython-ide.setupEnvironment)\n[Create A Project](command:micropython-ide.createNewProject)\n\n[Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n\n[Update Device Port](command:micropython-ide.updateDevicePort)",
+        "contents": "Welcome to MicroPython Studio!\n[Setup Environment](command:micropython-ide.setupEnvironment)\n[Create A Project](command:micropython-ide.createNewProject)\n[Start Debug](command:micropython-ide.startDebug)\n\n[Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n\n[Update Device Port](command:micropython-ide.updateDevicePort)",
         "when": "true"
       }
     ],
-    "commands": [    
+    "commands": [
       {
         "command": "micropython-ide.setupEnvironment",
-        "title": "MicroPython: Setup Development Environment"
-      }
+        "title": "MicroPython: Setup Development Environment",
+        "category": "MicroPython IDE"
+      },
+      {
+        "command": "micropython-ide.createNewProject",
+        "title": "MicroPython: Create New Project",
+        "category": "MicroPython IDE"
+      }     
+      
     ],
     "menus": {
-      "explorer/context": [
+      "commandPalette": [
+        {
+          "command": "micropython-ide.setupEnvironment",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.createNewProject",
+          "when": "true"
+        }
       ]
     }
   },
@@ -71,7 +87,13 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
+    "@serialport/parser-readline": "^12.0.0",
     "axios": "^1.10.0",
+    "fs-extra": "^11.3.1",
+    "moment": "^2.30.1",
+    "serialport": "^12.0.0",
     "ws": "^8.18.3"
   }
 }
+
+ 

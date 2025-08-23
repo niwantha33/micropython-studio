@@ -1,34 +1,37 @@
-// vsce package
-// code --install-extension my-extension-0.0.1.vsix
 const vscode = require('vscode');
-const { exec } = require('child_process');
- 
-// user defined functions 
+const UARTDebugger = require('./debugProb');
 const { setupVirtualEnv } = require('./setupEnv');
+const { creatNewProject } = require('./createNewProject');
 
-// At the top-level (module scope)
 const outputChannel = vscode.window.createOutputChannel("MicroPython IDE");
+let debuggerInstance = null;
 
-// Main activation function
 function activate(context) {
-    checkPythonAvailability();
-    let setupEnvCommand = vscode.commands.registerCommand('micropython-ide.setupEnvironment', async () => {
+    console.log('MicroPython IDE extension activated');
+    checkPythonAvailability();   
+
+    const setupEnvCommand = vscode.commands.registerCommand('micropython-ide.setupEnvironment', async () => {
         await setupVirtualEnv(context, outputChannel);
     });
-    context.subscriptions.push(setupEnvCommand);       
+    context.subscriptions.push(setupEnvCommand);
+
+    const createNewProjectCommand = vscode.commands.registerCommand('micropython-ide.createNewProject', async () => {
+        await creatNewProject(context, outputChannel);
+    });
+    context.subscriptions.push(createNewProjectCommand);  
 }
 
-// Function 1: Python availability check
-function checkPythonAvailability() { // 👈 Accept vscode as an argument
+function checkPythonAvailability() {
+    const { exec } = require('child_process');
     exec('python --version', (err) => {
         if (err) {
-            vscode.window.showWarningMessage(
-                'Python not found in PATH. Try installing Python or using python3.'
-            );
-            return 
+            vscode.window.showWarningMessage('Python not found in PATH');
         }
     });
 }
 
+function deactivate() {
+    if (debuggerInstance) debuggerInstance.dispose();
+}
 
-module.exports = { activate};
+module.exports = { activate, deactivate };
