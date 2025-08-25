@@ -1,6 +1,6 @@
 /**
  * setupenv.js
- * setup virtual environment and install necessary files 
+ * setup new Project 
  * @license MIT
  * @version 1.0
  * @author  Niwantha Meepage 
@@ -16,7 +16,7 @@ const { languageOption, mcuOptions_MP, rpBoards_MP, espBoards_MP, stmBoards_MP, 
 async function createNewProjectConfigDict(configDict, folderUri) {
     configDict['parentPath'] = folderUri[0].fsPath;
     configDict['projectDir'] = path.join(configDict.parentPath, configDict.projectName);
-    configDict['deviceCodeDir'] = path.join(configDict.projectDir, 'device_code');
+    configDict['deviceCodeDir'] = path.join(configDict.projectDir, 'main');
     configDict['settingsDir'] = path.join(configDict.projectDir, '.vscode');
     configDict['projectExists'] = await fs.access(configDict.projectDir).then(() => true).catch(() => false);
     return configDict;
@@ -104,7 +104,7 @@ async function selectMcuAndBoard() {
     }
 }
 
-async function creatNewProject(context, outputChnnel) {
+async function creatNewProject(context) {
     try {
         const config = await selectMcuAndBoard();
         if (!config) return;
@@ -246,18 +246,38 @@ virtualPython = "${venvPython}"
                 JSON.stringify(settings, null, 2)
             );
 
+            // Create workspace configuration
+            const workspacePath = path.join(config.parentPath, `${config.projectName}.code-workspace`);
+            const workspaceContent = {
+                "folders": [
+                    {
+                        "path": config.projectName,
+                        "name": `📁 ${config.projectName} (MicroPython Studio)`
+                    }
+                ],
+                "settings": {
+                    "micropythonStudio.project": true,
+                    "micropythonStudio.targetMCU": config.selectedMcuTarget,
+                    "micropythonStudio.language": config.progLanguage
+                }
+            };
+
+            await fs.writeFile(
+                workspacePath,
+                JSON.stringify(workspaceContent, null, 2)
+            );
+
             // Store device selection in global state
             context.globalState.update('selectedMicroPythonDevice', selectedDevice);
 
-            // Open the project folder
-            await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(config.projectDir));
+            // Open the workspace file instead of just the folder
+            await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspacePath), true);
 
-            vscode.window.showInformationMessage(`Project ${config.projectName} created successfully!`);
+            vscode.window.showInformationMessage(`MicroPython Studio project ${config.projectName} created successfully!`);
         });
 
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to create project: ${error.message}`);
     }
 }
-
 module.exports = { creatNewProject };

@@ -2,7 +2,7 @@
   "name": "micropython-ide",
   "displayName": "MicroPython IDE",
   "description": "MicroPython IDE for VS Code",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "publisher": "Niwantha Meepage",
   "repository": {
     "type": "git",
@@ -54,7 +54,27 @@
         "command": "micropython-ide.createNewProject",
         "title": "MicroPython: Create New Project",
         "category": "MicroPython IDE"
-      }     
+      } ,
+      {
+        "command": "micropython-ide.refreshMcuFolder",
+        "title": "MicroPython: Refresh Project",
+        "category": "MicroPython IDE"
+      },  
+      {
+        "command": "micropython-ide.openShell",
+        "title": "MicroPython: Open Micropython Shell",
+        "category": "MicroPython IDE"
+      },
+      {
+        "command": "micropython-ide.mountMainFolder",
+        "title": "MicroPython: Mount Device to main Folder",
+        "category": "MicroPython IDE"
+      },
+       {
+        "command": "micropython-ide.unmoutFolder",
+        "title": "MicroPython: Unmount Device from main Folder",
+        "category": "MicroPython IDE"
+      }      
       
     ],
     "menus": {
@@ -66,6 +86,25 @@
         {
           "command": "micropython-ide.createNewProject",
           "when": "true"
+        },
+        {
+          "command": "micropython-ide.refreshMcuFolder",
+          "when": "false"
+        },
+        {
+          "command": "micropython-ide.openShell",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.mountMainFolder",
+          "when": "true"
+        }
+      ],
+       "explorer/context": [
+        {
+          "command": "micropython-ide.refreshMcuFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation"
         }
       ]
     }
