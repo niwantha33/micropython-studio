@@ -27,7 +27,7 @@ def run_mpremote(python_exe, args_list, timeout=60):
                 line = proc.stdout.readline()
                 if line:
                     print(line, end="")
-                if proc.poll() is not None:  # Process ended
+                elif proc.poll() is not None:  # EOF and process has exited
                     break
             except KeyboardInterrupt:
                 # This catches Ctrl+C while reading output
@@ -109,7 +109,7 @@ def cmd_mount(python_exe, port, folder):
     ]
     result = run_mpremote(python_exe, args, timeout=15)
     if result.returncode != 0:
-        print(f"❌ Mount failed:\n{result.stderr}")
+        print("❌ Mount failed", file=sys.stderr)
         sys.exit(1)
 
 # ----------------------------
@@ -125,10 +125,81 @@ def cmd_unmount(python_exe, port):
     if result.returncode == 0:
         print("✅ Unmounted /remote")
     else:
-        if "ENODEV" in result.stderr or "not mounted" in result.stderr.lower():
-            print("ℹ️ Already unmounted.")
-        else:
-            print(f"❌ Unmount failed:\n{result.stderr}")
+        print("⚠️ Unmount returned non-zero (device may already be unmounted)", file=sys.stderr)
+            
+
+# ----------------------------
+# Command: upload
+# ----------------------------
+
+def cmd_upload(python_exe, port, source, dest='/'):
+    """Upload a file or folder to the device filesystem."""
+    source = Path(source).resolve()
+
+    if not source.exists():
+        print(f"❌ Source not found: {source}", file=sys.stderr)
+        sys.exit(1)
+
+    if source.is_file():
+        # Single file upload
+        remote = dest.rstrip('/') + '/' + source.name
+        print(f"📤 Uploading {source.name} -> {remote}", file=sys.stderr)
+        result = run_mpremote(python_exe, ['connect', port, 'fs', 'cp', str(source), f':{remote}'], timeout=30)
+        sys.exit(result.returncode)
+
+    # Folder upload — walk and upload file by file
+    files = sorted(f for f in source.rglob('*') if f.is_file())
+    if not files:
+        print("⚠️ Source folder is empty, nothing to upload.", file=sys.stderr)
+        sys.exit(0)
+
+    # Collect unique parent directories (deepest first to create parents before children)
+    dirs_to_create = sorted(set(
+        str(f.relative_to(source).parent).replace('\\', '/')
+        for f in files
+        if f.relative_to(source).parent != Path('.')
+    ))
+
+    print(f"📁 Uploading {len(files)} file(s) from {source}", file=sys.stderr)
+    print(f"🔌 Port: {port}", file=sys.stderr)
+    print("-" * 50, file=sys.stderr)
+
+    # Create remote directories
+    for d in dirs_to_create:
+        remote_dir = dest.rstrip('/') + '/' + d
+        print(f"📁 mkdir {remote_dir}", file=sys.stderr)
+        run_mpremote(python_exe, ['connect', port, 'fs', 'mkdir', remote_dir], timeout=10)
+
+    # Upload each file
+    for i, f in enumerate(files, 1):
+        rel = str(f.relative_to(source)).replace('\\', '/')
+        remote = dest.rstrip('/') + '/' + rel
+        print(f"[{i}/{len(files)}] {rel}", file=sys.stderr)
+        result = run_mpremote(python_exe, ['connect', port, 'fs', 'cp', str(f), f':{remote}'], timeout=30)
+        if result.returncode != 0:
+            print(f"❌ Failed to upload {rel}", file=sys.stderr)
+            sys.exit(result.returncode)
+
+    print(f"\n✅ Upload complete ({len(files)} file(s))", file=sys.stderr)
+    sys.exit(0)
+
+
+# Command: exec
+# ----------------------------
+def cmd_exec(python_exe, port, code):
+    if not code.strip():
+        print("❌ No code to execute", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"⚡ Executing: {code[:50]}{'...' if len(code) > 50 else ''}", file=sys.stderr)
+    args = [
+        'connect', port,
+        'exec', code
+    ]
+    result = run_mpremote(python_exe, args, timeout=10)
+
+    if result.returncode != 0:
+        sys.exit(result.returncode)
 
 # ----------------------------
 # CLI
@@ -154,6 +225,17 @@ def main():
                        help='Full path to the .py file to run')
     run_p.add_argument(
         '--folder', help='Folder to mount (default: parent of file)')
+    
+    # Upload
+    upload_p = subparsers.add_parser('upload', help='Upload a file or folder to the device')
+    upload_p.add_argument('--port', required=True, help='Serial port (e.g., COM9)')
+    upload_p.add_argument('--source', required=True, help='Local file or folder to upload')
+    upload_p.add_argument('--dest', default='/', help='Remote destination path (default: /)')
+
+    # Exec
+    exec_p = subparsers.add_parser('exec', help='Execute code on device')
+    exec_p.add_argument('--port', required=True, help='Serial port (e.g., COM9)')
+    exec_p.add_argument('--code', required=True, help='Code to execute')
 
     # Mount
     mount_p = subparsers.add_parser('mount', help='Mount folder only')
@@ -173,6 +255,10 @@ def main():
         cmd_mount(args.python, args.port, args.folder)
     elif args.command == 'unmount':
         cmd_unmount(args.python, args.port)
+    elif args.command == 'exec':
+        cmd_exec(args.python, args.port, args.code)
+    elif args.command == 'upload':
+        cmd_upload(args.python, args.port, args.source, args.dest)
 
 
 if __name__ == '__main__':
