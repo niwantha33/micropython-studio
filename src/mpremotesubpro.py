@@ -103,6 +103,27 @@ def cmd_run(python_exe, port, file_path, folder=None):
     sys.exit(result.returncode)
 
 # ----------------------------
+# Command: run_mcu (mpremote run — no mount, file sent directly to device)
+# ----------------------------
+
+
+def cmd_run_mcu(python_exe, port, file_path):
+    file_path = Path(file_path).resolve()
+    if not file_path.is_file():
+        print(f"❌ File not found: {file_path}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"🚀 Running on MCU: {file_path}", file=sys.stderr)
+    print(f"🔌 Port: {port}", file=sys.stderr)
+    print("-" * 50, file=sys.stderr)
+
+    # mpremote connect <port> run <file> — sends and executes file on device directly
+    args = ['connect', port, 'run', str(file_path)]
+    result = run_mpremote(python_exe, args, timeout=30)
+    sys.exit(result.returncode)
+
+
+# ----------------------------
 # Command: mount
 # ----------------------------
 
@@ -239,6 +260,12 @@ def main():
     run_p.add_argument(
         '--folder', help='Folder to mount (default: parent of file)')
     
+    # Run MCU: send file directly to device and run (no mount)
+    run_mcu_p = subparsers.add_parser(
+        'run_mcu', help='Run a file directly on the MCU (mpremote run, no mount)')
+    run_mcu_p.add_argument('--port', required=True, help='Serial port (e.g., COM9)')
+    run_mcu_p.add_argument('--file', required=True, help='Full path to the .py file to run')
+
     # Upload
     upload_p = subparsers.add_parser('upload', help='Upload a file or folder to the device')
     upload_p.add_argument('--port', required=True, help='Serial port (e.g., COM9)')
@@ -264,6 +291,8 @@ def main():
     # Dispatch
     if args.command == 'run':
         cmd_run(args.python, args.port, args.file, args.folder)
+    elif args.command == 'run_mcu':
+        cmd_run_mcu(args.python, args.port, args.file)
     elif args.command == 'mount':
         cmd_mount(args.python, args.port, args.folder)
     elif args.command == 'unmount':

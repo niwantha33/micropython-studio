@@ -95,7 +95,6 @@ The extension contributes the following settings:
   - Hardware debugging support
 - **Expanded Device Support**:
   - ESP8266
-  - Raspberry Pi Pico W
   - BBC micro:bit
 
 ---

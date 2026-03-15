@@ -1,20 +1,24 @@
 /**
- * setupenv.js
- * setup virtual environment and install neccessary files 
+ * setupEnv.js
+ * Virtual environment setup and Python dependency installation
  * @license MIT
- * @version 1.0
- * @author  Niwantha Meepage 
+ * @version 2.0
+ * @author  Niwantha Meepage
  */
 
 const vscode = require('vscode');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
-const os = require('os');
-// user defined functions 
-const  {runCommand} =require('./runCommand');
+const { runCommand } = require('./runCommand');
+const { getMicropythonStudioPath, getVenvPythonPath } = require('./commonFxn');
 
-// Helper: Detect working Python command
+/**
+ * Detect which Python command is available on this system.
+ * Tries 'python3' first (Linux/macOS), then 'python' (Windows).
+ *
+ * @returns {Promise<string>} The working Python command name
+ */
 async function getPythonCommand() {
     return new Promise((resolve) => {
         exec('python3 --version', (py3Error) => {
@@ -22,26 +26,30 @@ async function getPythonCommand() {
                 resolve('python3');
             } else {
                 exec('python --version', (pyError) => {
-                    resolve(pyError ? 'python' : 'python3');
+                    if (!pyError) {
+                        resolve('python');
+                    } else {
+                        // Neither found — default to 'python' and let the
+                        // caller handle the error when it actually fails
+                        resolve('python');
+                    }
                 });
             }
         });
     });
 }
 
-// Helper: Get Python path[execute] in venv
-function getVenvPythonPath(venvPath) {
-    const isWindows = process.platform === 'win32';
-    return path.join(
-        venvPath,
-        isWindows ? 'Scripts/python.exe' : 'bin/python'
-    );
-}
- 
-async function setupVirtualEnv(context, outputChannel) {    
-    const micropythonStudioDir = path.join(os.homedir(), '.micropython-studio');
-    const venvFolder = '.venv';
-    const venvPath = path.join(micropythonStudioDir, venvFolder);
+/**
+ * Set up a Python virtual environment with all MicroPython tools.
+ * Creates ~/.micropython-studio/.venv and installs dependencies.
+ *
+ * @param {vscode.ExtensionContext} context
+ * @param {vscode.OutputChannel} outputChannel
+ * @returns {Promise<string>} Path to the venv Python executable
+ */
+async function setupVirtualEnv(context, outputChannel) {
+    const micropythonStudioDir = getMicropythonStudioPath();
+    const venvPath = path.join(micropythonStudioDir, '.venv');
     const requirementsPath = path.resolve(path.join(context.extensionPath, 'requirements.txt'));
 
     try {
@@ -56,7 +64,8 @@ async function setupVirtualEnv(context, outputChannel) {
         } catch (error) {
             if (error.code !== 'ENOENT') throw error;
         }
-        const pythonExecutable = await getPythonCommand();        
+
+        const pythonExecutable = await getPythonCommand();
         outputChannel.appendLine('Setting up MicroPython virtual environment...');
 
         // 1. Create virtual environment
@@ -64,6 +73,7 @@ async function setupVirtualEnv(context, outputChannel) {
 
         const venvPython = getVenvPythonPath(venvPath);
 
+        // 2. Upgrade pip
         await runCommand(
             outputChannel,
             venvPython,
@@ -83,7 +93,7 @@ async function setupVirtualEnv(context, outputChannel) {
         } catch (error) {
             if (error.code !== 'ENOENT') throw error;
 
-            // Install default packages
+            // Fallback: install default packages
             outputChannel.appendLine('requirements.txt not found. Installing default packages.');
             const packages = [
                 'pyserial', 'adafruit-ampy', 'rshell', 'esptool',
@@ -92,6 +102,7 @@ async function setupVirtualEnv(context, outputChannel) {
             ];
             await runCommand(outputChannel, venvPython, ['-m', 'pip', 'install', ...packages], micropythonStudioDir);
         }
+
         vscode.window.showInformationMessage('Virtual environment setup complete!');
         return venvPython;
     } catch (error) {
@@ -101,5 +112,4 @@ async function setupVirtualEnv(context, outputChannel) {
     }
 }
 
-// Export the async function
 module.exports = { setupVirtualEnv };

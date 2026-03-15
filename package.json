@@ -2,14 +2,19 @@
   "name": "micropython-ide",
   "displayName": "MicroPython IDE",
   "description": "MicroPython IDE for VS Code — write, deploy, and debug MicroPython on real hardware",
-  "version": "0.4.0",
-  "publisher": "Niwantha Meepage",
+  "version": "0.5.0",
+  "publisher": "niwantha33",
   "repository": {
     "type": "git",
     "url": "https://github.com/niwantha33/micropython-studio.git"
   },
   "engines": {
     "vscode": "^1.75.0"
+  },
+  "icon": "resource/micropython_studio_icon_128.png",
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
   },
   "categories": [
     "Programming Languages",
@@ -25,7 +30,7 @@
         {
           "id": "micropython-ide-launch",
           "title": "MicroPython Studio",
-          "icon": "resource/icon.svg"
+          "icon": "$(circuit-board)"
         }
       ]
     },
@@ -34,11 +39,13 @@
         {
           "id": "micropython-ide-launch-view",
           "name": "MicroPython Studio",
-          "icon": "resource/icon.svg"
-        },
+          "icon": "$(circuit-board)"
+        }
+      ],
+      "explorer": [
         {
           "id": "micropython-ide-device-files",
-          "name": "Device Files",
+          "name": "Device Files (MicroPython)",
           "icon": "$(circuit-board)"
         }
       ]

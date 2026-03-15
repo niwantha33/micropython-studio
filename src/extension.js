@@ -193,7 +193,7 @@ function activate(context) {
         })
     );
 
-    // Mount & Run on Device (the main "Run" action)
+    // Run on Host (mpremote mount) or Run on MCU (mpremote run)
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.mountMainFolder', async () => {
             const editor = vscode.window.activeTextEditor;
@@ -209,20 +209,19 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
             const terminal = getMpremoteTerminal();
 
+            // Both modes require a connected device
+            if (!gRemoteDevicePort) {
+                vscode.window.showWarningMessage(
+                    'No device port set. Run "Refresh Device Files" first.'
+                );
+                return;
+            }
+
+            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
             let cmd;
             if (currentTarget === 'Host') {
-                // Run locally using the venv Python — no device needed
-                cmd = `"${venvPython}" "${filePath}"`;
-            } else {
-                // MCU mode — device port is required
-                if (!gRemoteDevicePort) {
-                    vscode.window.showWarningMessage(
-                        'No device port set. Run "Refresh Device Files" first, or switch to Host mode.'
-                    );
-                    return;
-                }
-
-                // Check if file is inside the project folder
+                // Run on Host — mount project folder to device via USB, then run from host FS
+                // (mpremote connect <port> mount <folder> run <file>)
                 if (gDeviceCodeDir && !isFileInProjectFolder(filePath, gDeviceCodeDir)) {
                     const choice = await vscode.window.showWarningMessage(
                         `File "${fileName}" is not in the main project folder.`,
@@ -230,8 +229,6 @@ function activate(context) {
                     );
                     if (choice !== 'Run Anyway') return;
                 }
-
-                const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
                 cmd = [
                     `"${venvPython}"`,
                     `"${scriptPath}"`,
@@ -239,6 +236,16 @@ function activate(context) {
                     `run`,
                     `--port "${gRemoteDevicePort}"`,
                     `--folder "${gDeviceCodeDir}"`,
+                    `--file "${filePath}"`
+                ].join(' ');
+            } else {
+                // Run on MCU — send file directly to device and run it (mpremote run <file>)
+                cmd = [
+                    `"${venvPython}"`,
+                    `"${scriptPath}"`,
+                    `--python "${venvPython}"`,
+                    `run_mcu`,
+                    `--port "${gRemoteDevicePort}"`,
                     `--file "${filePath}"`
                 ].join(' ');
             }
