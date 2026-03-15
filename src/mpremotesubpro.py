@@ -1,8 +1,20 @@
 # mpremotesubpro.py
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _normalize_dest(dest):
+    """Normalize the dest argument to a device path.
+
+    Git Bash on Windows expands a bare '/' to the Git installation directory
+    (e.g. 'C:/Program Files/Git/'). Detect that and reset to device root '/'.
+    """
+    if not dest or re.match(r'^[A-Za-z]:[/\\]', dest):
+        return '/'
+    return dest
 
 def run_mpremote(python_exe, args_list, timeout=60):
     """Run mpremote and stream output in real-time with clean Ctrl+C handling"""
@@ -134,6 +146,7 @@ def cmd_unmount(python_exe, port):
 
 def cmd_upload(python_exe, port, source, dest='/'):
     """Upload a file or folder to the device filesystem."""
+    dest = _normalize_dest(dest)
     source = Path(source).resolve()
 
     if not source.exists():
