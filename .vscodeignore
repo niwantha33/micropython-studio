@@ -1,6 +1,9 @@
+# Claude Code local config
+.claude/**
+
+# Dev tooling
 .vscode/**
 .vscode-test/**
-test/**
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md
@@ -8,3 +11,25 @@ vsc-extension-quickstart.md
 **/*.map
 **/eslint.config.mjs
 **/.vscode-test.*
+
+# Test files
+test/**
+
+# Node modules — NOT needed at runtime (extension only uses built-in Node APIs)
+node_modules/**
+
+# Dev/test Python scripts
+src/serial_reader.py
+src/test_ports.py
+
+# Empty legacy folder
+app/**
+
+# Resource folder — keep only the marketplace icon PNG
+resource/*.jpg
+resource/*.JPG
+resource/*.png
+resource/*.PNG
+resource/*.svg
+resource/*.exe
+!resource/micropython_studio_icon_128.png

@@ -1,21 +1,45 @@
 {
-  "name": "micropython-ide",
-  "displayName": "MicroPython IDE",
-  "description": "MicroPython IDE for VS Code",
-  "version": "0.0.1",
-  "publisher": "Niwantha Meepage",
+  "name": "micropython-studio",
+  "displayName": "MicroPython Studio",
+  "description": "MicroPython Studio for VS Code — write, deploy, and debug MicroPython on real hardware",
+  "version": "0.5.0",
+  "publisher": "niwantha33",
+  "author": {
+    "name": "Niwantha Meepage",
+    "email": "niwantha33@gmail.com"
+  },
+  "bugs": {
+    "url": "https://github.com/niwantha33/micropython-studio/issues",
+    "email": "niwantha33@gmail.com"
+  },
+  "homepage": "https://github.com/niwantha33/micropython-studio#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/niwantha33/micropython-studio.git"
+  },
+  "keywords": [
+    "micropython",
+    "raspberry pi pico",
+    "esp32",
+    "iot",
+    "embedded",
+    "mpremote",
+    "microcontroller"
+  ],
   "engines": {
     "vscode": "^1.75.0"
   },
+  "icon": "resource/micropython_studio_icon_128.png",
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Debuggers"
   ],
   "activationEvents": [
-    "onCommand: micropython-ide.setupEnvironment",
-    "onCommand: micropython-ide.runCode",
-    "onCommand: micropython-ide.refreshMcuFolder",
-    "onCommand: micropython-ide.runUtil",
-    "onCommand: micropython-ide.mountMcuFolder"
+    "onStartupFinished"
   ],
   "main": "./src/extension.js",
   "contributes": {
@@ -23,8 +47,8 @@
       "activitybar": [
         {
           "id": "micropython-ide-launch",
-          "title": "Launch MicroPython IDE",
-          "icon": "resources/icon.svg"
+          "title": "MicroPython Studio",
+          "icon": "$(circuit-board)"
         }
       ]
     },
@@ -32,105 +56,192 @@
       "micropython-ide-launch": [
         {
           "id": "micropython-ide-launch-view",
-          "name": "MicroPython IDE"
+          "name": "MicroPython Studio",
+          "icon": "$(circuit-board)"
+        }
+      ],
+      "explorer": [
+        {
+          "id": "micropython-ide-device-files",
+          "name": "Device Files (MicroPython)",
+          "icon": "$(circuit-board)"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "scm",
-        "contents": "In order to use git features, you can open a folder containing a git repository or clone from a URL.\n[Open Folder](command:vscode.openFolder)\n[Clone Repository](command:git.clone)\nTo learn more about how to use git and source control in VS Code [read our docs](https://aka.ms/vscode-scm).",
-        "when": "config.git.enabled && git.state == initialized && workbenchState == empty"
+        "view": "micropython-ide-launch-view",
+        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
+        "when": "true"
       }
     ],
     "commands": [
       {
-        "command": "micropython-ide.launchIde",
-        "title": "Launch MicroPython IDE",
-        "icon": {
-          "light": "resources/icon.svg",
-          "dark": "resources/icon.svg"
-        }
-      },
-      {
-        "command": "micropython-ide.syncMcuFolder",
-        "title": "MicroPython: Auto Sync MCU"
-      },
-      {
-        "command": "micropython-ide.runCode",
-        "title": "MicroPython: Run Code"
-      },
-      {
-        "command": "micropython-ide.createProject",
-        "title": "MicroPython: Create Project"
-      },
-      {
-        "command": "micropython-ide.installDependencies",
-        "title": "MicroPython: Install Required Dependencies"
-      },
-      {
         "command": "micropython-ide.setupEnvironment",
-        "title": "MicroPython: Setup Development Environment"
+        "title": "MicroPython: Setup Development Environment",
+        "category": "MicroPython Studio"
       },
       {
-        "command": "micropython-ide.detectDevice",
-        "title": "MicroPython: Detect Devices"
+        "command": "micropython-ide.createNewProject",
+        "title": "MicroPython: Create New Project",
+        "category": "MicroPython Studio"
       },
       {
-        "command": "micropython-ide.uploadToMcu",
-        "title": "MicroPython: Upload to MCU"
+        "command": "micropython-ide.openExistingProjectFolder",
+        "title": "MicroPython: Open Existing Project",
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.refreshMcuFolder",
-        "title": "MicroPython: Refresh Project"
+        "title": "MicroPython: Refresh Device Files",
+        "category": "MicroPython Studio"
       },
       {
-        "command": "micropython-ide.mountMcuFolder",
-        "title": "MicroPython: Mount Device"
+        "command": "micropython-ide.openShell",
+        "title": "MicroPython: Open Device Shell",
+        "category": "MicroPython Studio"
       },
       {
-        "command": "micropython-ide.unmountMcuFolder",
-        "title": "MicroPython: Unmount Device"
-      },
-      {
-        "command": "micropython-ide.runOnMcu",
-        "title": "MicroPython: Run Current Script on MCU"
+        "command": "micropython-ide.mountMainFolder",
+        "title": "MicroPython: Mount & Run on Device",
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.stopRun",
-        "title": "MicroPython: Stop Running Script on MCU"
+        "title": "MicroPython: Stop Running Script",
+        "category": "MicroPython Studio"
       },
       {
-        "command": "micropython-ide.runUtil",
-        "title": "MicroPython: Update RTC for current time"
+        "command": "micropython-ide.runThisScriptOnMcuConsole",
+        "title": "MicroPython: Run Script on Device",
+        "category": "MicroPython Studio"
+      },
+      {
+        "command": "micropython-ide.chooseRunTarget",
+        "title": "MicroPython: Choose Run Target",
+        "category": "MicroPython Studio"
+      },
+      {
+        "command": "micropython-ide.startDebug",
+        "title": "MicroPython: Start Debug Session",
+        "category": "MicroPython Studio"
+      },
+      {
+        "command": "micropython-ide.updateDevicePort",
+        "title": "MicroPython: Update Device Port",
+        "category": "MicroPython Studio"
+      },
+      {
+        "command": "micropython-ide.refreshDeviceFiles",
+        "title": "MicroPython: Refresh Device Files Tree",
+        "category": "MicroPython Studio",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "micropython-ide.readDeviceFile",
+        "title": "MicroPython: Read File from Device",
+        "category": "MicroPython Studio"
+      },
+      {
+        "command": "micropython-ide.deleteDeviceFile",
+        "title": "MicroPython: Delete File from Device",
+        "category": "MicroPython Studio",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "micropython-ide.uploadFileToDevice",
+        "title": "MicroPython: Upload Current File to Device",
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "micropython-ide.uploadProjectToDevice",
+        "title": "MicroPython: Upload Project to Device",
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-upload)"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "micropython-ide.setupEnvironment",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.createNewProject",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.openExistingProjectFolder",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.refreshMcuFolder",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.openShell",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.mountMainFolder",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.stopRun",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.startDebug",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.updateDevicePort",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.uploadFileToDevice",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.uploadProjectToDevice",
+          "when": "true"
+        }
+      ],
       "explorer/context": [
         {
           "command": "micropython-ide.refreshMcuFolder",
-          "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "micropython-ide.refreshDeviceFiles",
+          "when": "view == micropython-ide-device-files",
           "group": "navigation"
         },
         {
-          "command": "micropython-ide.mountMcuFolder",
-          "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
-          "group": "navigation"
-        },
-         {
-          "command": "micropython-ide.unmountMcuFolder",
-          "when": "explorerResourceIsFolder && resource =~ /mcu_.*/",
+          "command": "micropython-ide.uploadFileToDevice",
+          "when": "view == micropython-ide-device-files",
           "group": "navigation"
         },
         {
-          "command": "micropython-ide.uploadToMcu",
-          "when": "resourceFilename",
+          "command": "micropython-ide.uploadProjectToDevice",
+          "when": "view == micropython-ide-device-files",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "micropython-ide.deleteDeviceFile",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFile",
+          "group": "inline"
         },
         {
-          "command": "micropython-ide.launchIde",
-          "when": "view == micropython-ide-launch",
-          "group": "navigation"
+          "command": "micropython-ide.deleteDeviceFile",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFile",
+          "group": "context"
         }
       ]
     }
@@ -151,8 +262,5 @@
     "mocha": "^10.2.0",
     "typescript": "^5.3.3"
   },
-  "dependencies": {
-    "axios": "^1.10.0",
-    "ws": "^8.18.3"
-  }
+  "dependencies": {}
 }

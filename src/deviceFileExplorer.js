@@ -1,0 +1,277 @@
+/**
+ * deviceFileExplorer.js
+ * TreeDataProvider that shows files stored on the MicroPython device.
+ * Uses `mpremote fs ls` to list files and directories.
+ * @license MIT
+ * @version 1.0
+ * @author  Niwantha Meepage
+ */
+
+const vscode = require('vscode');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+
+const execAsync = promisify(exec);
+
+/**
+ * Represents a file or directory on the MicroPython device.
+ */
+class DeviceFileItem extends vscode.TreeItem {
+    constructor(name, size, isDirectory, devicePath) {
+        super(
+            name,
+            isDirectory
+                ? vscode.TreeItemCollapsibleState.Collapsed
+                : vscode.TreeItemCollapsibleState.None
+        );
+
+        this.devicePath = devicePath; // full path on device, e.g. '/main.py'
+        this.isDirectory = isDirectory;
+        this.size = size;
+
+        if (isDirectory) {
+            this.iconPath = new vscode.ThemeIcon('folder');
+            this.contextValue = 'deviceFolder';
+            this.tooltip = `📁 ${devicePath}`;
+        } else {
+            this.iconPath = this._getFileIcon(name);
+            this.contextValue = 'deviceFile';
+            this.tooltip = `📄 ${devicePath} (${this._formatSize(size)})`;
+            this.description = this._formatSize(size);
+
+            // Click to preview file contents
+            this.command = {
+                command: 'micropython-ide.readDeviceFile',
+                title: 'Read File',
+                arguments: [devicePath]
+            };
+        }
+    }
+
+    _getFileIcon(name) {
+        if (name.endsWith('.py')) return new vscode.ThemeIcon('file-code');
+        if (name.endsWith('.json')) return new vscode.ThemeIcon('json');
+        if (name.endsWith('.txt') || name.endsWith('.log')) return new vscode.ThemeIcon('file-text');
+        if (name.endsWith('.mpy')) return new vscode.ThemeIcon('file-binary');
+        return new vscode.ThemeIcon('file');
+    }
+
+    _formatSize(bytes) {
+        if (bytes === null || bytes === undefined) return '';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+}
+
+/**
+ * TreeDataProvider that queries the MicroPython device for its filesystem.
+ */
+class DeviceFileExplorerProvider {
+    constructor() {
+        this._onDidChangeTreeData = new vscode.EventEmitter();
+        this.onDidChangeTreeData = this._onDidChangeTreeData.event;
+        this._port = null;
+        this._cache = new Map(); // cache directory listings
+    }
+
+    /**
+     * Update the device port and refresh the tree.
+     * @param {string|null} port
+     */
+    setPort(port) {
+        this._port = port;
+        this._cache.clear();
+        this._onDidChangeTreeData.fire();
+    }
+
+    /**
+     * Force refresh the entire tree.
+     */
+    refresh() {
+        this._cache.clear();
+        this._onDidChangeTreeData.fire();
+    }
+
+    getTreeItem(element) {
+        return element;
+    }
+
+    async getChildren(element) {
+        if (!this._port) {
+            return [
+                new vscode.TreeItem(
+                    '$(plug) No device connected',
+                    vscode.TreeItemCollapsibleState.None
+                )
+            ];
+        }
+
+        const dirPath = element ? element.devicePath : '/';
+        return await this._listDeviceDir(dirPath);
+    }
+
+    /**
+     * List files in a directory on the device using mpremote.
+     * @param {string} dirPath - Directory path on device (e.g. '/' or '/lib')
+     * @returns {Promise<DeviceFileItem[]>}
+     */
+    async _listDeviceDir(dirPath) {
+        // Check cache first
+        if (this._cache.has(dirPath)) {
+            return this._cache.get(dirPath);
+        }
+
+        const venvFolder = getVenvPythonPathFolder();
+        const venvPython = getVenvPythonPath(venvFolder);
+
+        return new Promise((resolve) => {
+            const cmd = `"${venvPython}" -m mpremote connect ${this._port} fs ls ${dirPath}`;
+
+            exec(cmd, { timeout: 15000 }, (error, stdout) => {
+                if (error) {
+                    console.error(`Device ls error: ${error.message}`);
+                    const errItem = new vscode.TreeItem(
+                        '$(warning) Failed to read device',
+                        vscode.TreeItemCollapsibleState.None
+                    );
+                    errItem.tooltip = error.message;
+                    resolve([errItem]);
+                    return;
+                }
+
+                const items = this._parseListOutput(stdout, dirPath);
+                this._cache.set(dirPath, items);
+                resolve(items);
+            });
+        });
+    }
+
+    /**
+     * Parse the output of `mpremote fs ls`.
+     * Format is typically:
+     *   ls :
+     *          136 boot.py
+     *           34 main.py
+     *          0 lib/
+     *
+     * @param {string} output - Raw stdout from mpremote
+     * @param {string} parentPath - Parent directory path
+     * @returns {DeviceFileItem[]}
+     */
+    _parseListOutput(output, parentPath) {
+        const items = [];
+        const lines = output.split('\n');
+
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('ls')) continue;
+
+            // Match: "  136 boot.py" or "  0 lib/"
+            const match = trimmed.match(/^\s*(\d+)\s+(.+)$/);
+            if (match) {
+                const size = parseInt(match[1], 10);
+                let name = match[2].trim();
+                const isDir = name.endsWith('/');
+
+                if (isDir) {
+                    name = name.slice(0, -1); // remove trailing /
+                }
+
+                // Build full device path
+                const fullPath = parentPath === '/'
+                    ? `/${name}`
+                    : `${parentPath}/${name}`;
+
+                items.push(new DeviceFileItem(name, isDir ? null : size, isDir, fullPath));
+            }
+        }
+
+        // Sort: directories first, then files alphabetically
+        items.sort((a, b) => {
+            if (a.isDirectory && !b.isDirectory) return -1;
+            if (!a.isDirectory && b.isDirectory) return 1;
+            return String(a.label).localeCompare(String(b.label));
+        });
+
+        return items;
+    }
+}
+
+/**
+ * Read a file from the device and show it in a VS Code editor.
+ * @param {string} port - Device port
+ * @param {string} deviceFilePath - Path on device (e.g. '/main.py')
+ */
+async function readDeviceFile(port, deviceFilePath) {
+    if (!port) {
+        vscode.window.showWarningMessage('No device connected.');
+        return;
+    }
+
+    const venvFolder = getVenvPythonPathFolder();
+    const venvPython = getVenvPythonPath(venvFolder);
+
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: `Reading ${deviceFilePath} from device...`,
+            cancellable: false
+        },
+        async () => {
+            const cmd = `"${venvPython}" -m mpremote connect ${port} fs cat :${deviceFilePath}`;
+            try {
+                const { stdout } = await execAsync(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 });
+                const fileName = deviceFilePath.split('/').pop();
+                const lang = fileName.endsWith('.py') ? 'python'
+                           : fileName.endsWith('.json') ? 'json' : 'plaintext';
+                const doc = await vscode.workspace.openTextDocument({ content: stdout, language: lang });
+                await vscode.window.showTextDocument(doc, { preview: true });
+            } catch (error) {
+                vscode.window.showErrorMessage(`Failed to read ${deviceFilePath}: ${error.message}`);
+            }
+        }
+    );
+}
+
+/**
+ * Delete a file from the device.
+ * @param {string} port - Device port
+ * @param {string} deviceFilePath - Path on device
+ * @param {DeviceFileExplorerProvider} provider - Provider to refresh after delete
+ */
+async function deleteDeviceFile(port, deviceFilePath, provider) {
+    if (!port) {
+        vscode.window.showWarningMessage('No device connected.');
+        return;
+    }
+
+    const confirm = await vscode.window.showWarningMessage(
+        `Delete "${deviceFilePath}" from device? This cannot be undone.`,
+        { modal: true },
+        'Delete'
+    );
+
+    if (confirm !== 'Delete') return;
+
+    const venvFolder = getVenvPythonPathFolder();
+    const venvPython = getVenvPythonPath(venvFolder);
+    const cmd = `"${venvPython}" -m mpremote connect ${port} fs rm :${deviceFilePath}`;
+
+    exec(cmd, { timeout: 15000 }, (error) => {
+        if (error) {
+            vscode.window.showErrorMessage(`Failed to delete ${deviceFilePath}: ${error.message}`);
+        } else {
+            vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
+            provider.refresh();
+        }
+    });
+}
+
+module.exports = {
+    DeviceFileExplorerProvider,
+    DeviceFileItem,
+    readDeviceFile,
+    deleteDeviceFile
+};
