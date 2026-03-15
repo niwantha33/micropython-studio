@@ -1,6 +1,6 @@
 {
   "name": "micropython-ide",
-  "displayName": "MicroPython IDE",
+  "displayName": "MicroPython Studio",
   "description": "MicroPython IDE for VS Code — write, deploy, and debug MicroPython on real hardware",
   "version": "0.5.0",
   "publisher": "niwantha33",
