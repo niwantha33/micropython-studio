@@ -1,7 +1,7 @@
 {
-  "name": "micropython-ide",
+  "name": "micropython-studio",
   "displayName": "MicroPython Studio",
-  "description": "MicroPython IDE for VS Code — write, deploy, and debug MicroPython on real hardware",
+  "description": "MicroPython Studio for VS Code — write, deploy, and debug MicroPython on real hardware",
   "version": "0.5.0",
   "publisher": "niwantha33",
   "author": {
@@ -12,10 +12,20 @@
     "url": "https://github.com/niwantha33/micropython-studio/issues",
     "email": "niwantha33@gmail.com"
   },
+  "homepage": "https://github.com/niwantha33/micropython-studio#readme",
   "repository": {
     "type": "git",
     "url": "https://github.com/niwantha33/micropython-studio.git"
   },
+  "keywords": [
+    "micropython",
+    "raspberry pi pico",
+    "esp32",
+    "iot",
+    "embedded",
+    "mpremote",
+    "microcontroller"
+  ],
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -69,85 +79,85 @@
       {
         "command": "micropython-ide.setupEnvironment",
         "title": "MicroPython: Setup Development Environment",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.createNewProject",
         "title": "MicroPython: Create New Project",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.openExistingProjectFolder",
         "title": "MicroPython: Open Existing Project",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.refreshMcuFolder",
         "title": "MicroPython: Refresh Device Files",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.openShell",
         "title": "MicroPython: Open Device Shell",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.mountMainFolder",
         "title": "MicroPython: Mount & Run on Device",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.stopRun",
         "title": "MicroPython: Stop Running Script",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.runThisScriptOnMcuConsole",
         "title": "MicroPython: Run Script on Device",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.chooseRunTarget",
         "title": "MicroPython: Choose Run Target",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.startDebug",
         "title": "MicroPython: Start Debug Session",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.updateDevicePort",
         "title": "MicroPython: Update Device Port",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.refreshDeviceFiles",
         "title": "MicroPython: Refresh Device Files Tree",
-        "category": "MicroPython IDE",
+        "category": "MicroPython Studio",
         "icon": "$(refresh)"
       },
       {
         "command": "micropython-ide.readDeviceFile",
         "title": "MicroPython: Read File from Device",
-        "category": "MicroPython IDE"
+        "category": "MicroPython Studio"
       },
       {
         "command": "micropython-ide.deleteDeviceFile",
         "title": "MicroPython: Delete File from Device",
-        "category": "MicroPython IDE",
+        "category": "MicroPython Studio",
         "icon": "$(trash)"
       },
       {
         "command": "micropython-ide.uploadFileToDevice",
         "title": "MicroPython: Upload Current File to Device",
-        "category": "MicroPython IDE",
+        "category": "MicroPython Studio",
         "icon": "$(cloud-upload)"
       },
       {
         "command": "micropython-ide.uploadProjectToDevice",
         "title": "MicroPython: Upload Project to Device",
-        "category": "MicroPython IDE",
+        "category": "MicroPython Studio",
         "icon": "$(cloud-upload)"
       }
     ],

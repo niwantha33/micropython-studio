@@ -124,4 +124,11 @@ The extension contributes the following settings:
 - [Submit Issues](https://github.com/niwantha33/micropython-studio/issues)
 - [MicroPython Community Forum](https://forum.micropython.org/)
 
+## Support & Contact
+
+Have a question, found a bug, or need help getting started?
+
+- **Email:** niwantha33@gmail.com
+- **GitHub Issues:** [github.com/niwantha33/micropython-studio/issues](https://github.com/niwantha33/micropython-studio/issues)
+
 **Enjoy developing with MicroPython!** 🚀
