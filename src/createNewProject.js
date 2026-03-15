@@ -238,6 +238,11 @@ async function createNewProject(context) {
         ].join('\n');
         await fs.writeFile(path.join(config.projectDir, 'device.cfg'), deviceCfgContent, 'utf8');
 
+        // Site-packages path for the venv (platform-aware)
+        const sitePackagesPath = process.platform === 'win32'
+            ? path.join(venvFolder, 'Lib', 'site-packages')
+            : path.join(venvFolder, 'lib', 'python3', 'site-packages');
+
         // Create VS Code settings.json
         const settings = {
             'files.associations': {
@@ -248,14 +253,14 @@ async function createNewProject(context) {
             'micropython-ide.targetMCU': config.selectedMcuTarget,
             'python.languageServer': 'Pylance',
             'python.analysis.typeCheckingMode': 'basic',
-            'python.analysis.typeshedPaths': [
-                process.platform === 'win32'
-                    ? path.join(venvFolder, 'Lib', 'site-packages')
-                    : path.join(venvFolder, 'lib', 'python3', 'site-packages')
-            ],
+            // Point Pylance at site-packages so it can find MicroPython stubs
+            // (micropython-rp2-*, micropython-esp32-stubs, etc.)
+            'python.analysis.extraPaths': [sitePackagesPath],
             'python.defaultInterpreterPath': venvPython,
+            'python.analysis.useLibraryCodeForTypes': true,
             'python.analysis.diagnosticSeverityOverrides': {
-                'reportMissingModuleSource': 'none'
+                'reportMissingModuleSource': 'none',
+                'reportMissingModuleStubs': 'none'
             },
             'files.exclude': {
                 '**/__pycache__': true,
