@@ -33,11 +33,13 @@
       "micropython-ide-launch": [
         {
           "id": "micropython-ide-launch-view",
-          "name": "MicroPython Studio"
+          "name": "MicroPython Studio",
+          "icon": "resource/icon.svg"
         },
         {
           "id": "micropython-ide-device-files",
-          "name": "Device Files"
+          "name": "Device Files",
+          "icon": "$(circuit-board)"
         }
       ]
     },
@@ -235,7 +237,5 @@
     "mocha": "^10.2.0",
     "typescript": "^5.3.3"
   },
-  "dependencies": {
-    "fs-extra": "^11.3.1"
-  }
+  "dependencies": {}
 }
