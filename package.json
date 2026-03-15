@@ -4,6 +4,14 @@
   "description": "MicroPython IDE for VS Code — write, deploy, and debug MicroPython on real hardware",
   "version": "0.5.0",
   "publisher": "niwantha33",
+  "author": {
+    "name": "Niwantha Meepage",
+    "email": "niwantha33@gmail.com"
+  },
+  "bugs": {
+    "url": "https://github.com/niwantha33/micropython-studio/issues",
+    "email": "niwantha33@gmail.com"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/niwantha33/micropython-studio.git"

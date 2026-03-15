@@ -25,9 +25,11 @@ src/test_ports.py
 # Empty legacy folder
 app/**
 
-# Resource folder — keep icon PNG, exclude everything else
+# Resource folder — keep only the marketplace icon PNG
 resource/*.jpg
 resource/*.JPG
+resource/*.png
 resource/*.PNG
-!resource/micropython_studio_icon_128.png
+resource/*.svg
 resource/*.exe
+!resource/micropython_studio_icon_128.png
