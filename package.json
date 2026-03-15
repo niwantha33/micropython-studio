@@ -2,7 +2,7 @@
   "name": "micropython-ide",
   "displayName": "MicroPython IDE",
   "description": "MicroPython IDE for VS Code — write, deploy, and debug MicroPython on real hardware",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "Niwantha Meepage",
   "repository": {
     "type": "git",
