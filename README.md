@@ -1,7 +1,8 @@
 # MicroPython Studio - VS Code Extension
 
-<img src="../micropython-studio/resource/project_logo.png" alt="MicroPython Studio Banner" width="300"/>
+<img src="../micropython-studio/resource/project.png" alt="MicroPython Studio Banner" width="300"/>
 
+<img src="../micropython-studio/resource/wizard.png" alt="MicroPython Studio Banner" width="300"/>
 
 
 A powerful IDE extension for MicroPython development with hardware integration, device management, and seamless workflow tools.
@@ -56,7 +57,7 @@ The extension contributes the following settings:
 
 ## Release Notes
 
-### 1.0.0 (Initial Release)
+### 0.4.0 (Initial Release)
 
 - **Core Features**:
   - Project creation wizard
@@ -71,7 +72,7 @@ The extension contributes the following settings:
   - Raspberry Pi Pico (RP2040)
   - STM32 boards
 
-### 1.0.1
+### 0.5.0
 
 - **Fixed**:
   - COM port access conflicts
@@ -82,20 +83,14 @@ The extension contributes the following settings:
   - Error messaging for connection issues
   - Workspace loading performance
 
-### 1.1.0 (Upcoming)
+### 0.6.0 (Upcoming)
 
 - **New Features**:
-  - Serial monitor with plotter visualization
-  - WiFi configuration manager
-  - OTA (Over-the-Air) update support
+  - Circuitpython
+  - Bytecode conversion 
   - Multiple device support
 - **Enhanced**:
-  - File sync performance
-  - Project templates system
-  - Hardware debugging support
-- **Expanded Device Support**:
-  - ESP8266
-  - BBC micro:bit
+  - File sync performance 
 
 ---
 

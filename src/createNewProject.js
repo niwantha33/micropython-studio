@@ -14,7 +14,9 @@ const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 const {
     languageOption, mcuOptions_MP,
     rpBoards_MP, espBoards_MP, stmBoards_MP,
-    samBoards_MP, nrfBoards_MP, raBoards_MP, mix_MP
+    samBoards_MP, nrfBoards_MP, raBoards_MP, mix_MP,
+    mcuOptions_CP,
+    rpBoards_CP, espBoards_CP, samBoards_CP, nrfBoards_CP
 } = require('./mcuOption');
 
 /**
@@ -29,6 +31,13 @@ const BOARD_MAP = {
     'NRF': nrfBoards_MP,
     'RA': raBoards_MP,
     'Any': mix_MP
+};
+
+const CP_BOARD_MAP = {
+    'RP2': rpBoards_CP,
+    'ESP': espBoards_CP,
+    'SAM': samBoards_CP,
+    'NRF': nrfBoards_CP
 };
 
 /**
@@ -70,20 +79,20 @@ async function selectMcuAndBoard() {
     if (!progLanguage) return;
     configDict.progLanguage = progLanguage;
 
-    if (progLanguage === 'CircuitPython') {
-        vscode.window.showWarningMessage('CircuitPython support is coming soon!');
-        return;
-    }
+    const isCircuitPython = progLanguage === 'CircuitPython';
 
     // 3. MCU family
-    const selectedMcuFamily = await vscode.window.showQuickPick(mcuOptions_MP, {
+    const mcuFamilies = isCircuitPython ? mcuOptions_CP : mcuOptions_MP;
+    const selectedMcuFamily = await vscode.window.showQuickPick(mcuFamilies, {
         placeHolder: 'Select target microcontroller family'
     });
     if (!selectedMcuFamily) return;
     configDict.selectedMcuFamily = selectedMcuFamily;
 
     // 4. Specific board
-    const boardList = BOARD_MAP[selectedMcuFamily] || mix_MP;
+    const boardList = isCircuitPython
+        ? (CP_BOARD_MAP[selectedMcuFamily] || samBoards_CP)
+        : (BOARD_MAP[selectedMcuFamily] || mix_MP);
     const selectedMcuTarget = await vscode.window.showQuickPick(boardList, {
         placeHolder: 'Select target microcontroller'
     });
@@ -171,17 +180,31 @@ async function createNewProject(context) {
         await fs.mkdir(config.deviceCodeDir, { recursive: true });
         await fs.mkdir(config.settingsDir, { recursive: true });
 
+        const isCircuitPython = config.progLanguage === 'CircuitPython';
+
         // Get virtual environment paths
         const venvFolder = getVenvPythonPathFolder();
         const venvPython = getVenvPythonPath(venvFolder);
 
-        // Create main.py template
-        await fs.writeFile(
-            path.join(config.deviceCodeDir, 'main.py'),
-            `# MicroPython Project: ${config.projectName}\n` +
-            `# Target: ${config.selectedMcuTarget}\n\n` +
-            `print("Hello from ${config.projectName}!")\n`
-        );
+        if (isCircuitPython) {
+            // CircuitPython uses code.py as entry point and a lib/ folder for libraries
+            await fs.mkdir(path.join(config.deviceCodeDir, 'lib'), { recursive: true });
+            await fs.writeFile(
+                path.join(config.deviceCodeDir, 'code.py'),
+                `# CircuitPython Project: ${config.projectName}\n` +
+                `# Target: ${config.selectedMcuTarget}\n\n` +
+                `import board\n\n` +
+                `print("Hello from ${config.projectName}!")\n`
+            );
+        } else {
+            // Create main.py template
+            await fs.writeFile(
+                path.join(config.deviceCodeDir, 'main.py'),
+                `# MicroPython Project: ${config.projectName}\n` +
+                `# Target: ${config.selectedMcuTarget}\n\n` +
+                `print("Hello from ${config.projectName}!")\n`
+            );
+        }
 
         // Create .mcu config file
         await fs.writeFile(
@@ -274,11 +297,12 @@ async function createNewProject(context) {
 
         // Create .code-workspace file
         const workspacePath = path.join(config.parentPath, `${config.projectName}.code-workspace`);
+        const studioLabel = isCircuitPython ? 'CircuitPython Studio' : 'MicroPython Studio';
         const workspaceContent = {
             folders: [
                 {
                     path: config.projectName,
-                    name: `📁 ${config.projectName} (MicroPython Studio)`
+                    name: `📁 ${config.projectName} (${studioLabel})`
                 }
             ],
             settings: {
@@ -296,7 +320,7 @@ async function createNewProject(context) {
 
         // Open the workspace
         await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspacePath), true);
-        vscode.window.showInformationMessage(`MicroPython project "${config.projectName}" created successfully!`);
+        vscode.window.showInformationMessage(`${config.progLanguage} project "${config.projectName}" created successfully!`);
 
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to create project: ${error.message}`);
