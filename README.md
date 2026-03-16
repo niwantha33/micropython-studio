@@ -1,7 +1,8 @@
 # MicroPython Studio - VS Code Extension
 
-<img src="../micropython-studio/resource/project_logo.png" alt="MicroPython Studio Banner" width="300"/>
+<img src="resource/project.png" alt="MicroPython Studio Banner" width="300"/>
 
+<img src="resource/wizard.png" alt="MicroPython Studio Banner" width="300"/>
 
 
 A powerful IDE extension for MicroPython development with hardware integration, device management, and seamless workflow tools.
@@ -56,7 +57,7 @@ The extension contributes the following settings:
 
 ## Release Notes
 
-### 1.0.0 (Initial Release)
+### 0.4.0 (Initial Release)
 
 - **Core Features**:
   - Project creation wizard
@@ -71,7 +72,7 @@ The extension contributes the following settings:
   - Raspberry Pi Pico (RP2040)
   - STM32 boards
 
-### 1.0.1
+### 0.5.0
 
 - **Fixed**:
   - COM port access conflicts
@@ -82,20 +83,14 @@ The extension contributes the following settings:
   - Error messaging for connection issues
   - Workspace loading performance
 
-### 1.1.0 (Upcoming)
+### 0.6.0 (Upcoming)
 
 - **New Features**:
-  - Serial monitor with plotter visualization
-  - WiFi configuration manager
-  - OTA (Over-the-Air) update support
+  - Circuitpython (partial support)
+  - Bytecode conversion 
   - Multiple device support
 - **Enhanced**:
-  - File sync performance
-  - Project templates system
-  - Hardware debugging support
-- **Expanded Device Support**:
-  - ESP8266
-  - BBC micro:bit
+  - File sync performance 
 
 ---
 
@@ -105,17 +100,25 @@ The extension contributes the following settings:
 
 1. Install the extension
 2. Connect your MicroPython device via USB
-3. Create a new project using `Ctrl+Shift+P > MicroPython: Detect Device`
-4. Detect your device with `MicroPython: Detect Device`
-5. Start coding and use `MicroPython: Run Code` to execute
+3. Set up the development environment: `Ctrl+Shift+P > MicroPython: Setup Development Environment`
+4. Create a new project: `Ctrl+Shift+P > MicroPython: Create New Project`
+5. Update your device port: `Ctrl+Shift+P > MicroPython: Update Device Port`
+6. Start coding and use `MicroPython: Run Script on Device` to execute
 
 ### Key Commands
 
-- `Micropython: Create Project` - Start new project wizard
-- `Micropython: Detect Device` - Scan for connected devices
-- `Micropython: Run Code` - Execute current script on device
-- `Micropython: Sync Folder` - Sync local folder to device
-- `Micropython: Mount Device` - Enable direct filesystem editing
+- `MicroPython: Setup Development Environment` - Initialize the required Python virtual environment
+- `MicroPython: Create New Project` - Start new project wizard
+- `MicroPython: Open Existing Project` - Open an existing MicroPython project folder
+- `MicroPython: Update Device Port` - Select or update the COM port for your connected device
+- `MicroPython: Run Script on Device` - Execute current script on the device
+- `MicroPython: Stop Running Script` - Stop the currently executing script on the device
+- `MicroPython: Open Device Shell` - Open an interactive REPL shell for the device
+- `MicroPython: Upload Current File to Device` - Upload the currently active file to the device
+- `MicroPython: Upload Project to Device` - Upload your entire project to the device
+- `MicroPython: Mount & Run on Device` - Mount local folder and run on device
+- `MicroPython: Refresh Device Files` - Refresh the device files tree view
+- `MicroPython: Start Debug Session` - Start debugging on the device
 
 ## For More Information
 
@@ -131,4 +134,4 @@ Have a question, found a bug, or need help getting started?
 - **Email:** niwantha33@gmail.com
 - **GitHub Issues:** [github.com/niwantha33/micropython-studio/issues](https://github.com/niwantha33/micropython-studio/issues)
 
-**Enjoy developing with MicroPython!** 🚀
+**Enjoy developing with MicroPython! and CircuitPython!** 🚀

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/My-Projects/test_development/2026_project_test/001/test001/**)",
+      "Bash(node -e \"console.log\\(require\\(''''./src/mcuOption.js''''\\)\\)\")"
+    ],
+    "additionalDirectories": [
+      "c:\\My-Projects\\test_development\\2026_project_test\\001\\test001\\.vscode"
+    ]
+  }
+}

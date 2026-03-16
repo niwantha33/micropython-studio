@@ -12,7 +12,7 @@ const path = require('path');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
-const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile } = require('./deviceFileExplorer');
 
 // ─── Global State ────────────────────────────────────────────────────────────
@@ -394,6 +394,80 @@ function activate(context) {
         })
     );
 
+    // Compile .py to .mpy bytecode using mpy_cross
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.compileToBytecode', async (uri) => {
+            // Accept file from right-click (uri) or from the active editor
+            const filePath = uri ? uri.fsPath : vscode.window.activeTextEditor?.document.fileName;
+            if (!filePath) {
+                vscode.window.showWarningMessage('No Python file selected.');
+                return;
+            }
+            if (!filePath.endsWith('.py')) {
+                vscode.window.showWarningMessage('Only .py files can be compiled to bytecode.');
+                return;
+            }
+
+            const venvFolder = getVenvPythonPathFolder();
+            const venvPython = getVenvPythonPath(venvFolder);
+            const outputFile = filePath.replace(/\.py$/, '.mpy');
+
+            outputChannel.show(true);
+            outputChannel.appendLine(`Compiling: ${path.basename(filePath)} → ${path.basename(outputFile)}`);
+
+            exec(`"${venvPython}" -m mpy_cross "${filePath}"`, (error, stdout, stderr) => {
+                if (error) {
+                    outputChannel.appendLine(`[ERROR] ${stderr || error.message}`);
+                    vscode.window.showErrorMessage(`Compile failed: ${stderr || error.message}`);
+                } else {
+                    if (stdout) outputChannel.appendLine(stdout);
+                    outputChannel.appendLine(`Done: ${outputFile}`);
+                    vscode.window.showInformationMessage(`Compiled → ${path.basename(outputFile)}`);
+                }
+            });
+        })
+    );
+
+    // Generate flowchart from .py file using code2flow
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.generateFlowchart', async (uri) => {
+            const filePath = uri ? uri.fsPath : vscode.window.activeTextEditor?.document.fileName;
+            if (!filePath) {
+                vscode.window.showWarningMessage('No Python file selected.');
+                return;
+            }
+            if (!filePath.endsWith('.py')) {
+                vscode.window.showWarningMessage('Only .py files can be used to generate a flowchart.');
+                return;
+            }
+
+            const venvFolder = getVenvPythonPathFolder();
+            const code2flowExe = getVenvToolPath(venvFolder, 'code2flow');
+            const outputFile = filePath.replace(/\.py$/, '.png');
+
+            outputChannel.show(true);
+            outputChannel.appendLine(`Generating flowchart: ${path.basename(filePath)} → ${path.basename(outputFile)}`);
+
+            exec(`"${code2flowExe}" "${filePath}" --output "${outputFile}"`, (error, stdout, stderr) => {
+                if (error) {
+                    outputChannel.appendLine(`[ERROR] ${stderr || error.message}`);
+                    vscode.window.showErrorMessage(`Flowchart generation failed: ${stderr || error.message}`);
+                } else {
+                    if (stdout) outputChannel.appendLine(stdout);
+                    outputChannel.appendLine(`Done: ${outputFile}`);
+                    vscode.window.showInformationMessage(
+                        `Flowchart saved → ${path.basename(outputFile)}`,
+                        'Open'
+                    ).then(choice => {
+                        if (choice === 'Open') {
+                            vscode.commands.executeCommand('vscode.open', vscode.Uri.file(outputFile));
+                        }
+                    });
+                }
+            });
+        })
+    );
+
     // ── Device File Explorer ─────────────────────────────────────────────
 
     deviceFileExplorer = new DeviceFileExplorerProvider();
@@ -456,6 +530,15 @@ function updateRunTargetButton() {
 
 function createStatusBar(context) {
     // Priority determines ordering: higher = more to the left
+
+    // 0. Extension version label
+    const version = context.extension.packageJSON.version;
+    const versionItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 106);
+    versionItem.text = `$(circuit-board) MPS v${version}`;
+    versionItem.tooltip = `MicroPython Studio v${version} — Click to create new project`;
+    versionItem.command = 'micropython-ide.createNewProject';
+    versionItem.show();
+    context.subscriptions.push(versionItem);
 
     // 1. Device connection indicator
     deviceStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 105);

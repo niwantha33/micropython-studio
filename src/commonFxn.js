@@ -41,6 +41,21 @@ function getVenvPythonPath(venvPath) {
 }
 
 /**
+ * Get the path to a tool executable inside the virtual environment.
+ * @param {string} venvPath - Path to the venv root folder
+ * @param {string} toolName - Tool name without extension (e.g. 'code2flow', 'mpy-cross')
+ * @returns {string} Absolute path to the tool executable
+ */
+function getVenvToolPath(venvPath, toolName) {
+    const isWindows = process.platform === 'win32';
+    return path.join(
+        venvPath,
+        isWindows ? 'Scripts' : 'bin',
+        isWindows ? `${toolName}.exe` : toolName
+    );
+}
+
+/**
  * Read a value from a .cfg (INI-style) config file.
  *
  * @example
@@ -199,6 +214,7 @@ module.exports = {
     getMicropythonStudioPath,
     getVenvPythonPathFolder,
     getVenvPythonPath,
+    getVenvToolPath,
     getConfigValue,
     updateCfgComponent
 };
