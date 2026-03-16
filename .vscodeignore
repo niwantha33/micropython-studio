@@ -25,10 +25,12 @@ src/test_ports.py
 # Empty legacy folder
 app/**
 
-# Resource folder — keep icon SVGs and marketplace icon PNG
+# Resource folder — keep icon and README banner images
 resource/*.jpg
 resource/*.JPG
 resource/*.png
 resource/*.PNG
 resource/*.exe
 !resource/micropython_studio_icon_128.png
+!resource/project.png
+!resource/wizard.png

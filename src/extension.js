@@ -195,14 +195,13 @@ function activate(context) {
 
     // Run on Host (mpremote mount) or Run on MCU (mpremote run)
     context.subscriptions.push(
-        vscode.commands.registerCommand('micropython-ide.mountMainFolder', async () => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor) {
-                vscode.window.showWarningMessage('No file open to run.');
+        vscode.commands.registerCommand('micropython-ide.mountMainFolder', async (uri) => {
+            const filePath = uri ? uri.fsPath : vscode.window.activeTextEditor?.document.fileName;
+            if (!filePath) {
+                vscode.window.showWarningMessage('No file selected to run.');
                 return;
             }
 
-            const filePath = editor.document.fileName;
             const fileName = path.basename(filePath);
 
             const venvFolder = getVenvPythonPathFolder();
@@ -218,10 +217,12 @@ function activate(context) {
             }
 
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const isMpy = filePath.endsWith('.mpy');
             let cmd;
-            if (currentTarget === 'Host') {
+
+            if (!isMpy && currentTarget === 'Host') {
                 // Run on Host — mount project folder to device via USB, then run from host FS
-                // (mpremote connect <port> mount <folder> run <file>)
+                // .mpy bytecode files cannot use mount+run; they always go via run_mcu
                 if (gDeviceCodeDir && !isFileInProjectFolder(filePath, gDeviceCodeDir)) {
                     const choice = await vscode.window.showWarningMessage(
                         `File "${fileName}" is not in the main project folder.`,
@@ -240,6 +241,7 @@ function activate(context) {
                 ].join(' ');
             } else {
                 // Run on MCU — send file directly to device and run it (mpremote run <file>)
+                // Always used for .mpy bytecode files regardless of currentTarget
                 cmd = [
                     `"${venvPython}"`,
                     `"${scriptPath}"`,
@@ -257,8 +259,8 @@ function activate(context) {
 
     // Run This Script on MCU Console (alias for mountMainFolder)
     context.subscriptions.push(
-        vscode.commands.registerCommand('micropython-ide.runThisScriptOnMcuConsole', async () => {
-            await vscode.commands.executeCommand('micropython-ide.mountMainFolder');
+        vscode.commands.registerCommand('micropython-ide.runThisScriptOnMcuConsole', async (uri) => {
+            await vscode.commands.executeCommand('micropython-ide.mountMainFolder', uri);
         })
     );
 
@@ -274,18 +276,16 @@ function activate(context) {
 
     // Upload current file to device root
     context.subscriptions.push(
-        vscode.commands.registerCommand('micropython-ide.uploadFileToDevice', async () => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor) {
-                vscode.window.showWarningMessage('No file open to upload.');
+        vscode.commands.registerCommand('micropython-ide.uploadFileToDevice', async (uri) => {
+            const filePath = uri ? uri.fsPath : vscode.window.activeTextEditor?.document.fileName;
+            if (!filePath) {
+                vscode.window.showWarningMessage('No file selected to upload.');
                 return;
             }
             if (!gRemoteDevicePort) {
                 vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
                 return;
             }
-
-            const filePath = editor.document.fileName;
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
