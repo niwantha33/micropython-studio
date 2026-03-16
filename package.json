@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and debug MicroPython on real hardware",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "publisher": "niwantha33",
   "author": {
     "name": "Niwantha Meepage",
@@ -235,14 +235,24 @@
           "group": "navigation"
         },
         {
+          "command": "micropython-ide.uploadFileToDevice",
+          "when": "resourceExtname == .py || resourceExtname == .mpy",
+          "group": "micropython@1"
+        },
+        {
+          "command": "micropython-ide.runThisScriptOnMcuConsole",
+          "when": "resourceExtname == .py || resourceExtname == .mpy",
+          "group": "micropython@2"
+        },
+        {
           "command": "micropython-ide.compileToBytecode",
           "when": "resourceExtname == .py",
-          "group": "micropython@1"
+          "group": "micropython@3"
         },
         {
           "command": "micropython-ide.generateFlowchart",
           "when": "resourceExtname == .py",
-          "group": "micropython@2"
+          "group": "micropython@4"
         }
       ],
       "view/title": [
