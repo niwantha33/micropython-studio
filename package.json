@@ -159,6 +159,18 @@
         "title": "MicroPython: Upload Project to Device",
         "category": "MicroPython Studio",
         "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "micropython-ide.compileToBytecode",
+        "title": "MicroPython: Compile to Bytecode (.mpy)",
+        "category": "MicroPython Studio",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "micropython-ide.generateFlowchart",
+        "title": "MicroPython: Generate Flowchart (code2flow)",
+        "category": "MicroPython Studio",
+        "icon": "$(type-hierarchy)"
       }
     ],
     "menus": {
@@ -206,6 +218,14 @@
         {
           "command": "micropython-ide.uploadProjectToDevice",
           "when": "true"
+        },
+        {
+          "command": "micropython-ide.compileToBytecode",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.generateFlowchart",
+          "when": "true"
         }
       ],
       "explorer/context": [
@@ -213,6 +233,16 @@
           "command": "micropython-ide.refreshMcuFolder",
           "when": "explorerResourceIsFolder",
           "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.compileToBytecode",
+          "when": "resourceExtname == .py",
+          "group": "micropython@1"
+        },
+        {
+          "command": "micropython-ide.generateFlowchart",
+          "when": "resourceExtname == .py",
+          "group": "micropython@2"
         }
       ],
       "view/title": [

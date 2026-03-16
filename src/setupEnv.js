@@ -57,53 +57,72 @@ async function setupVirtualEnv(context, outputChannel) {
         await fs.mkdir(micropythonStudioDir, { recursive: true });
 
         // Check if venv already exists
+        let venvExists = false;
         try {
             await fs.access(venvPath);
-            vscode.window.showInformationMessage('MicroPython virtual environment already exists.');
-            return getVenvPythonPath(venvPath);
+            venvExists = true;
         } catch (error) {
             if (error.code !== 'ENOENT') throw error;
         }
-
-        const pythonExecutable = await getPythonCommand();
-        outputChannel.appendLine('Setting up MicroPython virtual environment...');
-
-        // 1. Create virtual environment
-        await runCommand(outputChannel, pythonExecutable, ['-m', 'venv', venvPath], micropythonStudioDir);
 
         const venvPython = getVenvPythonPath(venvPath);
 
-        // 2. Upgrade pip
-        await runCommand(
-            outputChannel,
-            venvPython,
-            ['-m', 'pip', 'install', '--upgrade', 'pip'],
-            micropythonStudioDir
-        );
+        if (venvExists) {
+            // Venv already exists — just install/update packages without recreating it
+            outputChannel.appendLine('Virtual environment exists. Installing new packages...');
+            try {
+                await fs.access(requirementsPath);
+                await runCommand(
+                    outputChannel,
+                    venvPython,
+                    ['-m', 'pip', 'install', '-r', requirementsPath],
+                    micropythonStudioDir
+                );
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+                outputChannel.appendLine('requirements.txt not found. Nothing to update.');
+            }
+        } else {
+            const pythonExecutable = await getPythonCommand();
+            outputChannel.appendLine('Setting up MicroPython virtual environment...');
 
-        // 3. Install requirements
-        try {
-            await fs.access(requirementsPath);
+            // 1. Create virtual environment
+            await runCommand(outputChannel, pythonExecutable, ['-m', 'venv', venvPath], micropythonStudioDir);
+
+            // 2. Upgrade pip
             await runCommand(
                 outputChannel,
                 venvPython,
-                ['-m', 'pip', 'install', '-r', requirementsPath],
+                ['-m', 'pip', 'install', '--upgrade', 'pip'],
                 micropythonStudioDir
             );
-        } catch (error) {
-            if (error.code !== 'ENOENT') throw error;
 
-            // Fallback: install default packages
-            outputChannel.appendLine('requirements.txt not found. Installing default packages.');
-            const packages = [
-                'pyserial', 'adafruit-ampy', 'rshell', 'esptool',
-                'mpremote', 'mpflash', 'micropython-stubber',
-                'micropython-rp2-pico_w-stubs', 'code2flow'
-            ];
-            await runCommand(outputChannel, venvPython, ['-m', 'pip', 'install', ...packages], micropythonStudioDir);
+            // 3. Install requirements
+            try {
+                await fs.access(requirementsPath);
+                await runCommand(
+                    outputChannel,
+                    venvPython,
+                    ['-m', 'pip', 'install', '-r', requirementsPath],
+                    micropythonStudioDir
+                );
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+
+                // Fallback: install default packages
+                outputChannel.appendLine('requirements.txt not found. Installing default packages.');
+                const packages = [
+                    'pyserial', 'adafruit-ampy', 'rshell', 'esptool',
+                    'mpremote', 'mpflash', 'micropython-stubber',
+                    'micropython-rp2-pico_w-stubs', 'code2flow'
+                ];
+                await runCommand(outputChannel, venvPython, ['-m', 'pip', 'install', ...packages], micropythonStudioDir);
+            }
         }
 
-        vscode.window.showInformationMessage('Virtual environment setup complete!');
+        vscode.window.showInformationMessage(
+            venvExists ? 'Packages updated successfully!' : 'Virtual environment setup complete!'
+        );
         return venvPython;
     } catch (error) {
         vscode.window.showErrorMessage(`Virtual environment setup failed: ${error.message}`);

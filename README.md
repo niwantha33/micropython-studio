@@ -1,8 +1,8 @@
 # MicroPython Studio - VS Code Extension
 
-<img src="../micropython-studio/resource/project.png" alt="MicroPython Studio Banner" width="300"/>
+<img src="resource/project.png" alt="MicroPython Studio Banner" width="300"/>
 
-<img src="../micropython-studio/resource/wizard.png" alt="MicroPython Studio Banner" width="300"/>
+<img src="resource/wizard.png" alt="MicroPython Studio Banner" width="300"/>
 
 
 A powerful IDE extension for MicroPython development with hardware integration, device management, and seamless workflow tools.
@@ -86,7 +86,7 @@ The extension contributes the following settings:
 ### 0.6.0 (Upcoming)
 
 - **New Features**:
-  - Circuitpython
+  - Circuitpython (partial support)
   - Bytecode conversion 
   - Multiple device support
 - **Enhanced**:
@@ -134,4 +134,4 @@ Have a question, found a bug, or need help getting started?
 - **Email:** niwantha33@gmail.com
 - **GitHub Issues:** [github.com/niwantha33/micropython-studio/issues](https://github.com/niwantha33/micropython-studio/issues)
 
-**Enjoy developing with MicroPython!** 🚀
+**Enjoy developing with MicroPython! and CircuitPython!** 🚀
