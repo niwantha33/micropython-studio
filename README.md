@@ -100,17 +100,25 @@ The extension contributes the following settings:
 
 1. Install the extension
 2. Connect your MicroPython device via USB
-3. Create a new project using `Ctrl+Shift+P > MicroPython: Detect Device`
-4. Detect your device with `MicroPython: Detect Device`
-5. Start coding and use `MicroPython: Run Code` to execute
+3. Set up the development environment: `Ctrl+Shift+P > MicroPython: Setup Development Environment`
+4. Create a new project: `Ctrl+Shift+P > MicroPython: Create New Project`
+5. Update your device port: `Ctrl+Shift+P > MicroPython: Update Device Port`
+6. Start coding and use `MicroPython: Run Script on Device` to execute
 
 ### Key Commands
 
-- `Micropython: Create Project` - Start new project wizard
-- `Micropython: Detect Device` - Scan for connected devices
-- `Micropython: Run Code` - Execute current script on device
-- `Micropython: Sync Folder` - Sync local folder to device
-- `Micropython: Mount Device` - Enable direct filesystem editing
+- `MicroPython: Setup Development Environment` - Initialize the required Python virtual environment
+- `MicroPython: Create New Project` - Start new project wizard
+- `MicroPython: Open Existing Project` - Open an existing MicroPython project folder
+- `MicroPython: Update Device Port` - Select or update the COM port for your connected device
+- `MicroPython: Run Script on Device` - Execute current script on the device
+- `MicroPython: Stop Running Script` - Stop the currently executing script on the device
+- `MicroPython: Open Device Shell` - Open an interactive REPL shell for the device
+- `MicroPython: Upload Current File to Device` - Upload the currently active file to the device
+- `MicroPython: Upload Project to Device` - Upload your entire project to the device
+- `MicroPython: Mount & Run on Device` - Mount local folder and run on device
+- `MicroPython: Refresh Device Files` - Refresh the device files tree view
+- `MicroPython: Start Debug Session` - Start debugging on the device
 
 ## For More Information
 
