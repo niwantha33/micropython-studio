@@ -1,11 +1,11 @@
 # MicroPython Studio - VS Code Extension
 
-<p style="float:left;">
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/project.png" alt="project" width="300">
+<p >
+  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/project.png" alt="project" width="400">
 </p>
 
 <p >
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/wizard.png" alt="wizard" width="300">
+  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/wizard.png" alt="wizard" width="400">
 </p>
 
 ---
