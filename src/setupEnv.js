@@ -113,8 +113,7 @@ async function setupVirtualEnv(context, outputChannel) {
                 outputChannel.appendLine('requirements.txt not found. Installing default packages.');
                 const packages = [
                     'pyserial', 'adafruit-ampy', 'rshell', 'esptool',
-                    'mpremote', 'mpflash', 'micropython-stubber',
-                    'micropython-rp2-pico_w-stubs', 'code2flow'
+                    'mpremote', 'mpflash', 'code2flow'
                 ];
                 await runCommand(outputChannel, venvPython, ['-m', 'pip', 'install', ...packages], micropythonStudioDir);
             }

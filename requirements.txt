@@ -8,8 +8,3 @@ mpremote
 mpflash
 mpy_cross
 code2flow
-micropython-rp2-rpi_pico_w-stubs
-micropython-rp2-rpi_pico2-stubs
-micropython-esp32-stubs==1.25.0.*
-micropython-stm32-stubs
-circuitpython-stubs

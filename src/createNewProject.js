@@ -10,7 +10,8 @@ const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs').promises;
 const { exec } = require('child_process');
-const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const { getVenvPythonPathFolder, getVenvPythonPath, getMicropythonStudioPath } = require('./commonFxn');
+const { runCommand } = require('./runCommand');
 const {
     languageOption, mcuOptions_MP,
     rpBoards_MP, espBoards_MP, stmBoards_MP,
@@ -39,6 +40,18 @@ const CP_BOARD_MAP = {
     'SAM': samBoards_CP,
     'NRF': nrfBoards_CP
 };
+
+/**
+ * Get the appropriate pip stub package name for a given MCU target/family.
+ */
+function getStubPackageForBoard(mcuTarget, mcuFamily) {
+    if (mcuTarget.startsWith('esp32')) return 'micropython-esp32-stubs';
+    if (mcuTarget.startsWith('esp8266')) return 'micropython-esp8266-stubs';
+    if (mcuTarget.startsWith('rp2') || mcuFamily === 'RP2') return 'micropython-rp2-stubs';
+    if (mcuTarget.startsWith('stm32') || mcuFamily === 'STM') return 'micropython-stm32-stubs';
+    if (mcuFamily === 'SAM') return 'micropython-samd-stubs';
+    return 'micropython-stubber'; // Generic fallback
+}
 
 /**
  * Build the full project configuration dictionary from user input and folder selection.
@@ -266,6 +279,21 @@ async function createNewProject(context) {
             ? path.join(venvFolder, 'Lib', 'site-packages')
             : path.join(venvFolder, 'lib', 'python3', 'site-packages');
 
+        // Determine specific stubs for this board
+        const stubPackage = getStubPackageForBoard(config.selectedMcuTarget, config.selectedMcuFamily);
+        const stubsDir = path.join(getMicropythonStudioPath(), 'stubs', stubPackage);
+        
+        // Quietly install the stubs in the background if they don't exist
+        fs.access(stubsDir).catch(async () => {
+            try {
+                // We use a dummy output channel since this is background process
+                const dummyChannel = { appendLine: () => {}, append: () => {} };
+                await runCommand(dummyChannel, venvPython, ['-m', 'pip', 'install', '--target', stubsDir, stubPackage], getMicropythonStudioPath());
+            } catch (err) {
+                console.error(`Failed to install stubs ${stubPackage}:`, err);
+            }
+        });
+
         // Create VS Code settings.json
         const settings = {
             'files.associations': {
@@ -276,9 +304,9 @@ async function createNewProject(context) {
             'micropython-ide.targetMCU': config.selectedMcuTarget,
             'python.languageServer': 'Pylance',
             'python.analysis.typeCheckingMode': 'basic',
-            // Point Pylance at site-packages so it can find MicroPython stubs
-            // (micropython-rp2-*, micropython-esp32-stubs, etc.)
-            'python.analysis.extraPaths': [sitePackagesPath],
+            // Point Pylance at the board-specific stubs folder
+            'python.analysis.extraPaths': [stubsDir, sitePackagesPath],
+            'python.autoComplete.extraPaths': [stubsDir, sitePackagesPath],
             'python.defaultInterpreterPath': venvPython,
             'python.analysis.useLibraryCodeForTypes': true,
             'python.analysis.diagnosticSeverityOverrides': {

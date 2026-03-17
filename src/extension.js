@@ -14,6 +14,10 @@ const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
 const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile } = require('./deviceFileExplorer');
+const { openPackageManager } = require('./packageManager');
+const { flashFirmware, downloadFirmware } = require('./flashFirmware');
+const { updateCfgComponent } = require('./commonFxn');
+const { openDeviceDashboard } = require('./deviceDashboard');
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
@@ -428,6 +432,50 @@ function activate(context) {
         })
     );
 
+    // Install package from micropython-lib via mip
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.installPackage', async () => {
+            const terminal = getMpremoteTerminal();
+            await openPackageManager(context, gRemoteDevicePort, terminal);
+            
+            // Auto refresh the tree view after 5 seconds to show the newly installed /lib folder
+            setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 5000);
+        })
+    );
+
+    // Flash firmware to device via mpflash
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.flashFirmware', async () => {
+            const terminal = getMpremoteTerminal();
+            const result = await flashFirmware(outputChannel, terminal);
+            if (result && gDeviceCodeDir) {
+                // Record the flashed version in device.cfg
+                const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                await updateCfgComponent(cfgPath, 'device', 'last_flashed_version', result.version);
+                await updateCfgComponent(cfgPath, 'device', 'last_flashed_board', result.board);
+                // Update status bar tooltip to show firmware version
+                if (deviceStatusBarItem) {
+                    deviceStatusBarItem.tooltip = `Connected to ${result.port} — firmware ${result.version}`;
+                }
+            }
+        })
+    );
+
+    // Download firmware only (no flash)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.downloadFirmware', async () => {
+            const terminal = getMpremoteTerminal();
+            await downloadFirmware(outputChannel, terminal);
+        })
+    );
+
+    // Open Device Dashboard Webview Panel
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.openDeviceDashboard', async () => {
+            await openDeviceDashboard(context, outputChannel, gRemoteDevicePort);
+        })
+    );
+
     // Generate flowchart from .py file using code2flow
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.generateFlowchart', async (uri) => {
@@ -579,6 +627,22 @@ function createStatusBar(context) {
     stopButton.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     stopButton.show();
     context.subscriptions.push(stopButton);
+
+    // 6. Flash firmware button
+    const flashButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    flashButton.text = '$(flame) Flash';
+    flashButton.tooltip = 'Flash MicroPython firmware to device';
+    flashButton.command = 'micropython-ide.flashFirmware';
+    flashButton.show();
+    context.subscriptions.push(flashButton);
+
+    // 7. Device Dashboard Button
+    const dashboardButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+    dashboardButton.text = '$(dashboard) Dashboard';
+    dashboardButton.tooltip = 'Open the MicroPython Device Dashboard UI';
+    dashboardButton.command = 'micropython-ide.openDeviceDashboard';
+    dashboardButton.show();
+    context.subscriptions.push(dashboardButton);
 }
 
 // ─── Extension Deactivation ──────────────────────────────────────────────────

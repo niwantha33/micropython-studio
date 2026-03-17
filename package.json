@@ -71,7 +71,7 @@
     "viewsWelcome": [
       {
         "view": "micropython-ide-launch-view",
-        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
+        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package (mip)](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
         "when": "true"
       }
     ],
@@ -171,6 +171,30 @@
         "title": "MicroPython: Generate Flowchart (code2flow)",
         "category": "MicroPython Studio",
         "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "micropython-ide.installPackage",
+        "title": "MicroPython: Install Package (mip)",
+        "category": "MicroPython Studio",
+        "icon": "$(package)"
+      },
+      {
+        "command": "micropython-ide.flashFirmware",
+        "title": "MicroPython: Flash Firmware to Device",
+        "category": "MicroPython Studio",
+        "icon": "$(flame)"
+      },
+      {
+        "command": "micropython-ide.downloadFirmware",
+        "title": "MicroPython: Download Firmware",
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "micropython-ide.openDeviceDashboard",
+        "title": "MicroPython: Open Device Dashboard",
+        "category": "MicroPython Studio",
+        "icon": "$(dashboard)"
       }
     ],
     "menus": {
@@ -226,6 +250,22 @@
         {
           "command": "micropython-ide.generateFlowchart",
           "when": "true"
+        },
+        {
+          "command": "micropython-ide.installPackage",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.flashFirmware",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.downloadFirmware",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.openDeviceDashboard",
+          "when": "true"
         }
       ],
       "explorer/context": [
@@ -268,6 +308,11 @@
         },
         {
           "command": "micropython-ide.uploadProjectToDevice",
+          "when": "view == micropython-ide-device-files",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.installPackage",
           "when": "view == micropython-ide-device-files",
           "group": "navigation"
         }
