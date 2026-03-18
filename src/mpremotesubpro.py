@@ -1,12 +1,224 @@
 # mpremotesubpro.py
 import argparse
+import base64
 import re
+import socket
+import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
-def _normalize_dest(dest):
+# ---------------------------------------------------------------------------
+# WebREPL transport
+# mpremote 1.27.0 has no ws: support (transport_ws.py doesn't exist).
+# We implement the full WebREPL protocol here directly.
+# ---------------------------------------------------------------------------
+
+class WebReplConnection:
+    """
+    Direct WebREPL transport over WebSocket.
+    Handles connection, authentication, raw-REPL code execution, and file upload.
+    """
+    CHUNK = 256  # raw-REPL send chunk size
+
+    def __init__(self, host: str, password: str, port: int = 8266) -> None:
+        self.host = host
+        self.password = password
+        self.port = port
+        self.sock: socket.socket  # assigned in connect()
+
+    # ── WebSocket helpers ────────────────────────────────────────────────────
+
+    def _ws_send(self, data: 'str | bytes') -> None:
+        if isinstance(data, str):
+            data = data.encode()
+        n = len(data)
+        header = bytes([0x81, n]) if n < 126 else bytes([0x81, 126, n >> 8, n & 0xff])
+        self.sock.sendall(header + data)
+
+    def _ws_recv(self, timeout: float = 5) -> bytes:
+        self.sock.settimeout(timeout)
+        try:
+            h = self._recv_exact(2)
+            if len(h) < 2:
+                return b''
+            n = h[1] & 0x7f
+            if n == 126:
+                nb = self._recv_exact(2)
+                n = (nb[0] << 8) | nb[1]
+            return self._recv_exact(n)
+        except socket.timeout:
+            return b''
+
+    def _recv_exact(self, n: int) -> bytes:
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                break
+            buf.extend(chunk)
+        return bytes(buf)
+
+    # ── Connect and authenticate ─────────────────────────────────────────────
+
+    def connect(self):
+        self.sock = socket.socket()
+        self.sock.settimeout(10)
+        self.sock.connect((self.host, self.port))
+
+        # WebSocket handshake
+        key = base64.b64encode(b'mps-webrepl-key1').decode()
+        self.sock.sendall((
+            f'GET / HTTP/1.1\r\n'
+            f'Host: {self.host}\r\n'
+            f'Upgrade: websocket\r\n'
+            f'Connection: Upgrade\r\n'
+            f'Sec-WebSocket-Key: {key}\r\n'
+            f'Sec-WebSocket-Version: 13\r\n'
+            f'\r\n'
+        ).encode())
+
+        # Read HTTP headers
+        buf = b''
+        self.sock.settimeout(10)
+        while b'\r\n\r\n' not in buf:
+            buf += self.sock.recv(256)
+
+        # Any leftover bytes after headers are the first WS frame (Password: prompt)
+        rest = buf.split(b'\r\n\r\n', 1)[1]
+        if not rest:
+            rest = self._ws_recv(5)
+
+        if b'Password' not in rest:
+            raise ConnectionError(f'Expected password prompt, got: {rest!r}')
+
+        # Authenticate
+        self._ws_send(self.password + '\r\n')
+        time.sleep(0.3)
+        resp = self._ws_recv(5)
+        if b'connected' not in resp:
+            raise ConnectionError(f'WebREPL authentication failed. Check password. Got: {resp!r}')
+
+    def close(self):
+        try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
+
+    # ── Raw REPL helpers ─────────────────────────────────────────────────────
+
+    def _enter_raw_repl(self) -> None:
+        """Interrupt running code and enter raw REPL mode."""
+        self._ws_send('\r\x03\x03')  # Ctrl+C x2 — stop any running code
+        time.sleep(0.3)
+        self._drain()
+        self._ws_send('\x01')        # Ctrl+A — enter raw REPL
+        time.sleep(0.4)
+        self._drain()                # consume 'raw REPL; CTRL-B to exit\r\n>'
+
+    def _exit_raw_repl(self) -> None:
+        self._ws_send('\x02')        # Ctrl+B — back to friendly REPL
+        time.sleep(0.2)
+        self._drain()
+
+    def _drain(self) -> None:
+        """Consume all pending WebSocket frames (discard)."""
+        while self._ws_recv(0.3):
+            pass
+
+    def exec_code(self, code: 'str | bytes', timeout: float = 30) -> int:
+        """
+        Execute code via raw REPL. Streams stdout to sys.stdout.
+        Raw REPL response format after Ctrl+D:  OK<stdout>\x04<stderr>\x04>
+        Returns 0 on success, 1 if there was stderr output.
+        """
+        code_buf: bytearray = bytearray(code.encode() if isinstance(code, str) else code)
+
+        self._enter_raw_repl()
+
+        # Send code in CHUNK-byte pieces then Ctrl+D to execute
+        offset = 0
+        while offset < len(code_buf):
+            self._ws_send(bytes(code_buf[offset:offset + self.CHUNK]))  # type: ignore[index]
+            offset += self.CHUNK
+            time.sleep(0.02)
+        self._ws_send('\x04')
+
+        # Accumulate response until we see the end marker \x04>
+        buf: bytearray = bytearray()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            chunk = self._ws_recv(2)
+            if chunk:
+                buf.extend(chunk)
+                if b'\x04>' in buf:
+                    break
+
+        self._exit_raw_repl()
+
+        # Parse:  OK<stdout>\x04<stderr>\x04>
+        raw: bytearray = buf
+        if raw.startswith(b'OK'):
+            raw = bytearray(raw[2:])  # type: ignore[index]
+
+        # Split on \x04 — [stdout, stderr, '>']
+        parts = bytes(raw).split(b'\x04')
+        stdout_data = parts[0] if len(parts) > 0 else b''
+        stderr_data = parts[1].strip(b'>').strip() if len(parts) > 1 else b''
+
+        if stdout_data:
+            sys.stdout.buffer.write(stdout_data)
+            sys.stdout.buffer.flush()
+
+        if stderr_data:
+            sys.stderr.write(stderr_data.decode('utf-8', errors='replace'))
+            return 1
+        return 0
+
+    def run_file(self, file_path):
+        """Read a local .py file and execute it on the device via raw REPL."""
+        code = Path(file_path).read_bytes()
+        return self.exec_code(code)
+
+    def upload_file(self, local_path, remote_path):
+        """Upload a file using raw REPL (base64 chunks — works for any file size)."""
+        import binascii
+        data = Path(local_path).read_bytes()
+        hex_data = binascii.hexlify(data).decode()
+
+        # Write in 128-byte hex chunks to avoid raw REPL line length limits
+        chunk_size = 128
+        code_lines = [
+            f"import binascii",
+            f"_f = open({remote_path!r}, 'wb')",
+        ]
+        for i in range(0, len(hex_data), chunk_size):
+            chunk = hex_data[i:i + chunk_size]
+            code_lines.append(f"_f.write(binascii.unhexlify({chunk!r}))")
+        code_lines.append("_f.close()")
+        code_lines.append("print('OK')")
+
+        return self.exec_code('\n'.join(code_lines))
+
+
+def _parse_ws_port(port):
+    """Parse 'ws:IP,password' or 'ws:IP' into (host, password)."""
+    raw = port[3:]  # strip 'ws:'
+    if ',' in raw:
+        host, password = raw.split(',', 1)
+    else:
+        host, password = raw, ''
+    return host.strip(), password.strip()
+
+
+def _is_ws_port(port):
+    return port.startswith('ws:')
+
+
+def _normalize_dest(dest: str) -> str:
     """Normalize the dest argument to a device path.
 
     Git Bash on Windows expands a bare '/' to the Git installation directory
@@ -38,7 +250,17 @@ def run_mpremote(python_exe, args_list, timeout=60):
             try:
                 line = proc.stdout.readline()
                 if line:
-                    print(line, end="")
+                    # Give a clear hint when a ws: connection is blocked
+                    if 'failed to access' in line and args_list and any(a.startswith('ws:') for a in args_list):
+                        print(line, end="")
+                        print(
+                            "💡 WebREPL tip: only one connection is allowed at a time.\n"
+                            "   Close any open browser WebREPL tab (micropython.org/webrepl)\n"
+                            "   and make sure no other mpremote session is running.",
+                            file=sys.stderr
+                        )
+                    else:
+                        print(line, end="")
                 elif proc.poll() is not None:  # EOF and process has exited
                     break
             except KeyboardInterrupt:
@@ -77,6 +299,12 @@ def cmd_run(python_exe, port, file_path, folder=None):
     if not file_path.is_file():
         print(f"❌ File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
+
+    # WebSocket (ws:) ports don't support mount — fall back to run_mcu automatically
+    if port.startswith('ws:'):
+        print(f"📡 Wireless port detected — using direct run (no mount)", file=sys.stderr)
+        cmd_run_mcu(python_exe, port, file_path)
+        return
 
     # If folder not given, use parent of the file
     if folder is None:
@@ -117,7 +345,24 @@ def cmd_run_mcu(python_exe, port, file_path):
     print(f"🔌 Port: {port}", file=sys.stderr)
     print("-" * 50, file=sys.stderr)
 
-    # mpremote connect <port> run <file> — sends and executes file on device directly
+    # WebSocket: mpremote has no ws: transport — use our own WebREPL implementation
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            rc = conn.run_file(file_path)
+        except ConnectionError as e:
+            print(f"❌ WebREPL connection failed: {e}", file=sys.stderr)
+            rc = 1
+        except Exception as e:
+            print(f"❌ WebREPL error: {e}", file=sys.stderr)
+            rc = 1
+        finally:
+            conn.close()
+        sys.exit(rc)
+
+    # Serial: use mpremote as normal
     args = ['connect', port, 'run', str(file_path)]
     result = run_mpremote(python_exe, args, timeout=30)
     sys.exit(result.returncode)
@@ -165,6 +410,22 @@ def cmd_unmount(python_exe, port):
 # Command: upload
 # ----------------------------
 
+def _ws_upload_file(conn: WebReplConnection, source: Path, remote: str) -> int:
+    """Upload a single file via WebREPL raw REPL using hex encoding."""
+    import binascii
+    data = source.read_bytes()
+    hex_data = binascii.hexlify(data).decode()
+    # Build Python code that reconstructs the file on the device
+    chunk_size = 120  # hex chars per line (60 bytes) — safe for raw REPL line buffer
+    lines = ['import binascii', f"_f=open({remote!r},'wb')"]
+    for i in range(0, len(hex_data), chunk_size):
+        chunk = hex_data[i:i+chunk_size]  # type: ignore[index]
+        lines.append(f"_f.write(binascii.unhexlify({chunk!r}))")
+    lines.append('_f.close()')
+    lines.append("print('OK')")
+    return conn.exec_code('\n'.join(lines))
+
+
 def cmd_upload(python_exe, port, source, dest='/'):
     """Upload a file or folder to the device filesystem."""
     dest = _normalize_dest(dest)
@@ -174,37 +435,80 @@ def cmd_upload(python_exe, port, source, dest='/'):
         print(f"❌ Source not found: {source}", file=sys.stderr)
         sys.exit(1)
 
+    # ── WebSocket path — use our WebREPL transport ──────────────────────────
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            if source.is_file():
+                remote = dest.rstrip('/') + '/' + source.name
+                print(f"📤 Uploading {source.name} -> {remote}", file=sys.stderr)
+                rc = _ws_upload_file(conn, source, remote)
+                if rc == 0:
+                    print(f"✅ Upload complete", file=sys.stderr)
+            else:
+                files = sorted(f for f in source.rglob('*') if f.is_file())
+                if not files:
+                    print("⚠️ Source folder is empty.", file=sys.stderr)
+                    sys.exit(0)
+                print(f"📁 Uploading {len(files)} file(s) from {source}", file=sys.stderr)
+                print(f"🔌 Port: {port}", file=sys.stderr)
+                print("-" * 50, file=sys.stderr)
+                # Create remote directories first
+                dirs = sorted(set(
+                    str(f.relative_to(source).parent).replace('\\', '/')
+                    for f in files if f.relative_to(source).parent != Path('.')
+                ))
+                for d in dirs:
+                    conn.exec_code(f"import os\ntry:\n os.mkdir({(dest.rstrip('/')+'/'+d)!r})\nexcept:pass")
+                rc = 0
+                for i, f in enumerate(files, 1):
+                    rel = str(f.relative_to(source)).replace('\\', '/')
+                    remote = dest.rstrip('/') + '/' + rel
+                    print(f"[{i}/{len(files)}] {rel}", file=sys.stderr)
+                    rc = _ws_upload_file(conn, f, remote)
+                    if rc != 0:
+                        print(f"❌ Failed: {rel}", file=sys.stderr)
+                        break
+                if rc == 0:
+                    print(f"\n✅ Upload complete ({len(files)} file(s))", file=sys.stderr)
+        except ConnectionError as e:
+            print(f"❌ WebREPL connection failed: {e}", file=sys.stderr)
+            rc = 1
+        except Exception as e:
+            print(f"❌ WebREPL upload error: {e}", file=sys.stderr)
+            rc = 1
+        finally:
+            conn.close()
+        sys.exit(rc)
+
+    # ── Serial path — use mpremote ───────────────────────────────────────────
     if source.is_file():
-        # Single file upload
         remote = dest.rstrip('/') + '/' + source.name
         print(f"📤 Uploading {source.name} -> {remote}", file=sys.stderr)
         result = run_mpremote(python_exe, ['connect', port, 'fs', 'cp', str(source), f':{remote}'], timeout=30)
         sys.exit(result.returncode)
 
-    # Folder upload — walk and upload file by file
     files = sorted(f for f in source.rglob('*') if f.is_file())
     if not files:
         print("⚠️ Source folder is empty, nothing to upload.", file=sys.stderr)
         sys.exit(0)
 
-    # Collect unique parent directories (deepest first to create parents before children)
     dirs_to_create = sorted(set(
         str(f.relative_to(source).parent).replace('\\', '/')
-        for f in files
-        if f.relative_to(source).parent != Path('.')
+        for f in files if f.relative_to(source).parent != Path('.')
     ))
 
     print(f"📁 Uploading {len(files)} file(s) from {source}", file=sys.stderr)
     print(f"🔌 Port: {port}", file=sys.stderr)
     print("-" * 50, file=sys.stderr)
 
-    # Create remote directories
     for d in dirs_to_create:
         remote_dir = dest.rstrip('/') + '/' + d
         print(f"📁 mkdir {remote_dir}", file=sys.stderr)
         run_mpremote(python_exe, ['connect', port, 'fs', 'mkdir', remote_dir], timeout=10)
 
-    # Upload each file
     for i, f in enumerate(files, 1):
         rel = str(f.relative_to(source)).replace('\\', '/')
         remote = dest.rstrip('/') + '/' + rel
@@ -218,6 +522,7 @@ def cmd_upload(python_exe, port, source, dest='/'):
     sys.exit(0)
 
 
+# ----------------------------
 # Command: exec
 # ----------------------------
 def cmd_exec(python_exe, port, code):
@@ -226,12 +531,21 @@ def cmd_exec(python_exe, port, code):
         sys.exit(1)
 
     print(f"⚡ Executing: {code[:50]}{'...' if len(code) > 50 else ''}", file=sys.stderr)
-    args = [
-        'connect', port,
-        'exec', code
-    ]
-    result = run_mpremote(python_exe, args, timeout=10)
 
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            rc = conn.exec_code(code)
+        except ConnectionError as e:
+            print(f"❌ WebREPL connection failed: {e}", file=sys.stderr)
+            rc = 1
+        finally:
+            conn.close()
+        sys.exit(rc)
+
+    result = run_mpremote(python_exe, ['connect', port, 'exec', code], timeout=10)
     if result.returncode != 0:
         sys.exit(result.returncode)
 

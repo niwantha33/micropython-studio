@@ -222,11 +222,12 @@ function activate(context) {
 
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
             const isMpy = filePath.endsWith('.mpy');
+            const isWireless = gRemoteDevicePort.startsWith('ws:');
             let cmd;
 
-            if (!isMpy && currentTarget === 'Host') {
+            if (!isMpy && !isWireless && currentTarget === 'Host') {
                 // Run on Host — mount project folder to device via USB, then run from host FS
-                // .mpy bytecode files cannot use mount+run; they always go via run_mcu
+                // .mpy files and wireless (ws:) connections cannot use mount+run; always run_mcu
                 if (gDeviceCodeDir && !isFileInProjectFolder(filePath, gDeviceCodeDir)) {
                     const choice = await vscode.window.showWarningMessage(
                         `File "${fileName}" is not in the main project folder.`,
@@ -245,7 +246,7 @@ function activate(context) {
                 ].join(' ');
             } else {
                 // Run on MCU — send file directly to device and run it (mpremote run <file>)
-                // Always used for .mpy bytecode files regardless of currentTarget
+                // Always used for: .mpy bytecode, wireless (ws:) connections, MCU target mode
                 cmd = [
                     `"${venvPython}"`,
                     `"${scriptPath}"`,
@@ -472,7 +473,11 @@ function activate(context) {
     // Open Device Dashboard Webview Panel
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.openDeviceDashboard', async () => {
-            await openDeviceDashboard(context, outputChannel, gRemoteDevicePort);
+            await openDeviceDashboard(context, outputChannel, gRemoteDevicePort, (newPort) => {
+                gRemoteDevicePort = newPort;
+                updateDeviceStatusBar();
+                if (deviceFileExplorer) deviceFileExplorer.setPort(newPort);
+            });
         })
     );
 

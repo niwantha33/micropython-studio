@@ -7,8 +7,9 @@ const { runMpremote } = require('./runCommand');
  * Gathers all metrics from the device and converts them to a structured object.
  * We write a temporary python script locally and run it on the board to avoid
  * complex shell quote escaping issues with `mpremote exec`.
+ * @param {string} devicePort - The COM port or ws: address of the device
  */
-async function gatherDeviceMetrics(outputChannel, workspaceFolder) {
+async function gatherDeviceMetrics(outputChannel, workspaceFolder, devicePort) {
     const metrics = {
         firmware: 'Unknown',
         platform: 'Unknown',
@@ -19,7 +20,9 @@ async function gatherDeviceMetrics(outputChannel, workspaceFolder) {
         ramTotal: 0,
         flashUsed: 0,
         flashFree: 0,
-        flashTotal: 0
+        flashTotal: 0,
+        wifi: { supported: false, connected: false, ip: '', ssid: '' },
+        bootLog: { hasLog: false, status: 'none', ip: '', detail: '' }
     };
 
     // The single python script to fetch all metrics at once
@@ -46,6 +49,38 @@ try:
 except Exception:
     print(0)
     print(0)
+
+# 4. Wi-Fi
+print("---WIFI---")
+try:
+    import network
+    if not hasattr(network, 'WLAN'):
+        print("NO_WIFI")
+    else:
+        sta = network.WLAN(network.STA_IF)
+        sta.active(True)
+        if sta.isconnected():
+            cfg = sta.ifconfig()
+            print("1")
+            print(cfg[0])
+            try:
+                print(sta.config('essid'))
+            except:
+                print("")
+        else:
+            print("0")
+            print("")
+            print("")
+except Exception:
+    print("NO_WIFI")
+
+# 5. Boot log (written by safe boot.py on each reboot)
+print("---BOOTLOG---")
+try:
+    with open('mps_boot.log') as f:
+        print(f.read().strip())
+except:
+    print("NO_LOG")
 `;
 
     // Save script locally to a safe temp spot in the workspace
@@ -53,31 +88,40 @@ except Exception:
     try {
         fs.writeFileSync(tempScriptPath, pythonScript, 'utf8');
 
-        // Run the script on the device
-        const rawOutput = await runMpremote(outputChannel, ['run', `"${tempScriptPath}"`]);
-        
+        // Run the script on the device (use explicit port if provided)
+        const mpArgs = devicePort
+            ? ['connect', devicePort, 'run', `"${tempScriptPath}"`]
+            : ['run', `"${tempScriptPath}"`];
+        const rawOutput = await runMpremote(outputChannel, mpArgs);
+
         // Parse the block output
         const lines = rawOutput.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-        
+
         let currentSection = '';
         let sysLines = [];
         let ramLines = [];
         let flashLines = [];
+        let wifiLines = [];
+        let bootLogLines = [];
 
         for (const line of lines) {
-            if (line === '---SYS---') { currentSection = 'SYS'; continue; }
-            if (line === '---RAM---') { currentSection = 'RAM'; continue; }
-            if (line === '---FLASH---') { currentSection = 'FLASH'; continue; }
+            if (line === '---SYS---')     { currentSection = 'SYS';     continue; }
+            if (line === '---RAM---')     { currentSection = 'RAM';     continue; }
+            if (line === '---FLASH---')   { currentSection = 'FLASH';   continue; }
+            if (line === '---WIFI---')    { currentSection = 'WIFI';    continue; }
+            if (line === '---BOOTLOG---') { currentSection = 'BOOTLOG'; continue; }
 
-            if (currentSection === 'SYS') sysLines.push(line);
-            else if (currentSection === 'RAM') ramLines.push(line);
-            else if (currentSection === 'FLASH') flashLines.push(line);
+            if (currentSection === 'SYS')         sysLines.push(line);
+            else if (currentSection === 'RAM')     ramLines.push(line);
+            else if (currentSection === 'FLASH')   flashLines.push(line);
+            else if (currentSection === 'WIFI')    wifiLines.push(line);
+            else if (currentSection === 'BOOTLOG') bootLogLines.push(line);
         }
 
         // Apply SYS metrics
         if (sysLines.length >= 3) {
             metrics.platform = sysLines[0];
-            metrics.firmware = 'MicroPython'; // Always MicroPython in this extension
+            metrics.firmware = 'MicroPython';
             metrics.version = sysLines[1];
             const freqHz = parseInt(sysLines[2], 10);
             metrics.cpuFreqHtml = freqHz > 0 ? `${(freqHz / 1000000).toFixed(0)} <span class="unit">MHz</span>` : 'Unknown';
@@ -95,6 +139,36 @@ except Exception:
             metrics.flashTotal = parseInt(flashLines[0], 10) || 0;
             metrics.flashFree = parseInt(flashLines[1], 10) || 0;
             metrics.flashUsed = metrics.flashTotal - metrics.flashFree;
+        }
+
+        // Apply Wi-Fi metrics
+        if (wifiLines.length > 0 && wifiLines[0] !== 'NO_WIFI') {
+            metrics.wifi.supported = true;
+            metrics.wifi.connected = wifiLines[0] === '1';
+            metrics.wifi.ip   = wifiLines[1] || '';
+            metrics.wifi.ssid = wifiLines[2] || '';
+        } else if (wifiLines[0] === 'NO_WIFI') {
+            metrics.wifi.supported = false;
+        }
+
+        // Apply Boot Log — written by safe boot.py on each reboot
+        const rawLog = bootLogLines.join('').trim();
+        if (rawLog && rawLog !== 'NO_LOG') {
+            metrics.bootLog.hasLog = true;
+            if (rawLog.startsWith('OK:')) {
+                metrics.bootLog.status = 'ok';
+                metrics.bootLog.ip = rawLog.slice(3);
+                metrics.bootLog.detail = `Remote access active — ${metrics.bootLog.ip}`;
+            } else if (rawLog.startsWith('WIFI_TIMEOUT:')) {
+                metrics.bootLog.status = 'timeout';
+                metrics.bootLog.detail = 'Wi-Fi not available — USB mode only';
+            } else if (rawLog.startsWith('ERROR:')) {
+                metrics.bootLog.status = 'error';
+                metrics.bootLog.detail = `Boot error: ${rawLog.slice(6)}`;
+            } else {
+                metrics.bootLog.status = 'unknown';
+                metrics.bootLog.detail = rawLog;
+            }
         }
 
     } catch (err) {
@@ -617,6 +691,169 @@ function getWebviewContent(metrics) {
             font-size: 12px;
             color: var(--text-muted);
         }
+
+        /* ── Wi-Fi Card ──────────────────────────────── */
+        .wifi-card { grid-column: 1 / -1; }
+
+        .wifi-status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 5px 14px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 18px;
+        }
+        .wifi-status-badge.connected    { background: rgba(16,185,129,0.15); color: #10b981; }
+        .wifi-status-badge.disconnected { background: rgba(148,163,184,0.12); color: #94a3b8; }
+        .wifi-status-badge.no-wifi      { background: rgba(239,68,68,0.12);  color: #ef4444; }
+
+        .wifi-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .wifi-info-row {
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .wifi-info-item { display: flex; flex-direction: column; gap: 3px; }
+        .wifi-info-item .wlabel { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .wifi-info-item .wval   { font-size: 15px; font-weight: 600; font-family: "JetBrains Mono","Fira Code",monospace; }
+
+        .wifi-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.18s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn:hover   { transform: translateY(-1px); }
+        .btn:active  { transform: translateY(1px); }
+        .btn:disabled{ opacity: 0.45; cursor: not-allowed; transform: none; }
+
+        .btn-primary  { background: var(--accent); color: #fff; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-success  { background: #10b981; color: #fff; }
+        .btn-success:hover { background: #059669; }
+        .btn-warning  { background: #f59e0b; color: #000; }
+        .btn-warning:hover { background: #d97706; }
+        .btn-ghost    { background: rgba(255,255,255,0.07); color: var(--text-main); border: 1px solid var(--card-border); }
+        .btn-ghost:hover { background: rgba(255,255,255,0.13); }
+
+        .wifi-scan-area, .wifi-connect-area, .webrepl-area {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid var(--card-border);
+        }
+
+        .network-list {
+            width: 100%;
+            max-width: 420px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            color: var(--text-main);
+            padding: 8px 12px;
+            font-size: 14px;
+            margin-bottom: 12px;
+            cursor: pointer;
+        }
+        .network-list option { background: #1e1e2e; padding: 6px; }
+
+        .wifi-input {
+            background: rgba(0,0,0,0.3);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            color: var(--text-main);
+            padding: 8px 12px;
+            font-size: 14px;
+            width: 100%;
+            max-width: 420px;
+            margin-bottom: 12px;
+            display: block;
+        }
+        .wifi-input:focus { outline: none; border-color: var(--accent); }
+        .wifi-input::placeholder { color: #4a5568; }
+
+        .wifi-input-label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            margin-top: 10px;
+        }
+
+        .spinner {
+            width: 18px; height: 18px;
+            border: 3px solid rgba(255,255,255,0.15);
+            border-top-color: #60a5fa;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* WebREPL Toggle */
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 14px;
+        }
+        .toggle-label { font-size: 14px; font-weight: 600; }
+        .toggle-sub   { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+        .toggle {
+            position: relative;
+            width: 44px; height: 24px;
+            cursor: pointer;
+        }
+        .toggle input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #334155;
+            border-radius: 12px;
+            transition: 0.3s;
+        }
+        .toggle-slider::before {
+            content: '';
+            position: absolute;
+            height: 18px; width: 18px;
+            left: 3px; bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+        .toggle input:checked + .toggle-slider { background: #10b981; }
+        .toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
+
+        .webrepl-ip-box {
+            background: rgba(16,185,129,0.1);
+            border: 1px solid rgba(16,185,129,0.3);
+            border-radius: 10px;
+            padding: 14px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 14px;
+        }
+        .webrepl-ip-label { font-size: 12px; color: #10b981; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .webrepl-ip-val   { font-size: 18px; font-weight: 700; font-family: "JetBrains Mono","Fira Code",monospace; }
     </style>
 </head>
 <body>
@@ -667,31 +904,336 @@ function getWebviewContent(metrics) {
             ${createPinoutHtml(metrics.platform)}
         </div>
 
+        <!-- Wi-Fi Manager Card -->
+        ${metrics.wifi.supported ? `
+        <div class="card wifi-card" id="wifiCard">
+            <h2>📶 Wi-Fi Manager</h2>
+
+            <div id="wifiStatusArea">
+                ${metrics.wifi.connected
+                    ? `<div class="wifi-status-badge connected"><span class="wifi-dot"></span> Connected</div>
+                       <div class="wifi-info-row">
+                           <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">${metrics.wifi.ssid || '—'}</span></div>
+                           <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp">${metrics.wifi.ip}</span></div>
+                       </div>`
+                    : `<div class="wifi-status-badge disconnected"><span class="wifi-dot"></span> Not Connected</div>`
+                }
+                ${metrics.bootLog.hasLog ? `
+                <div class="boot-log-row boot-log-${metrics.bootLog.status}" id="bootLogRow">
+                    <span class="boot-log-icon">${metrics.bootLog.status === 'ok' ? '✅' : metrics.bootLog.status === 'timeout' ? '⚠️' : '❌'}</span>
+                    <span class="boot-log-text">Last boot: ${metrics.bootLog.detail}</span>
+                    <button class="btn btn-danger btn-sm" id="disableRemoteBtn" style="margin-left:auto">🔒 Disable Remote Access</button>
+                </div>` : ''}
+            </div>
+
+            <div class="wifi-actions" id="wifiActionsBar">
+                <button class="btn btn-primary" id="scanBtn">🔍 Scan Networks</button>
+                ${metrics.wifi.connected
+                    ? `<button class="btn btn-ghost" id="disconnectBtn">Disconnect</button>`
+                    : ''}
+            </div>
+
+            <div class="wifi-scan-area" id="wifiScanArea" style="display:none"></div>
+
+            ${metrics.wifi.connected ? `
+            <div class="webrepl-area" id="webReplArea">
+                <div class="toggle-row">
+                    <label class="toggle">
+                        <input type="checkbox" id="webReplToggle">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <div>
+                        <div class="toggle-label">Enable Wireless Access (WebREPL)</div>
+                        <div class="toggle-sub">Lets you upload code &amp; use REPL over Wi-Fi — no USB cable needed</div>
+                    </div>
+                </div>
+                <div id="webReplInfoBox" style="display:none"></div>
+            </div>` : ''}
+            ${metrics.bootLog.status === 'ok' ? `
+            <div class="webrepl-ip-box" id="webReplActiveBox">
+                <div style="flex:1">
+                    <div class="webrepl-ip-label">⭐ Remote Access Active  ·  Password: micro123</div>
+                    <div class="webrepl-ip-val">${metrics.bootLog.ip}</div>
+                    <div style="font-size:11px;color:#94a3b8;margin-top:4px">Auto-starts on every boot</div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                    <button class="btn btn-warning" id="switchWirelessBtnStatic">⚡ Switch to Wireless</button>
+                    <button class="btn btn-danger btn-sm" id="disableRemoteBtnBox">🔒 Disable</button>
+                </div>
+            </div>` : ''}
+        </div>` : `
+        <div class="card wifi-card">
+            <h2>📶 Wi-Fi Manager</h2>
+            <div class="wifi-status-badge no-wifi"><span class="wifi-dot"></span> Wi-Fi Not Supported on this board</div>
+        </div>`}
+
     </div>
 
     <script>
         const vscode = acquireVsCodeApi();
+
+        // ── Refresh button ──────────────────────────────────────────────────
         document.getElementById('refreshBtn').addEventListener('click', () => {
             document.getElementById('refreshBtn').innerHTML = '<div class="loader" style="width:14px;height:14px;border-width:2px;border-top-color:white;margin-right:6px"></div> Refreshing...';
             document.getElementById('refreshBtn').style.opacity = '0.7';
             document.getElementById('refreshBtn').disabled = true;
             vscode.postMessage({ command: 'refreshMetrics' });
         });
+
+        // ── Wi-Fi Scan ──────────────────────────────────────────────────────
+        const scanBtn = document.getElementById('scanBtn');
+        if (scanBtn) {
+            scanBtn.addEventListener('click', () => {
+                const area = document.getElementById('wifiScanArea');
+                area.style.display = 'block';
+                area.innerHTML = '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Scanning for networks…</div>';
+                scanBtn.disabled = true;
+                vscode.postMessage({ command: 'scanWifi' });
+            });
+        }
+
+        // ── Disconnect ──────────────────────────────────────────────────────
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        if (disconnectBtn) {
+            disconnectBtn.addEventListener('click', () => {
+                disconnectBtn.disabled = true;
+                disconnectBtn.textContent = 'Disconnecting…';
+                vscode.postMessage({ command: 'disconnectWifi' });
+            });
+        }
+
+        // ── WebREPL Toggle ──────────────────────────────────────────────────
+        const webReplToggle = document.getElementById('webReplToggle');
+        if (webReplToggle) {
+            webReplToggle.addEventListener('change', () => {
+                if (webReplToggle.checked) {
+                    webReplToggle.disabled = true;
+                    document.getElementById('webReplInfoBox').innerHTML =
+                        '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Starting WebREPL daemon…</div>';
+                    document.getElementById('webReplInfoBox').style.display = 'block';
+                    vscode.postMessage({ command: 'enableWebrepl', ssid: window._mpsLastSsid || '', password: window._mpsLastPassword || '' });
+                } else {
+                    document.getElementById('webReplInfoBox').style.display = 'none';
+                }
+            });
+        }
+
+        // ── Message receiver ────────────────────────────────────────────────
+        window.addEventListener('message', event => {
+            const msg = event.data;
+
+            if (msg.command === 'wifiResults') {
+                const area = document.getElementById('wifiScanArea');
+                if (!msg.networks || msg.networks.length === 0) {
+                    area.innerHTML = '<div style="color:#94a3b8">No networks found. Try again.</div>';
+                    if (scanBtn) scanBtn.disabled = false;
+                    return;
+                }
+                // Build SSID dropdown + password + connect button
+                const opts = msg.networks
+                    .map(n => \`<option value="\${n.ssid}">\${n.ssid}  (\${n.rssi} dBm)</option>\`)
+                    .join('');
+                area.innerHTML = \`
+                    <label class="wifi-input-label">Select Network</label>
+                    <select class="network-list" id="ssidSelect">\${opts}</select>
+                    <label class="wifi-input-label">Password</label>
+                    <input class="wifi-input" type="password" id="wifiPassword" placeholder="Enter Wi-Fi password">
+                    <div class="wifi-actions" style="margin-top:12px">
+                        <button class="btn btn-success" id="connectBtn">Connect</button>
+                        <button class="btn btn-ghost" id="cancelScanBtn">Cancel</button>
+                    </div>
+                    <div id="connectStatus" style="margin-top:10px"></div>
+                \`;
+                if (scanBtn) scanBtn.disabled = false;
+
+                document.getElementById('cancelScanBtn').addEventListener('click', () => {
+                    area.style.display = 'none';
+                });
+
+                document.getElementById('connectBtn').addEventListener('click', () => {
+                    const ssid = document.getElementById('ssidSelect').value;
+                    const password = document.getElementById('wifiPassword').value;
+                    // Store credentials so the WebREPL enable handler can embed them in boot.py
+                    window._mpsLastSsid = ssid;
+                    window._mpsLastPassword = password;
+                    document.getElementById('connectStatus').innerHTML =
+                        '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Connecting… (up to 15 s)</div>';
+                    document.getElementById('connectBtn').disabled = true;
+                    vscode.postMessage({ command: 'connectWifi', ssid, password });
+                });
+            }
+
+            if (msg.command === 'wifiConnectDone') {
+                const status = document.getElementById('connectStatus');
+                if (msg.success) {
+                    status.innerHTML = \`<div style="color:#10b981;font-weight:600">✅ Connected!  IP: \${msg.ip}</div>\`;
+                    // Update the status area at the top of the card
+                    document.getElementById('wifiStatusArea').innerHTML = \`
+                        <div class="wifi-status-badge connected"><span class="wifi-dot"></span> Connected</div>
+                        <div class="wifi-info-row">
+                            <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">\${msg.ssid}</span></div>
+                            <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp">\${msg.ip}</span></div>
+                        </div>\`;
+                    // Show WebREPL toggle if not already there
+                    if (!document.getElementById('webReplArea')) {
+                        const toggle = document.createElement('div');
+                        toggle.className = 'webrepl-area';
+                        toggle.id = 'webReplArea';
+                        toggle.innerHTML = \`
+                            <div class="toggle-row">
+                                <label class="toggle">
+                                    <input type="checkbox" id="webReplToggle">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <div>
+                                    <div class="toggle-label">Enable Wireless Access (WebREPL)</div>
+                                    <div class="toggle-sub">Upload code &amp; use REPL over Wi-Fi — no USB needed</div>
+                                </div>
+                            </div>
+                            <div id="webReplInfoBox" style="display:none"></div>\`;
+                        document.getElementById('wifiCard').appendChild(toggle);
+                        // Re-attach toggle listener
+                        document.getElementById('webReplToggle').addEventListener('change', function() {
+                            if (this.checked) {
+                                this.disabled = true;
+                                document.getElementById('webReplInfoBox').innerHTML =
+                                    '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Starting WebREPL daemon…</div>';
+                                document.getElementById('webReplInfoBox').style.display = 'block';
+                                vscode.postMessage({ command: 'enableWebrepl', ssid: window._mpsLastSsid || '', password: window._mpsLastPassword || '' });
+                            } else {
+                                document.getElementById('webReplInfoBox').style.display = 'none';
+                            }
+                        });
+                    }
+                } else {
+                    status.innerHTML = '<div style="color:#ef4444;font-weight:600">❌ Connection failed. Check password and try again.</div>';
+                    document.getElementById('connectBtn').disabled = false;
+                }
+            }
+
+            if (msg.command === 'webReplEnabled') {
+                const box = document.getElementById('webReplInfoBox');
+                box.innerHTML = \`
+                    <div class="webrepl-ip-box">
+                        <div style="flex:1">
+                            <div class="webrepl-ip-label">⭐ Remote Access Active  ·  Password: micro123</div>
+                            <div class="webrepl-ip-val">\${msg.ip}</div>
+                            <div style="font-size:11px;color:#10b981;margin-top:4px">Auto-starts on every boot (boot.py updated)</div>
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:6px">
+                            <button class="btn btn-warning" id="switchWirelessBtn">⚡ Switch to Wireless</button>
+                            <button class="btn btn-danger btn-sm" id="disableRemoteBtnInBox">🔒 Disable</button>
+                        </div>
+                    </div>\`;
+
+                document.getElementById('switchWirelessBtn').addEventListener('click', () => {
+                    vscode.postMessage({ command: 'switchToWireless', ip: msg.ip });
+                    document.getElementById('switchWirelessBtn').textContent = '✅ Switched';
+                    document.getElementById('switchWirelessBtn').disabled = true;
+                });
+                document.getElementById('disableRemoteBtnInBox').addEventListener('click', () => {
+                    vscode.postMessage({ command: 'disableRemoteAccess' });
+                });
+            }
+
+            // Toggle unchecked if user cancelled the warning modal
+            if (msg.command === 'webReplCancelled') {
+                const t = document.getElementById('webReplToggle');
+                if (t) { t.checked = false; t.disabled = false; }
+                const box = document.getElementById('webReplInfoBox');
+                if (box) box.style.display = 'none';
+            }
+
+            // Refresh the card after disabling remote access
+            if (msg.command === 'remoteAccessDisabled') {
+                const bootLogRow = document.getElementById('bootLogRow');
+                if (bootLogRow) bootLogRow.remove();
+                const activeBox = document.getElementById('webReplActiveBox');
+                if (activeBox) activeBox.remove();
+                const box = document.getElementById('webReplInfoBox');
+                if (box) { box.innerHTML = ''; box.style.display = 'none'; }
+                const t = document.getElementById('webReplToggle');
+                if (t) { t.checked = false; t.disabled = false; }
+            }
+
+            if (msg.command === 'wifiConnectError') {
+                const status = document.getElementById('connectStatus');
+                if (status) status.innerHTML = \`<div style="color:#ef4444">\${msg.message}</div>\`;
+            }
+        });
+
+        // ── Static disable buttons (from boot log row / active box in initial HTML) ──
+        const disableRemoteBtn = document.getElementById('disableRemoteBtn');
+        if (disableRemoteBtn) {
+            disableRemoteBtn.addEventListener('click', () => {
+                vscode.postMessage({ command: 'disableRemoteAccess' });
+            });
+        }
+        const disableRemoteBtnBox = document.getElementById('disableRemoteBtnBox');
+        if (disableRemoteBtnBox) {
+            disableRemoteBtnBox.addEventListener('click', () => {
+                vscode.postMessage({ command: 'disableRemoteAccess' });
+            });
+        }
+        const switchWirelessBtnStatic = document.getElementById('switchWirelessBtnStatic');
+        if (switchWirelessBtnStatic) {
+            switchWirelessBtnStatic.addEventListener('click', () => {
+                const ip = '${metrics.bootLog.ip}';
+                vscode.postMessage({ command: 'switchToWireless', ip });
+                switchWirelessBtnStatic.textContent = '✅ Switched';
+                switchWirelessBtnStatic.disabled = true;
+            });
+        }
     </script>
 </body>
 </html>`;
 }
 
 /**
- * Open the Webview Panel
+ * Safely escape a string for embedding inside a Python single-quoted string literal.
  */
-async function openDeviceDashboard(context, outputChannel, currentDevicePort) {
+function escapePy(s) {
+    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+/**
+ * Run a Python script string on the device and return stdout.
+ * Writes a temp file, runs it via mpremote, then deletes the temp file.
+ * @param {string} scriptContent  - Python source code
+ * @param {string} tempName       - Temp filename (no spaces, no path separators)
+ * @param {string} workspaceRoot  - Local folder to write the temp file into
+ * @param {string} devicePort     - COM port or ws: address
+ * @param {vscode.OutputChannel} outputChannel
+ */
+async function runDeviceScript(scriptContent, tempName, workspaceRoot, devicePort, outputChannel) {
+    const tempPath = path.join(workspaceRoot, tempName);
+    try {
+        fs.writeFileSync(tempPath, scriptContent, 'utf8');
+        const args = devicePort
+            ? ['connect', devicePort, 'run', `"${tempPath}"`]
+            : ['run', `"${tempPath}"`];
+        return await runMpremote(outputChannel, args);
+    } finally {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    }
+}
+
+/**
+ * Open the Device Dashboard Webview Panel.
+ * @param {vscode.ExtensionContext} context
+ * @param {vscode.OutputChannel} outputChannel
+ * @param {string} currentDevicePort  - COM port or ws: address
+ * @param {function} onPortUpdate     - Optional callback(newPort) when user switches to wireless
+ */
+async function openDeviceDashboard(context, outputChannel, currentDevicePort, onPortUpdate) {
     if (!currentDevicePort) {
-        vscode.window.showWarningMessage('No device connected. Please connect a device and run "Refresh Device Files" first.');
+        vscode.window.showWarningMessage('No device connected. Please run "Refresh Device Files" first.');
         return;
     }
 
-    // Create the Webview Panel
+    // Track active port (may change to ws: during session)
+    let activePort = currentDevicePort;
+
     const panel = vscode.window.createWebviewPanel(
         'deviceDashboard',
         `Device: ${currentDevicePort}`,
@@ -707,44 +1249,261 @@ async function openDeviceDashboard(context, outputChannel, currentDevicePort) {
     }
     const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
-    // Initial Loading State
-    panel.webview.html = `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <style>
-                body { background-color: #1a1a24; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; gap: 20px;}
-                .loader { border: 4px solid rgba(255,255,255,0.1); border-top-color: #3b82f6; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
-                @keyframes spin { to { transform: rotate(360deg); } }
-            </style>
-        </head>
-        <body>
-            <div class="loader"></div>
-            <div>Fetching live telemetry from ${currentDevicePort}...</div>
-        </body>
-        </html>
-    `;
+    // Loading screen
+    panel.webview.html = `<!DOCTYPE html><html><head><style>
+        body{background:#1a1a24;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:20px}
+        .loader{border:4px solid rgba(255,255,255,0.1);border-top-color:#3b82f6;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite}
+        @keyframes spin{to{transform:rotate(360deg)}}
+    </style></head><body><div class="loader"></div><div>Fetching telemetry from ${currentDevicePort}…</div></body></html>`;
 
-    // Function to fetch and update html
     const updateDashboard = async () => {
         try {
-            const metrics = await gatherDeviceMetrics(outputChannel, workspaceRoot);
+            const metrics = await gatherDeviceMetrics(outputChannel, workspaceRoot, activePort);
             panel.webview.html = getWebviewContent(metrics);
         } catch (err) {
-            panel.webview.html = `<body><h2>Error gathering telemetry</h2><p>${err.message}</p></body>`;
+            panel.webview.html = `<body style="background:#1a1a24;color:#ef4444;padding:32px"><h2>Error</h2><p>${err.message}</p></body>`;
         }
     };
 
-    // Listen for refresh messages
-    panel.webview.onDidReceiveMessage(
-        message => {
-            if (message.command === 'refreshMetrics') {
-                updateDashboard();
+    // ── Message handler ───────────────────────────────────────────────────────
+    panel.webview.onDidReceiveMessage(async message => {
+
+        if (message.command === 'refreshMetrics') {
+            updateDashboard();
+            return;
+        }
+
+        // ── Wi-Fi Scan ──────────────────────────────────────────────────────
+        if (message.command === 'scanWifi') {
+            const script = `import network
+sta = network.WLAN(network.STA_IF)
+sta.active(True)
+try:
+    nets = sta.scan()
+    for n in nets:
+        try:
+            ssid = n[0].decode('utf-8','ignore').strip()
+            rssi = n[3]
+            if ssid:
+                print(ssid + '|' + str(rssi))
+        except:
+            pass
+except Exception as e:
+    print('ERROR|' + str(e))
+`;
+            try {
+                const raw = await runDeviceScript(script, '.wifi_scan.py', workspaceRoot, activePort, outputChannel);
+                const networks = raw.split('\n')
+                    .map(l => l.trim()).filter(l => l && !l.startsWith('ERROR'))
+                    .map(l => { const [ssid, rssi] = l.split('|'); return { ssid: ssid || l, rssi: parseInt(rssi) || 0 }; })
+                    .sort((a, b) => b.rssi - a.rssi); // strongest first
+                panel.webview.postMessage({ command: 'wifiResults', networks });
+            } catch (err) {
+                panel.webview.postMessage({ command: 'wifiConnectError', message: `Scan failed: ${err.message}` });
             }
-        },
-        undefined,
-        context.subscriptions
-    );
+            return;
+        }
+
+        // ── Wi-Fi Connect ───────────────────────────────────────────────────
+        if (message.command === 'connectWifi') {
+            const ssid = escapePy(message.ssid);
+            const pwd  = escapePy(message.password);
+            const script = `import network, time
+sta = network.WLAN(network.STA_IF)
+sta.active(True)
+if sta.isconnected():
+    sta.disconnect()
+    time.sleep(1)
+sta.connect('${ssid}', '${pwd}')
+for i in range(15):
+    if sta.isconnected():
+        cfg = sta.ifconfig()
+        print('OK|' + cfg[0])
+        break
+    time.sleep(1)
+else:
+    print('FAIL|')
+`;
+            try {
+                const raw = await runDeviceScript(script, '.wifi_connect.py', workspaceRoot, activePort, outputChannel);
+                const line = raw.split('\n').find(l => l.startsWith('OK|') || l.startsWith('FAIL|')) || 'FAIL|';
+                const [status, ip] = line.split('|');
+                panel.webview.postMessage({
+                    command: 'wifiConnectDone',
+                    success: status === 'OK',
+                    ip: ip || '',
+                    ssid: message.ssid
+                });
+            } catch (err) {
+                panel.webview.postMessage({ command: 'wifiConnectDone', success: false, ip: '', ssid: message.ssid });
+            }
+            return;
+        }
+
+        // ── Wi-Fi Disconnect ────────────────────────────────────────────────
+        if (message.command === 'disconnectWifi') {
+            const script = `import network\nsta = network.WLAN(network.STA_IF)\nsta.disconnect()\nprint('OK')\n`;
+            try {
+                await runDeviceScript(script, '.wifi_disconnect.py', workspaceRoot, activePort, outputChannel);
+            } catch (_) {}
+            updateDashboard();
+            return;
+        }
+
+        // ── Enable WebREPL ──────────────────────────────────────────────────
+        if (message.command === 'enableWebrepl') {
+            let ssid = message.ssid || '';
+            let password = message.password || '';
+
+            // If credentials weren't sent from webview (board was already connected
+            // when dashboard opened), ask the user now
+            if (!ssid) {
+                ssid = await vscode.window.showInputBox({
+                    prompt: 'Enter your Wi-Fi network name (SSID) for auto-connect on boot',
+                    placeHolder: 'e.g. MyHomeNetwork'
+                });
+                if (!ssid) { panel.webview.postMessage({ command: 'webReplCancelled' }); return; }
+                password = await vscode.window.showInputBox({
+                    prompt: `Enter password for "${ssid}"`,
+                    password: true,
+                    placeHolder: 'Wi-Fi password'
+                }) || '';
+            }
+
+            // Warning modal — user must explicitly confirm before boot.py is touched
+            const confirmed = await vscode.window.showWarningMessage(
+                `This will write boot.py on your device.\n\nOn every boot, the board will try to connect to "${ssid}" and start WebREPL.\n\nIf Wi-Fi is unavailable the board still starts normally — USB serial is never affected.\n\nTo undo at any time: Dashboard → Disable Remote Access`,
+                { modal: true },
+                'I understand — Enable Remote Access'
+            );
+            if (!confirmed) { panel.webview.postMessage({ command: 'webReplCancelled' }); return; }
+
+            // Escape single quotes for embedding in Python string literals
+            const safeSsid     = ssid.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            const safePassword = password.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+            // The safe boot.py template:
+            //  • time.sleep(2) first — USB CDC initialises before any risky code runs
+            //  • Full try/except — any crash is caught, USB serial stays alive
+            //  • Writes mps_boot.log — Dashboard reads this to show last-boot status
+            const bootPyContent = [
+                '# MicroPython Studio - Remote Access Boot',
+                '# To disable: Dashboard > Disable Remote Access',
+                'import time',
+                'time.sleep(2)  # USB CDC must be up before any network code runs',
+                '',
+                'def _log(msg):',
+                '    try:',
+                '        with open(\'mps_boot.log\', \'w\') as f:',
+                '            f.write(msg)',
+                '    except:',
+                '        pass',
+                '    print(\'[MPS]\', msg)',
+                '',
+                'try:',
+                '    import network',
+                '    sta = network.WLAN(network.STA_IF)',
+                '    sta.active(True)',
+                `    sta.connect('${safeSsid}', '${safePassword}')`,
+                '    for _ in range(15):',
+                '        if sta.isconnected():',
+                '            break',
+                '        time.sleep(1)',
+                '    if sta.isconnected():',
+                '        ip = sta.ifconfig()[0]',
+                '        import webrepl',
+                '        webrepl.start()',
+                '        _log(\'OK:\' + ip)',
+                '    else:',
+                '        _log(\'WIFI_TIMEOUT:not available\')',
+                'except Exception as e:',
+                '    _log(\'ERROR:\' + str(e))',
+            ].join('\\n');
+
+            const script = `import network, sys
+sta = network.WLAN(network.STA_IF)
+ip = sta.ifconfig()[0] if sta.isconnected() else ''
+try:
+    # 1. Write webrepl password config
+    with open('webrepl_cfg.py', 'w') as f:
+        f.write("PASS = 'micro123'\\n")
+    # 2. Write safe boot.py with USB-first delay and crash protection
+    with open('boot.py', 'w') as f:
+        f.write("""${bootPyContent}""")
+    # 3. Start WebREPL for this session (evict stale cached modules first)
+    for mod in ('webrepl_cfg', 'webrepl'):
+        if mod in sys.modules:
+            del sys.modules[mod]
+    import webrepl
+    webrepl.start()
+    print('OK|' + ip)
+except Exception as e:
+    print('FAIL|' + str(e))
+`;
+            try {
+                const raw = await runDeviceScript(script, '.webrepl_setup.py', workspaceRoot, activePort, outputChannel);
+                const line = raw.split('\n').find(l => l.startsWith('OK|') || l.startsWith('FAIL|')) || 'FAIL|';
+                const [status, ipVal] = line.split('|');
+                if (status === 'OK') {
+                    panel.webview.postMessage({ command: 'webReplEnabled', ip: ipVal });
+                } else {
+                    panel.webview.postMessage({ command: 'wifiConnectError', message: `WebREPL failed: ${ipVal}` });
+                }
+            } catch (err) {
+                panel.webview.postMessage({ command: 'wifiConnectError', message: `WebREPL error: ${err.message}` });
+            }
+            return;
+        }
+
+        // ── Disable Remote Access — writes a clean boot.py, removes config files ──
+        if (message.command === 'disableRemoteAccess') {
+            const confirmed = await vscode.window.showWarningMessage(
+                'This will overwrite boot.py on your device and disable automatic Wi-Fi / WebREPL on boot.',
+                { modal: true },
+                'Disable Remote Access'
+            );
+            if (!confirmed) return;
+
+            const script = `import os
+try:
+    with open('boot.py', 'w') as f:
+        f.write('# boot.py\\n# Remote access disabled by MicroPython Studio\\n')
+    for f in ('webrepl_cfg.py', 'mps_boot.log'):
+        try:
+            os.remove(f)
+        except:
+            pass
+    print('OK')
+except Exception as e:
+    print('FAIL|' + str(e))
+`;
+            try {
+                const raw = await runDeviceScript(script, '.webrepl_disable.py', workspaceRoot, activePort, outputChannel);
+                if (raw.includes('OK')) {
+                    vscode.window.showInformationMessage('Remote access disabled. The board will no longer auto-connect to Wi-Fi on boot.');
+                    panel.webview.postMessage({ command: 'remoteAccessDisabled' });
+                }
+            } catch (err) {
+                vscode.window.showErrorMessage(`Failed to disable remote access: ${err.message}`);
+            }
+            return;
+        }
+
+        // ── Switch to Wireless ──────────────────────────────────────────────
+        if (message.command === 'switchToWireless') {
+            const wsPort = `ws:${message.ip},micro123`;
+            activePort = wsPort;
+            panel.title = `Device: ${wsPort}`;
+            if (typeof onPortUpdate === 'function') {
+                onPortUpdate(wsPort);
+            }
+            vscode.window.showInformationMessage(
+                `Switched to wireless: ${wsPort}. You can now unplug USB.`
+            );
+            return;
+        }
+
+    }, undefined, context.subscriptions);
 
     // Initial fetch
     updateDashboard();
