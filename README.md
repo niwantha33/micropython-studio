@@ -136,15 +136,15 @@ The extension contributes the following settings:
 ### 0.6.x (Upcoming)
 
 - **New Features**:
-  - Circuitpython (partial support)
-  - Bytecode conversion 
-  - Multiple device support
-  - WebREPL terminal
-  - File upload and download
-  - Device file explorer
-  - Dashboard
-  - Library Install
-  - Pinout view
+  - Circuitpython -  (partial support)
+  - Bytecode conversion - Done
+  - Multiple device support - Done
+  - WebREPL terminal - (partial support)
+  - File upload and download - Done
+  - Device file explorer - Done
+  - Dashboard - Done
+  - Library Install - Done
+  - Pinout view - Done
   
 - **Enhanced**:
   - File sync performance 
@@ -180,6 +180,22 @@ The extension contributes the following settings:
 | `MicroPython: Mount & Run on Device` | Mount local folder and run directly on device |
 | `MicroPython: Refresh Device Files` | Refresh the device files tree view |
 | `MicroPython: Start Debug Session` | Start a debug session on the device |
+
+## Acknowledgements
+
+MicroPython Studio is open source (MIT License) and builds on the following open source projects:
+
+| Library | Author | License | Role |
+|---------|--------|---------|------|
+| [mpremote](https://github.com/micropython/micropython/tree/master/tools/mpremote) | MicroPython project | MIT | Device communication, file transfer, REPL |
+| [websocket-client](https://github.com/websocket-client/websocket-client) | websocket-client contributors | Apache 2.0 | WebREPL Wi-Fi connection |
+| [term.js](https://github.com/chjj/term.js) | Christopher Jeffrey | MIT | Terminal emulator in WebREPL panel |
+| [FileSaver.js](https://github.com/eligrey/FileSaver.js) | Eli Grey | MIT | File download in WebREPL panel |
+| [MicroPython WebREPL](https://github.com/micropython/webrepl) | MicroPython project | MIT | WebREPL client (modified for VS Code integration) |
+
+All bundled files retain their original license headers.
+
+---
 
 ## For More Information
 
