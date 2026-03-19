@@ -7,7 +7,7 @@
  */
 
 const vscode = require('vscode');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const path = require('path');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
@@ -66,6 +66,29 @@ async function _buildRunPortOptions() {
  * Get or create the MicroPython terminal.
  * Reuses existing terminal if it's still alive.
  */
+/**
+ * Run a Python subprocess (no shell) and show output in an OutputChannel.
+ * Avoids Git Bash / MSYS2 shell quoting issues entirely.
+ * @param {string} exe - Absolute path to python.exe
+ * @param {string[]} args - Arguments (no quoting needed)
+ * @param {((code:number|null)=>void)} [onComplete] - Called when process exits
+ */
+function runPythonProcess(exe, args, onComplete) {
+    const channel = vscode.window.createOutputChannel('MicroPython Studio');
+    channel.show(true);
+    channel.appendLine('─'.repeat(50));
+
+    const proc = spawn(exe, args);
+    proc.stdout.on('data', d => channel.append(d.toString()));
+    proc.stderr.on('data', d => channel.append(d.toString()));
+    proc.on('close', code => {
+        if (onComplete) onComplete(code);
+    });
+    proc.on('error', err => {
+        channel.appendLine(`❌ Failed to start process: ${err.message}`);
+    });
+}
+
 function getMpremoteTerminal() {
     if (!gMpremoteTerminal || gMpremoteTerminal.exitStatus) {
         gMpremoteTerminal = vscode.window.createTerminal({
@@ -328,22 +351,11 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
 
-            const cmd = [
-                `"${venvPython}"`,
-                `"${scriptPath}"`,
-                `--python "${venvPython}"`,
-                `upload`,
-                `--port "${gRemoteDevicePort}"`,
-                `--source "${filePath}"`,
-                `--dest ""`
-            ].join(' ');
-
-            const terminal = getMpremoteTerminal();
-            terminal.show();
-            terminal.sendText(cmd);
-
-            // Refresh device file tree after a short delay
-            setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 4000);
+            runPythonProcess(venvPython, [
+                scriptPath, '--python', venvPython,
+                'upload', '--port', gRemoteDevicePort,
+                '--source', filePath, '--dest', ''
+            ], () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
         })
     );
 
@@ -369,21 +381,11 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
 
-            const cmd = [
-                `"${venvPython}"`,
-                `"${scriptPath}"`,
-                `--python "${venvPython}"`,
-                `upload`,
-                `--port "${gRemoteDevicePort}"`,
-                `--source "${folderPath}"`,
-                `--dest "${dest}"`
-            ].join(' ');
-
-            const terminal = getMpremoteTerminal();
-            terminal.show();
-            terminal.sendText(cmd);
-
-            setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 6000);
+            runPythonProcess(venvPython, [
+                scriptPath, '--python', venvPython,
+                'upload', '--port', gRemoteDevicePort,
+                '--source', folderPath, '--dest', dest
+            ], () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
         })
     );
 
@@ -403,22 +405,11 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
 
-            const cmd = [
-                `"${venvPython}"`,
-                `"${scriptPath}"`,
-                `--python "${venvPython}"`,
-                `upload`,
-                `--port "${gRemoteDevicePort}"`,
-                `--source "${gDeviceCodeDir}"`,
-                `--dest ""`
-            ].join(' ');
-
-            const terminal = getMpremoteTerminal();
-            terminal.show();
-            terminal.sendText(cmd);
-
-            // Refresh device file tree after upload finishes
-            setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 8000);
+            runPythonProcess(venvPython, [
+                scriptPath, '--python', venvPython,
+                'upload', '--port', gRemoteDevicePort,
+                '--source', gDeviceCodeDir, '--dest', ''
+            ], () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
         })
     );
 
