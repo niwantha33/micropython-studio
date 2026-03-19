@@ -9,8 +9,24 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs').promises;
+const net = require('net');
 const { getConnectedDevices } = require('./runCommand');
 const { getConfigValue, updateCfgComponent } = require('./commonFxn');
+
+/**
+ * Test whether a WebREPL device is reachable on port 8266.
+ * @param {string} ip
+ * @returns {Promise<boolean>}
+ */
+function checkWebReplReachable(ip) {
+    return new Promise((resolve) => {
+        const sock = new net.Socket();
+        sock.setTimeout(2000);
+        sock.connect(8266, ip, () => { sock.destroy(); resolve(true); });
+        sock.on('error', () => { sock.destroy(); resolve(false); });
+        sock.on('timeout', () => { sock.destroy(); resolve(false); });
+    });
+}
 
 /**
  * Search upward from startDir to find a directory containing 'device.cfg'.
@@ -127,8 +143,33 @@ async function getValidDevicePort(resource) {
         vscode.window.showWarningMessage('No connected devices detected.');
     }
 
-    // Fall back to saved port if no live device matched
-    if (gRemoteDevicePort === null) {
+    // ── WebREPL auto-connect — try BEFORE falling back to saved COM port ─────
+    // If no live USB device was matched, probe for a WebREPL board on Wi-Fi.
+    // This must run before the savedPort fallback so that a stale "COM7" in
+    // device.cfg doesn't mask a live wireless device.
+    if (!gRemoteDevicePort) {
+        const webReplEnabled  = await getConfigValue(configPath, 'remote', 'webrepl_enabled');
+        const webReplIp       = await getConfigValue(configPath, 'remote', 'webrepl_ip');
+        const webReplPassword = await getConfigValue(configPath, 'remote', 'webrepl_password');
+
+        if (webReplEnabled === 'true' && webReplIp) {
+            const reachable = await checkWebReplReachable(webReplIp);
+            if (reachable) {
+                gRemoteDevicePort = `ws:${webReplIp},${webReplPassword || 'micro123'}`;
+                vscode.window.showInformationMessage(
+                    `📡 No USB device found — auto-connected wirelessly to ${webReplIp}`
+                );
+            } else {
+                vscode.window.showWarningMessage(
+                    `No USB device found. Wireless device at ${webReplIp} is not reachable either. ` +
+                    `Check Wi-Fi or plug in USB.`
+                );
+            }
+        }
+    }
+
+    // Last resort: fall back to the saved COM port from device.cfg
+    if (!gRemoteDevicePort || gRemoteDevicePort === 'NOT_SET') {
         gRemoteDevicePort = savedPort;
     }
 

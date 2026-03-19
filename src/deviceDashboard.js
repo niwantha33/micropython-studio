@@ -1,7 +1,9 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
 const { runMpremote } = require('./runCommand');
+const { updateCfgComponent, getVenvPythonPath, getVenvPythonPathFolder } = require('./commonFxn');
 
 /**
  * Gathers all metrics from the device and converts them to a structured object.
@@ -88,11 +90,24 @@ except:
     try {
         fs.writeFileSync(tempScriptPath, pythonScript, 'utf8');
 
-        // Run the script on the device (use explicit port if provided)
-        const mpArgs = devicePort
-            ? ['connect', devicePort, 'run', `"${tempScriptPath}"`]
-            : ['run', `"${tempScriptPath}"`];
-        const rawOutput = await runMpremote(outputChannel, mpArgs);
+        // Run the script on the device
+        // ws: ports need mpremotesubpro.py (mpremote has no WebSocket transport)
+        let rawOutput;
+        if (devicePort && devicePort.startsWith('ws:')) {
+            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+            const subpro = path.join(__dirname, 'mpremotesubpro.py');
+            rawOutput = await new Promise((resolve) => {
+                execFile(venvPython, [
+                    subpro, '--python', venvPython,
+                    'run_mcu', '--port', devicePort, '--file', tempScriptPath
+                ], { timeout: 30000 }, (_err, stdout) => resolve(stdout || ''));
+            });
+        } else {
+            const mpArgs = devicePort
+                ? ['connect', devicePort, 'run', `"${tempScriptPath}"`]
+                : ['run', `"${tempScriptPath}"`];
+            rawOutput = await runMpremote(outputChannel, mpArgs);
+        }
 
         // Parse the block output
         const lines = rawOutput.split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -1209,6 +1224,19 @@ async function runDeviceScript(scriptContent, tempName, workspaceRoot, devicePor
     const tempPath = path.join(workspaceRoot, tempName);
     try {
         fs.writeFileSync(tempPath, scriptContent, 'utf8');
+
+        // ws: ports need mpremotesubpro.py — mpremote has no WebSocket transport
+        if (devicePort && devicePort.startsWith('ws:')) {
+            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+            const subpro = path.join(__dirname, 'mpremotesubpro.py');
+            return await new Promise((resolve) => {
+                execFile(venvPython, [
+                    subpro, '--python', venvPython,
+                    'run_mcu', '--port', devicePort, '--file', tempPath
+                ], { timeout: 30000 }, (_err, stdout) => resolve(stdout || ''));
+            });
+        }
+
         const args = devicePort
             ? ['connect', devicePort, 'run', `"${tempPath}"`]
             : ['run', `"${tempPath}"`];
@@ -1497,8 +1525,20 @@ except Exception as e:
             if (typeof onPortUpdate === 'function') {
                 onPortUpdate(wsPort);
             }
+
+            // Persist WebREPL details to device.cfg so the extension
+            // can auto-connect wirelessly next time — no USB required
+            try {
+                const cfgPath = path.join(workspaceRoot, 'device.cfg');
+                await updateCfgComponent(cfgPath, 'remote', 'webrepl_enabled', 'true');
+                await updateCfgComponent(cfgPath, 'remote', 'webrepl_ip', message.ip);
+                await updateCfgComponent(cfgPath, 'remote', 'webrepl_password', 'micro123');
+            } catch (e) {
+                console.error('Failed to save WebREPL details to device.cfg:', e);
+            }
+
             vscode.window.showInformationMessage(
-                `Switched to wireless: ${wsPort}. You can now unplug USB.`
+                `Switched to wireless: ${wsPort}. IP saved — extension will auto-connect next time.`
             );
             return;
         }

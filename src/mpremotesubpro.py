@@ -1,25 +1,24 @@
 # mpremotesubpro.py
 import argparse
-import base64
 import re
-import socket
-import struct
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 
 # ---------------------------------------------------------------------------
 # WebREPL transport
 # mpremote 1.27.0 has no ws: support (transport_ws.py doesn't exist).
-# We implement the full WebREPL protocol here directly.
+# We use the websocket-client library for the WebSocket layer and implement
+# MicroPython's raw-REPL protocol on top of it.
 # ---------------------------------------------------------------------------
 
 class WebReplConnection:
     """
-    Direct WebREPL transport over WebSocket.
-    Handles connection, authentication, raw-REPL code execution, and file upload.
+    WebREPL transport using websocket-client for the WS layer.
+    Handles authentication, raw-REPL code execution, and file upload.
     """
     CHUNK = 256  # raw-REPL send chunk size
 
@@ -27,72 +26,41 @@ class WebReplConnection:
         self.host = host
         self.password = password
         self.port = port
-        self.sock: socket.socket  # assigned in connect()
+        self.ws: 'Any' = None  # assigned in connect() via websocket-client
 
     # ── WebSocket helpers ────────────────────────────────────────────────────
 
     def _ws_send(self, data: 'str | bytes') -> None:
-        if isinstance(data, str):
-            data = data.encode()
-        n = len(data)
-        header = bytes([0x81, n]) if n < 126 else bytes([0x81, 126, n >> 8, n & 0xff])
-        self.sock.sendall(header + data)
+        # WebREPL REPL input must be a WebSocket TEXT frame.
+        # Binary frames (send_binary) are reserved for the file-transfer protocol.
+        if isinstance(data, bytes):
+            data = data.decode('latin-1')  # latin-1 preserves raw byte values as-is
+        self.ws.send(data)  # TEXT frame
 
     def _ws_recv(self, timeout: float = 5) -> bytes:
-        self.sock.settimeout(timeout)
+        import websocket as _wslib  # type: ignore[import]
+        self.ws.settimeout(timeout)
         try:
-            h = self._recv_exact(2)
-            if len(h) < 2:
-                return b''
-            n = h[1] & 0x7f
-            if n == 126:
-                nb = self._recv_exact(2)
-                n = (nb[0] << 8) | nb[1]
-            return self._recv_exact(n)
-        except socket.timeout:
+            data = self.ws.recv()
+            if isinstance(data, str):
+                return data.encode('utf-8')
+            return data or b''
+        except _wslib.WebSocketTimeoutException:
             return b''
-
-    def _recv_exact(self, n: int) -> bytes:
-        buf = bytearray()
-        while len(buf) < n:
-            chunk = self.sock.recv(n - len(buf))
-            if not chunk:
-                break
-            buf.extend(chunk)
-        return bytes(buf)
+        except Exception:
+            return b''
 
     # ── Connect and authenticate ─────────────────────────────────────────────
 
     def connect(self):
-        self.sock = socket.socket()
-        self.sock.settimeout(10)
-        self.sock.connect((self.host, self.port))
+        import websocket as _wslib  # type: ignore[import]
+        url = f'ws://{self.host}:{self.port}'
+        self.ws = _wslib.create_connection(url, timeout=15)
 
-        # WebSocket handshake
-        key = base64.b64encode(b'mps-webrepl-key1').decode()
-        self.sock.sendall((
-            f'GET / HTTP/1.1\r\n'
-            f'Host: {self.host}\r\n'
-            f'Upgrade: websocket\r\n'
-            f'Connection: Upgrade\r\n'
-            f'Sec-WebSocket-Key: {key}\r\n'
-            f'Sec-WebSocket-Version: 13\r\n'
-            f'\r\n'
-        ).encode())
-
-        # Read HTTP headers
-        buf = b''
-        self.sock.settimeout(10)
-        while b'\r\n\r\n' not in buf:
-            buf += self.sock.recv(256)
-
-        # Any leftover bytes after headers are the first WS frame (Password: prompt)
-        rest = buf.split(b'\r\n\r\n', 1)[1]
-        if not rest:
-            rest = self._ws_recv(5)
-
-        if b'Password' not in rest:
-            raise ConnectionError(f'Expected password prompt, got: {rest!r}')
+        # Read password prompt — comes as a WebSocket TEXT frame
+        prompt = self._ws_recv(8)
+        if b'Password' not in prompt:
+            raise ConnectionError(f'Expected password prompt, got: {prompt!r}')
 
         # Authenticate
         self._ws_send(self.password + '\r\n')
@@ -103,8 +71,8 @@ class WebReplConnection:
 
     def close(self):
         try:
-            if self.sock:
-                self.sock.close()
+            if hasattr(self, 'ws') and self.ws:
+                self.ws.close()
         except Exception:
             pass
 
@@ -196,7 +164,7 @@ class WebReplConnection:
             f"_f = open({remote_path!r}, 'wb')",
         ]
         for i in range(0, len(hex_data), chunk_size):
-            chunk = hex_data[i:i + chunk_size]
+            chunk = hex_data[i:i + chunk_size]  # type: ignore[index]
             code_lines.append(f"_f.write(binascii.unhexlify({chunk!r}))")
         code_lines.append("_f.close()")
         code_lines.append("print('OK')")
@@ -248,7 +216,7 @@ def run_mpremote(python_exe, args_list, timeout=60):
         # Stream output line by line
         while True:
             try:
-                line = proc.stdout.readline()
+                line = proc.stdout.readline()  # type: ignore[union-attr]
                 if line:
                     # Give a clear hint when a ws: connection is blocked
                     if 'failed to access' in line and args_list and any(a.startswith('ws:') for a in args_list):

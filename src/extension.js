@@ -12,12 +12,13 @@ const path = require('path');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
-const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath } = require('./commonFxn');
+const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile } = require('./deviceFileExplorer');
 const { openPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
 const { updateCfgComponent } = require('./commonFxn');
 const { openDeviceDashboard } = require('./deviceDashboard');
+const { openWebReplTerminal } = require('./webReplTerminal');
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
@@ -32,6 +33,32 @@ let currentTarget = 'Host';
 
 let deviceStatusBarItem = null;
 let deviceFileExplorer = null;
+
+// ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
+
+/**
+ * Build the list of selectable port options from device.cfg.
+ * Always includes the USB COM port (if we have one) plus Wi-Fi if webrepl_enabled=true.
+ * Returns null when there is no choice to offer (WebREPL not configured).
+ */
+async function _buildRunPortOptions() {
+    if (!gDeviceCodeDir) return null;
+
+    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+    const savedCom = await getConfigValue(cfgPath, 'device', 'port');
+    const enabled  = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
+    const ip       = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
+    const password = await getConfigValue(cfgPath, 'remote', 'webrepl_password');
+
+    if (enabled !== 'true' || !ip) return null;
+
+    const items = [];
+    if (savedCom) {
+        items.push({ label: `$(plug) USB — ${savedCom}`, port: savedCom });
+    }
+    items.push({ label: `$(remote) Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
+    return items;
+}
 
 // ─── Terminal Management ─────────────────────────────────────────────────────
 
@@ -92,7 +119,9 @@ function updateDeviceStatusBar() {
     if (!deviceStatusBarItem) return;
 
     if (gRemoteDevicePort) {
-        deviceStatusBarItem.text = `$(plug) ${gRemoteDevicePort}`;
+        const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
+        const portLabel = wsMatch ? `📡 ${wsMatch[1]}` : gRemoteDevicePort;
+        deviceStatusBarItem.text = `$(plug) ${portLabel}`;
         deviceStatusBarItem.tooltip = `Connected to ${gRemoteDevicePort}`;
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
@@ -100,6 +129,7 @@ function updateDeviceStatusBar() {
         deviceStatusBarItem.tooltip = 'No device connected — click Refresh Device Files';
         deviceStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     }
+
 }
 
 // ─── Extension Activation ────────────────────────────────────────────────────
@@ -220,9 +250,12 @@ function activate(context) {
                 return;
             }
 
+            const runPort = gRemoteDevicePort;
+            if (!runPort) return;
+
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
             const isMpy = filePath.endsWith('.mpy');
-            const isWireless = gRemoteDevicePort.startsWith('ws:');
+            const isWireless = runPort.startsWith('ws:');
             let cmd;
 
             if (!isMpy && !isWireless && currentTarget === 'Host') {
@@ -240,7 +273,7 @@ function activate(context) {
                     `"${scriptPath}"`,
                     `--python "${venvPython}"`,
                     `run`,
-                    `--port "${gRemoteDevicePort}"`,
+                    `--port "${runPort}"`,
                     `--folder "${gDeviceCodeDir}"`,
                     `--file "${filePath}"`
                 ].join(' ');
@@ -252,7 +285,7 @@ function activate(context) {
                     `"${scriptPath}"`,
                     `--python "${venvPython}"`,
                     `run_mcu`,
-                    `--port "${gRemoteDevicePort}"`,
+                    `--port "${runPort}"`,
                     `--file "${filePath}"`
                 ].join(' ');
             }
@@ -363,7 +396,7 @@ function activate(context) {
 
             qp.onDidChangeSelection(selection => {
                 if (!selection[0]) return;
-                currentTarget = selection[0].target;
+                currentTarget = /** @type {any} */ (selection[0]).target;
                 updateRunTargetButton();
                 console.log(`Run target changed to: ${currentTarget}`);
                 qp.hide();
@@ -371,6 +404,30 @@ function activate(context) {
 
             qp.onDidHide(() => qp.dispose());
             qp.show();
+        })
+    );
+
+    // Choose Run Transport (USB / Wi-Fi)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.chooseRunPort', async () => {
+            if (!gRemoteDevicePort) {
+                vscode.window.showWarningMessage('No device connected. Refresh first.');
+                return;
+            }
+            const items = await _buildRunPortOptions();
+            if (!items) {
+                vscode.window.showInformationMessage(
+                    'WebREPL is not enabled. Only USB is available.'
+                );
+                return;
+            }
+            const pick = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Choose run transport'
+            });
+            if (!pick) return;
+            gRemoteDevicePort = /** @type {any} */ (pick).port;
+            updateDeviceStatusBar();
+            if (deviceFileExplorer) deviceFileExplorer.setPort(gRemoteDevicePort);
         })
     );
 
@@ -481,6 +538,13 @@ function activate(context) {
         })
     );
 
+    // Open WebREPL Terminal (browser-based terminal for ws: connections)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.openWebReplTerminal', async () => {
+            await openWebReplTerminal(context, gRemoteDevicePort);
+        })
+    );
+
     // Generate flowchart from .py file using code2flow
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.generateFlowchart', async (uri) => {
@@ -581,6 +645,7 @@ function updateRunTargetButton() {
     }
 }
 
+
 function createStatusBar(context) {
     // Priority determines ordering: higher = more to the left
 
@@ -595,7 +660,7 @@ function createStatusBar(context) {
 
     // 1. Device connection indicator
     deviceStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 105);
-    deviceStatusBarItem.command = 'micropython-ide.refreshMcuFolder';
+    deviceStatusBarItem.command = 'micropython-ide.chooseRunPort';
     updateDeviceStatusBar();
     deviceStatusBarItem.show();
     context.subscriptions.push(deviceStatusBarItem);
@@ -648,6 +713,14 @@ function createStatusBar(context) {
     dashboardButton.command = 'micropython-ide.openDeviceDashboard';
     dashboardButton.show();
     context.subscriptions.push(dashboardButton);
+
+    // 8. WebREPL Terminal Button
+    const webReplButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+    webReplButton.text = '$(remote) WebREPL';
+    webReplButton.tooltip = 'Open WebREPL Terminal (Wi-Fi)';
+    webReplButton.command = 'micropython-ide.openWebReplTerminal';
+    webReplButton.show();
+    context.subscriptions.push(webReplButton);
 }
 
 // ─── Extension Deactivation ──────────────────────────────────────────────────
