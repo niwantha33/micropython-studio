@@ -14,27 +14,74 @@ A powerful IDE extension for MicroPython development with hardware integration, 
 
 ## Features
 
-### 🚀 Core Functionality
+### Setup
 
-- **Project Creation Wizard**: Create MicroPython projects with device-specific templates
-- **Device Management**: Detect, connect, and manage MicroPython devices (ESP32, RP2040, STM32)
-- **Code Execution**: Run MicroPython code directly on connected devices
-- **File Syncing**: Automatic sync between local files and device filesystem
-- **Virtual Environment**: Built-in Python environment with required dependencies
+| # | Feature | How to Use | What Happens |
+|---|---------|-----------|--------------|
+| 1 | Setup Virtual Environment | Command Palette → *Setup Environment* | `.venv` created, `mpremote` installed |
+| 2 | Create New Project | Status bar *MPS vX.X* → Create New Project | Project folder + `device.cfg` created |
+| 3 | Open Existing Project | Command Palette → *Open Existing Project* | Workspace opens, `device.cfg` detected |
 
-### ⚙️ Workspace Features
+### Connection
 
-- **Dedicated Device View**: Visual representation of device filesystem
-- **Workspace Organization**: Clean project structure with logical separation
-- **Hardware-Specific Settings**: Auto-configured settings for different microcontrollers
-- **Serial Monitor**: Built-in terminal for device communication
+| # | Feature | How to Use | What Happens |
+|---|---------|-----------|--------------|
+| 4 | Auto-detect device (USB) | Connect board via USB + click Refresh | Status bar shows COM port |
+| 5 | Auto-detect device (Wi-Fi) | Set `webrepl_enabled=true` in `device.cfg` | Status bar shows Wi-Fi IP |
+| 6 | Manual port override | Command Palette → *Update Device Port* | Port updates in status bar |
+| 7 | Port picker — USB vs Wi-Fi | Click device status bar button | QuickPick shows USB + Wi-Fi options |
+| 8 | WebREPL terminal | Click status bar *WebREPL* button | Terminal panel opens, shows `>>>` prompt |
 
-### 🔌 Hardware Integration
+### Run
 
-- **Automatic Device Detection**: Identify connected MicroPython boards
-- **One-Click Upload**: Deploy code to devices with a single button
-- **Real-time File Sync**: Instantly see device filesystem changes
-- **Mount Mode**: Develop directly on device filesystem
+| # | Feature | How to Use | What Happens |
+|---|---------|-----------|--------------|
+| 9 | Run on Host (mount mode) | USB connected, target=Host, click *Run* | Script runs via mounted folder |
+| 10 | Run on MCU (USB) | USB connected, target=MCU, click *Run* | Script executed on device via serial |
+| 11 | Run via Wi-Fi | Wi-Fi port selected, click *Run* | Script runs over WebREPL |
+| 12 | Right-click Run script | Right-click `.py` → *Run on MCU Console* | Script runs in terminal |
+| 13 | Stop running script | Click *Stop* button during run | Device soft reset, `>>>` prompt returns |
+| 14 | Switch Host / MCU target | Click Host/MCU toggle in status bar | Label updates, next run uses new target |
+
+### File Upload
+
+| # | Feature | How to Use | What Happens |
+|---|---------|-----------|--------------|
+| 15 | Upload single file | Right-click `.py` → *Upload Current File* | File copied to `/` on device |
+| 16 | Upload folder | Right-click folder → *Upload Folder to Device* | `/foldername` created + all files uploaded |
+| 17 | Upload folder with subfolders | Right-click folder with nested subdirs | Subdirs created first, all files uploaded correctly |
+| 18 | Upload — overwrite protection | Upload folder that already exists on device | Shows conflicting files, asks *Overwrite? Y/N* |
+| 19 | Upload entire project | Command Palette → *Upload Project to Device* | All `main/` files copied to device root |
+
+### Device File Explorer
+
+| # | Feature | How to Use | What Happens |
+|---|---------|-----------|--------------|
+| 20 | Browse device files | Expand *Device Files* panel tree | Files and folders listed |
+| 21 | Read file from device | Click a file in the tree | File contents open in editor (read-only) |
+| 22 | Delete file | Right-click file → *Delete File* | Confirm dialog, file removed, tree refreshes |
+| 23 | Delete folder (with contents) | Right-click folder → *Delete Folder* | Confirm dialog, folder + all contents removed |
+| 24 | Refresh tree | Click refresh icon in panel header | Tree re-reads device filesystem |
+
+### Tools
+
+| # | Feature | How to Use | What Happens |
+|---|---------|-----------|--------------|
+| 25 | Open REPL Shell | Click *Shell* in status bar | mpremote interactive REPL opens |
+| 26 | Compile to bytecode | Right-click `.py` → *Compile to Bytecode* | `.mpy` file generated |
+| 27 | Generate flowchart | Right-click `.py` → *Generate Flowchart* | Flowchart panel opens |
+| 28 | Install package (mip) | Command Palette → *Install Package* | Package installed on device via mip |
+| 29 | Flash firmware | Click *Flash* in status bar | Firmware selection + flash to device |
+| 30 | Download firmware | Command Palette → *Download Firmware* | Firmware downloaded locally |
+
+### Dashboard
+
+| # | Feature | How to Use | What Happens |
+|---|---------|-----------|--------------|
+| 31 | Open dashboard | Click *Dashboard* in status bar | Dashboard panel opens |
+| 32 | Wi-Fi Manager | Dashboard → Wi-Fi tab | Set SSID + password, save to device |
+| 33 | WebREPL config | Dashboard → Wi-Fi → enable WebREPL | `webrepl_enabled` saved to `device.cfg` |
+| 34 | Pinout view | Dashboard → Pinout tab | Board pinout diagram shown |
 
 ## Requirements
 
@@ -55,10 +102,8 @@ The extension contributes the following settings:
 
 ## Known Issues
 
-- **Port Conflicts**: Occurs when multiple processes access the same COM port simultaneously
 - **Windows Path Handling**: Some commands require Git Bash for proper path conversion
 - **Device Recognition**: Certain ESP32 variants may require manual driver installation
-- **Virtual Environment**: First-time setup may take several minutes to complete
 
 ## Release Notes
 
@@ -94,8 +139,17 @@ The extension contributes the following settings:
   - Circuitpython (partial support)
   - Bytecode conversion 
   - Multiple device support
+  - WebREPL terminal
+  - File upload and download
+  - Device file explorer
+  - Dashboard
+  - Library Install
+  - Pinout view
+  
 - **Enhanced**:
   - File sync performance 
+  - IntelliSense
+  
 
 ---
 
@@ -112,18 +166,20 @@ The extension contributes the following settings:
 
 ### Key Commands
 
-- `MicroPython: Setup Development Environment` - Initialize the required Python virtual environment
-- `MicroPython: Create New Project` - Start new project wizard
-- `MicroPython: Open Existing Project` - Open an existing MicroPython project folder
-- `MicroPython: Update Device Port` - Select or update the COM port for your connected device
-- `MicroPython: Run Script on Device` - Execute current script on the device
-- `MicroPython: Stop Running Script` - Stop the currently executing script on the device
-- `MicroPython: Open Device Shell` - Open an interactive REPL shell for the device
-- `MicroPython: Upload Current File to Device` - Upload the currently active file to the device
-- `MicroPython: Upload Project to Device` - Upload your entire project to the device
-- `MicroPython: Mount & Run on Device` - Mount local folder and run on device
-- `MicroPython: Refresh Device Files` - Refresh the device files tree view
-- `MicroPython: Start Debug Session` - Start debugging on the device
+| Command | Description |
+|---------|-------------|
+| `MicroPython: Setup Development Environment` | Initialize the Python virtual environment and install dependencies |
+| `MicroPython: Create New Project` | Start the new project wizard |
+| `MicroPython: Open Existing Project` | Open an existing MicroPython project folder |
+| `MicroPython: Update Device Port` | Select or update the COM port / Wi-Fi connection |
+| `MicroPython: Run Script on Device` | Execute current script on the device |
+| `MicroPython: Stop Running Script` | Stop the currently executing script |
+| `MicroPython: Open Device Shell` | Open an interactive REPL shell |
+| `MicroPython: Upload Current File to Device` | Upload the active file to the device root |
+| `MicroPython: Upload Project to Device` | Upload your entire project to the device |
+| `MicroPython: Mount & Run on Device` | Mount local folder and run directly on device |
+| `MicroPython: Refresh Device Files` | Refresh the device files tree view |
+| `MicroPython: Start Debug Session` | Start a debug session on the device |
 
 ## For More Information
 
