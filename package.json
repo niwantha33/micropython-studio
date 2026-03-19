@@ -161,6 +161,12 @@
         "icon": "$(cloud-upload)"
       },
       {
+        "command": "micropython-ide.uploadFolderToDevice",
+        "title": "MicroPython: Upload Folder to Device",
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-upload)"
+      },
+      {
         "command": "micropython-ide.uploadProjectToDevice",
         "title": "MicroPython: Upload Project to Device",
         "category": "MicroPython Studio",
@@ -283,6 +289,11 @@
         {
           "command": "micropython-ide.uploadFileToDevice",
           "when": "resourceExtname == .py || resourceExtname == .mpy",
+          "group": "micropython@1"
+        },
+        {
+          "command": "micropython-ide.uploadFolderToDevice",
+          "when": "explorerResourceIsFolder",
           "group": "micropython@1"
         },
         {

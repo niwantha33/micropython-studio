@@ -335,7 +335,7 @@ function activate(context) {
                 `upload`,
                 `--port "${gRemoteDevicePort}"`,
                 `--source "${filePath}"`,
-                `--dest /`
+                `--dest ""`
             ].join(' ');
 
             const terminal = getMpremoteTerminal();
@@ -344,6 +344,46 @@ function activate(context) {
 
             // Refresh device file tree after a short delay
             setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 4000);
+        })
+    );
+
+    // Upload a folder (with all subfolders/files) to the device — right-click in explorer
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.uploadFolderToDevice', async (uri) => {
+            const folderPath = uri ? uri.fsPath : null;
+            if (!folderPath) {
+                vscode.window.showWarningMessage('No folder selected.');
+                return;
+            }
+            if (!gRemoteDevicePort) {
+                vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
+                return;
+            }
+
+            // Use folder name as dest — no leading slash to avoid MSYS2/Git Bash
+            // path conversion (which turns /foo into C:/Program Files/Git/foo).
+            // _normalize_dest() in mpremotesubpro.py adds the leading slash.
+            const dest = path.basename(folderPath);
+
+            const venvFolder = getVenvPythonPathFolder();
+            const venvPython = getVenvPythonPath(venvFolder);
+            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+
+            const cmd = [
+                `"${venvPython}"`,
+                `"${scriptPath}"`,
+                `--python "${venvPython}"`,
+                `upload`,
+                `--port "${gRemoteDevicePort}"`,
+                `--source "${folderPath}"`,
+                `--dest "${dest}"`
+            ].join(' ');
+
+            const terminal = getMpremoteTerminal();
+            terminal.show();
+            terminal.sendText(cmd);
+
+            setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 6000);
         })
     );
 
@@ -370,7 +410,7 @@ function activate(context) {
                 `upload`,
                 `--port "${gRemoteDevicePort}"`,
                 `--source "${gDeviceCodeDir}"`,
-                `--dest /`
+                `--dest ""`
             ].join(' ');
 
             const terminal = getMpremoteTerminal();

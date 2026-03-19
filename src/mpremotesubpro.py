@@ -187,14 +187,63 @@ def _is_ws_port(port):
 
 
 def _normalize_dest(dest: str) -> str:
-    """Normalize the dest argument to a device path.
+    """Normalize the dest argument to an absolute device path.
 
     Git Bash on Windows expands a bare '/' to the Git installation directory
     (e.g. 'C:/Program Files/Git/'). Detect that and reset to device root '/'.
     """
     if not dest or re.match(r'^[A-Za-z]:[/\\]', dest):
         return '/'
+    if not dest.startswith('/'):
+        dest = '/' + dest
     return dest
+
+
+def _serial_mkdir_p(python_exe: str, port: str, remote_dir: str) -> None:
+    """Create remote_dir and all parent directories on device (serial)."""
+    if remote_dir == '/':
+        return
+    parts = [p for p in remote_dir.strip('/').split('/') if p]
+    acc = ['']
+    for part in parts:
+        acc.append(part)
+        run_mpremote(python_exe, ['connect', port, 'fs', 'mkdir', '/'.join(acc)], timeout=15)
+
+
+def _ws_mkdir_p(conn: 'WebReplConnection', remote_dir: str) -> None:
+    """Create remote_dir and all parent directories on device (WebREPL)."""
+    if remote_dir == '/':
+        return
+    parts = [p for p in remote_dir.strip('/').split('/') if p]
+    acc = ['']
+    for part in parts:
+        acc.append(part)
+        d = '/'.join(acc)
+        conn.exec_code(f"import os\ntry:\n os.mkdir({d!r})\nexcept:pass")
+
+
+def _serial_list_remote_files(python_exe: str, port: str, remote_path: str) -> set:
+    """Return set of filenames (not dirs) found at remote_path on device.
+    Returns empty set if the path doesn't exist or is empty."""
+    result = subprocess.run(
+        [python_exe, '-m', 'mpremote', 'connect', port, 'fs', 'ls', f':{remote_path}'],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, text=True, timeout=15
+    )
+    if result.returncode != 0:
+        return set()
+    files: set = set()
+    for line in result.stdout.splitlines():
+        trimmed = line.strip()
+        if not trimmed or trimmed.startswith('ls'):
+            continue
+        m = re.match(r'^\s*\d+\s+(.+)$', trimmed)
+        if m:
+            name = m.group(1).strip()
+            if not name.endswith('/'):   # skip subdirectories
+                files.add(name)
+    return files
+
 
 def run_mpremote(python_exe, args_list, timeout=60):
     """Run mpremote and stream output in real-time with clean Ctrl+C handling"""
@@ -394,7 +443,7 @@ def _ws_upload_file(conn: WebReplConnection, source: Path, remote: str) -> int:
     return conn.exec_code('\n'.join(lines))
 
 
-def cmd_upload(python_exe, port, source, dest='/'):
+def cmd_upload(python_exe, port, source, dest: str = '/'):
     """Upload a file or folder to the device filesystem."""
     dest = _normalize_dest(dest)
     source = Path(source).resolve()
@@ -410,6 +459,7 @@ def cmd_upload(python_exe, port, source, dest='/'):
         try:
             conn.connect()
             if source.is_file():
+                _ws_mkdir_p(conn, dest)
                 remote = dest.rstrip('/') + '/' + source.name
                 print(f"📤 Uploading {source.name} -> {remote}", file=sys.stderr)
                 rc = _ws_upload_file(conn, source, remote)
@@ -423,13 +473,14 @@ def cmd_upload(python_exe, port, source, dest='/'):
                 print(f"📁 Uploading {len(files)} file(s) from {source}", file=sys.stderr)
                 print(f"🔌 Port: {port}", file=sys.stderr)
                 print("-" * 50, file=sys.stderr)
-                # Create remote directories first
+                # Create dest and all subdirectories first
+                _ws_mkdir_p(conn, dest)
                 dirs = sorted(set(
                     str(f.relative_to(source).parent).replace('\\', '/')
                     for f in files if f.relative_to(source).parent != Path('.')
                 ))
                 for d in dirs:
-                    conn.exec_code(f"import os\ntry:\n os.mkdir({(dest.rstrip('/')+'/'+d)!r})\nexcept:pass")
+                    _ws_mkdir_p(conn, dest.rstrip('/') + '/' + d)
                 rc = 0
                 for i, f in enumerate(files, 1):
                     rel = str(f.relative_to(source)).replace('\\', '/')
@@ -463,6 +514,23 @@ def cmd_upload(python_exe, port, source, dest='/'):
         print("⚠️ Source folder is empty, nothing to upload.", file=sys.stderr)
         sys.exit(0)
 
+    # Check for conflicts before touching the device
+    existing = _serial_list_remote_files(python_exe, port, dest)
+    if existing:
+        uploading_names = {
+            str(f.relative_to(source)).replace('\\', '/')
+            for f in files
+        }
+        conflicts = existing & uploading_names
+        if conflicts:
+            print(f"⚠️  These files already exist in {dest} on the device:", file=sys.stderr)
+            for c in sorted(conflicts):
+                print(f"   • {c}", file=sys.stderr)
+            answer = input("Overwrite? [y/N]: ").strip().lower()
+            if answer != 'y':
+                print("❌ Upload cancelled.", file=sys.stderr)
+                sys.exit(0)
+
     dirs_to_create = sorted(set(
         str(f.relative_to(source).parent).replace('\\', '/')
         for f in files if f.relative_to(source).parent != Path('.')
@@ -472,10 +540,14 @@ def cmd_upload(python_exe, port, source, dest='/'):
     print(f"🔌 Port: {port}", file=sys.stderr)
     print("-" * 50, file=sys.stderr)
 
+    # Create dest directory first (if not root), then any subdirectories inside it
+    if dest != '/':
+        print(f"📁 mkdir {dest}", file=sys.stderr)
+        run_mpremote(python_exe, ['connect', port, 'fs', 'mkdir', dest], timeout=15)
     for d in dirs_to_create:
         remote_dir = dest.rstrip('/') + '/' + d
         print(f"📁 mkdir {remote_dir}", file=sys.stderr)
-        run_mpremote(python_exe, ['connect', port, 'fs', 'mkdir', remote_dir], timeout=10)
+        run_mpremote(python_exe, ['connect', port, 'fs', 'mkdir', remote_dir], timeout=15)
 
     for i, f in enumerate(files, 1):
         rel = str(f.relative_to(source)).replace('\\', '/')
