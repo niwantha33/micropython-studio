@@ -10,6 +10,9 @@
 const vscode = require('vscode');
 const { exec } = require('child_process');
 const { promisify } = require('util');
+const os = require('os');
+const fs = require('fs');
+const pathMod = require('path');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 
 const execAsync = promisify(exec);
@@ -269,9 +272,64 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
     });
 }
 
+/**
+ * Recursively delete a folder from the device.
+ * Uses `mpremote exec` to run a small Python snippet that walks and removes.
+ * @param {string} port - Device port
+ * @param {string} deviceFolderPath - Path on device (e.g. '/lib')
+ * @param {DeviceFileExplorerProvider} provider - Provider to refresh after delete
+ */
+async function deleteDeviceFolder(port, deviceFolderPath, provider) {
+    if (!port) {
+        vscode.window.showWarningMessage('No device connected.');
+        return;
+    }
+
+    const confirm = await vscode.window.showWarningMessage(
+        `Delete folder "${deviceFolderPath}" and ALL its contents from device? This cannot be undone.`,
+        { modal: true },
+        'Delete'
+    );
+    if (confirm !== 'Delete') return;
+
+    const venvFolder = getVenvPythonPathFolder();
+    const venvPython = getVenvPythonPath(venvFolder);
+
+    // Write the recursive-delete script to a temp file to avoid shell quoting issues
+    const code = [
+        'import os',
+        'def _rm(p):',
+        '    try:',
+        '        for e in os.listdir(p):',
+        '            _rm(p + "/" + e)',
+        '        os.rmdir(p)',
+        '    except OSError:',
+        '        os.remove(p)',
+        `_rm(${JSON.stringify(deviceFolderPath)})`,
+        "print('ok')"
+    ].join('\n');
+
+    const tmpFile = pathMod.join(os.tmpdir(), 'mps_rmtree.py');
+    fs.writeFileSync(tmpFile, code, 'utf8');
+
+    const cmd = `"${venvPython}" -m mpremote connect ${port} run "${tmpFile}"`;
+
+    exec(cmd, { timeout: 30000 }, (error, _stdout, stderr) => {
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+        if (error || (stderr && stderr.includes('Traceback'))) {
+            const msg = stderr || error?.message || 'Unknown error';
+            vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${msg}`);
+        } else {
+            vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
+            provider.refresh();
+        }
+    });
+}
+
 module.exports = {
     DeviceFileExplorerProvider,
     DeviceFileItem,
     readDeviceFile,
-    deleteDeviceFile
+    deleteDeviceFile,
+    deleteDeviceFolder
 };

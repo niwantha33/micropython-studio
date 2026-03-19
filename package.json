@@ -149,6 +149,12 @@
         "icon": "$(trash)"
       },
       {
+        "command": "micropython-ide.deleteDeviceFolder",
+        "title": "MicroPython: Delete Folder from Device",
+        "category": "MicroPython Studio",
+        "icon": "$(trash)"
+      },
+      {
         "command": "micropython-ide.uploadFileToDevice",
         "title": "MicroPython: Upload Current File to Device",
         "category": "MicroPython Studio",
@@ -326,6 +332,16 @@
         {
           "command": "micropython-ide.deleteDeviceFile",
           "when": "view == micropython-ide-device-files && viewItem == deviceFile",
+          "group": "context"
+        },
+        {
+          "command": "micropython-ide.deleteDeviceFolder",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
+          "group": "inline"
+        },
+        {
+          "command": "micropython-ide.deleteDeviceFolder",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
           "group": "context"
         }
       ]

@@ -13,7 +13,7 @@ const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
 const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue } = require('./commonFxn');
-const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile } = require('./deviceFileExplorer');
+const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
 const { updateCfgComponent } = require('./commonFxn');
@@ -617,6 +617,15 @@ function activate(context) {
         vscode.commands.registerCommand('micropython-ide.deleteDeviceFile', async (item) => {
             if (item && item.devicePath) {
                 await deleteDeviceFile(gRemoteDevicePort, item.devicePath, deviceFileExplorer);
+            }
+        })
+    );
+
+    // Delete a folder (and all contents) from the device
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.deleteDeviceFolder', async (item) => {
+            if (item && item.devicePath) {
+                await deleteDeviceFolder(gRemoteDevicePort, item.devicePath, deviceFileExplorer);
             }
         })
     );
