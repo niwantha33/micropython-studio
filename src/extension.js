@@ -761,6 +761,7 @@ function createStatusBar(context) {
     webReplButton.command = 'micropython-ide.openWebReplTerminal';
     webReplButton.show();
     context.subscriptions.push(webReplButton);
+
 }
 
 // ─── Extension Deactivation ──────────────────────────────────────────────────

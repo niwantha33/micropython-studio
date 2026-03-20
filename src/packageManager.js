@@ -75,9 +75,20 @@ async function openPackageManager(context, currentDevicePort, terminal) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
 
+            // Warn user to close the Shell terminal first — on Windows, an open
+            // mpremote REPL session holds the serial port and will cause a
+            // KeyboardInterrupt when a second mpremote process tries to connect.
+            const answer = await vscode.window.showWarningMessage(
+                `Ready to install "${selected.pkgName}". Make sure the MicroPython Shell terminal is closed first — an open Shell holds the COM port and will cause the install to fail.`,
+                { modal: true },
+                'Install Now',
+                'Cancel'
+            );
+            if (answer !== 'Install Now') return;
+
             // Command: mpremote connect <port> mip install <pkg>
             const installCmd = `"${venvPython}" -m mpremote connect ${currentDevicePort} mip install ${selected.pkgName}`;
-            
+
             terminal.show();
             terminal.sendText(installCmd);
             vscode.window.showInformationMessage(`Installing ${selected.pkgName}... Check the terminal for progress.`);

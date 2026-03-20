@@ -236,12 +236,35 @@ async function openWebReplTerminal(context, devicePort) {
     let getName      = '';
     let getAccum     = [];     // accumulated bytes
 
-    /** Decode a WebREPL binary response frame; returns numeric code or -1 */
-    function decodeResp(buf) {
-        if (buf.length >= 4 && buf[0] === 0x57 && buf[1] === 0x42) {
-            return buf[2] | (buf[3] << 8);
+    /** Send the 82-byte WebREPL PUT/GET header record */
+    function sendWaHeader(type, name, fileSize = 0) {
+        const rec = Buffer.alloc(2 + 1 + 1 + 8 + 4 + 2 + 64);
+        rec.write('WA', 0, 'ascii');
+        rec[2] = type;   // 1=PUT, 2=GET
+        rec.writeUInt32LE(fileSize, 12);
+        rec.writeUInt16LE(name.length, 16);
+        Buffer.from(name).copy(rec, 18);
+        client.send(rec);
+    }
+
+    function statusMsg(html) {
+        panel.webview.postMessage({ type: 'fileStatus', html });
+    }
+
+    client.onConnect = () => {
+        panel.webview.postMessage({ type: 'status', state: 'connected', ip });
+    };
+
+    let incomingBuf = Buffer.alloc(0);
+
+    /** Decode a WebREPL binary response frame from the front of incomingBuf; 
+     * returns { code: number, len: number } or null if not enough data. */
+    function peekResp() {
+        if (incomingBuf.length < 4) return null;
+        if (incomingBuf[0] === 0x57 && incomingBuf[1] === 0x42) {
+            return { code: incomingBuf[2] | (incomingBuf[3] << 8), len: 4 };
         }
-        return -1;
+        return null;
     }
 
     /** Send the 82-byte WebREPL PUT/GET header record */
@@ -263,79 +286,106 @@ async function openWebReplTerminal(context, devicePort) {
         panel.webview.postMessage({ type: 'status', state: 'connected', ip });
     };
 
-    client.onData = (buf) => {
-        if (binaryState === 0) {
-            // Normal REPL output → forward to terminal
-            panel.webview.postMessage({ type: 'output', data: Array.from(buf) });
-            return;
-        }
-
-        // ── File transfer protocol handling ──────────────────────────────
-        const code = decodeResp(buf);
-
-        if (binaryState === 11) {
-            // PUT: board acknowledged header, now send file data
-            if (code === 0) {
-                for (let off = 0; off < putData.length; off += 1024) {
-                    client.send(putData.slice(off, off + 1024));
-                }
-                binaryState = 12;
-            } else {
-                statusMsg(`<span style="color:#f44">Failed to start sending ${putName}</span>`);
-                binaryState = 0;
+    async function processIncoming() {
+        while (incomingBuf.length > 0) {
+            if (binaryState === 0) {
+                // Normal REPL output → forward to terminal
+                panel.webview.postMessage({ type: 'output', data: Array.from(incomingBuf) });
+                incomingBuf = Buffer.alloc(0);
+                return;
             }
 
-        } else if (binaryState === 12) {
-            // PUT: board confirmed all data received
-            if (code === 0) {
-                statusMsg(`Sent <b>${putName}</b>, ${putData.length} bytes`);
-            } else {
-                statusMsg(`<span style="color:#f44">Send failed: ${putName}</span>`);
-            }
-            binaryState = 0;
+            // ── File transfer protocol handling ──────────────────────────────
+            if (binaryState === 11) {
+                // PUT: board acknowledged header, now send file data
+                const resp = peekResp();
+                if (!resp) return; 
+                incomingBuf = incomingBuf.slice(resp.len);
 
-        } else if (binaryState === 21) {
-            // GET: board acknowledged header
-            if (code === 0) {
-                binaryState = 22;
-                client.send(Buffer.from([0])); // ack: send next chunk
-            } else {
-                statusMsg(`<span style="color:#f44">File not found: ${getName}</span>`);
-                binaryState = 0;
-            }
-
-        } else if (binaryState === 22) {
-            // GET: receive data chunk [sz_lo, sz_hi, ...data]
-            if (buf.length >= 2) {
-                const sz = buf[0] | (buf[1] << 8);
-                if (sz === 0) {
-                    binaryState = 23;
-                } else if (buf.length === 2 + sz) {
-                    const chunk = buf.slice(2);
-                    for (let i = 0; i < chunk.length; i++) getAccum.push(chunk[i]);
-                    statusMsg(`Getting <b>${getName}</b>… ${getAccum.length} bytes`);
-                    client.send(Buffer.from([0])); // ack next chunk
+                if (resp.code === 0) {
+                    // Send chunks with flow control to avoid ECONNRESET
+                    for (let off = 0; off < putData.length; off += 1024) {
+                        client.send(putData.slice(off, off + 1024));
+                        if (off % 4096 === 0) { // Small pause every 4KB
+                            await new Promise(r => setTimeout(r, 5));
+                        }
+                    }
+                    binaryState = 12;
                 } else {
-                    // Malformed — abort
-                    statusMsg(`<span style="color:#f44">Protocol error getting ${getName}</span>`);
+                    statusMsg(`<span style="color:#f44">Failed to start sending ${putName}</span>`);
                     binaryState = 0;
                 }
-            }
 
-        } else if (binaryState === 23) {
-            // GET: final status
-            if (code === 0) {
-                statusMsg(`Got <b>${getName}</b>, ${getAccum.length} bytes`);
-                panel.webview.postMessage({
-                    type: 'fileData',
-                    name: getName,
-                    bytes: getAccum
-                });
-            } else {
-                statusMsg(`<span style="color:#f44">Get failed: ${getName}</span>`);
+            } else if (binaryState === 12) {
+                // PUT: board confirmed all data received
+                const resp = peekResp();
+                if (!resp) return;
+                incomingBuf = incomingBuf.slice(resp.len);
+
+                if (resp.code === 0) {
+                    statusMsg(`Sent <b>${putName}</b>, ${putData.length} bytes`);
+                } else {
+                    statusMsg(`<span style="color:#f44">Send failed: ${putName}</span>`);
+                }
+                binaryState = 0;
+
+            } else if (binaryState === 21) {
+                // GET: board acknowledged header
+                const resp = peekResp();
+                if (!resp) return;
+                incomingBuf = incomingBuf.slice(resp.len);
+
+                if (resp.code === 0) {
+                    binaryState = 22;
+                    client.send(Buffer.from([0])); // ack: send next chunk
+                } else {
+                    statusMsg(`<span style="color:#f44">File not found: ${getName}</span>`);
+                    binaryState = 0;
+                }
+
+            } else if (binaryState === 22) {
+                // GET: receive data chunk [sz_lo, sz_hi, ...data]
+                if (incomingBuf.length < 2) return;
+                const sz = incomingBuf[0] | (incomingBuf[1] << 8);
+                
+                if (sz === 0) {
+                    incomingBuf = incomingBuf.slice(2);
+                    binaryState = 23;
+                } else {
+                    if (incomingBuf.length < 2 + sz) return; // Wait for full chunk
+                    const chunk = incomingBuf.slice(2, 2 + sz);
+                    for (let i = 0; i < chunk.length; i++) getAccum.push(chunk[i]);
+                    incomingBuf = incomingBuf.slice(2 + sz);
+                    
+                    statusMsg(`Getting <b>${getName}</b>… ${getAccum.length} bytes`);
+                    client.send(Buffer.from([0])); // ack next chunk
+                    // Loop to next chunk or final status
+                }
+
+            } else if (binaryState === 23) {
+                // GET: final status
+                const resp = peekResp();
+                if (!resp) return;
+                incomingBuf = incomingBuf.slice(resp.len);
+
+                if (resp.code === 0) {
+                    statusMsg(`Got <b>${getName}</b>, ${getAccum.length} bytes`);
+                    panel.webview.postMessage({
+                        type: 'fileData',
+                        name: getName,
+                        bytes: getAccum
+                    });
+                } else {
+                    statusMsg(`<span style="color:#f44">Get failed: ${getName}</span>`);
+                }
+                binaryState = 0;
             }
-            binaryState = 0;
         }
+    }
+
+    client.onData = (buf) => {
+        incomingBuf = Buffer.concat([incomingBuf, buf]);
+        processIncoming();
     };
 
     client.onDisconnect = (reason) => {
@@ -374,52 +424,71 @@ async function openWebReplTerminal(context, devicePort) {
 
 function getHtml(ip, csp, termJsUri, fileSaverUri, cssUri) {
     return `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Security-Policy" content="${csp}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebREPL — ${ip}</title>
     <link rel="stylesheet" href="${cssUri}">
-    <style>
-        * { box-sizing: border-box; }
-        body { display:flex; flex-direction:column; height:100vh; overflow:hidden; margin:0; }
-        .toolbar { flex-shrink:0; display:flex; align-items:center; gap:8px;
-                   padding:5px 8px; background:#252526; border-bottom:1px solid #3c3c3c; }
-        #status-dot { width:9px; height:9px; border-radius:50%; background:#f44; display:inline-block; }
-        #status-dot.ok { background:#4c4; }
-        #status-text { font-size:12px; color:#9d9d9d; }
-        #main-area { display:flex; flex:1; overflow:hidden; }
-        #term-wrap { flex:1; overflow:hidden; padding:4px 2px; }
-        #sidebar { width:210px; flex-shrink:0; overflow-y:auto; padding:4px;
-                   border-left:1px solid #3c3c3c; }
-    </style>
 </head>
 <body>
-<div class="toolbar">
-    <span id="status-dot"></span>
-    <span id="status-text">Connecting to ${ip}:8266...</span>
-</div>
-<div id="main-area">
-    <div id="term-wrap"><div id="term"></div></div>
-    <div id="sidebar">
-        <div class="file-box">
-            <strong>Send file to device</strong><br>
-            <input type="file" id="put-file-select" style="margin:4px 0;width:100%">
-            <div id="put-file-list" style="color:#9d9d9d;font-size:11px;margin:2px 0"></div>
-            <input type="button" value="Send to device" id="put-file-button"
-                   onclick="putFile()" style="width:100%;margin-top:4px" disabled>
+
+<header class="header">
+    <div class="device-info">
+        <span style="font-weight: 600; font-size: 13px;">WebREPL Console</span>
+        <div class="status-badge">
+            <span id="status-dot"></span>
+            <span id="status-text">Connecting...</span>
         </div>
-        <div class="file-box" style="margin-top:6px">
-            <strong>Get file from device</strong><br>
-            <input type="text" id="get_filename" placeholder="/main.py"
-                   style="width:100%;margin:4px 0">
-            <input type="button" value="Get from device" onclick="getFile()"
-                   style="width:100%;margin-top:2px">
-        </div>
-        <div class="file-box" id="file-status" style="margin-top:6px">
-            <span style="color:#9d9d9d;font-size:11px">(file transfer status)</span>
-        </div>
+        <span style="font-size: 11px; opacity: 0.7;">${ip}</span>
     </div>
+    <div class="header-actions">
+        <button onclick="window.location.reload()" title="Hard Refresh UI">Refresh</button>
+    </div>
+</header>
+
+<div id="main-area">
+    <div id="term-wrap">
+        <div id="term"></div>
+    </div>
+    
+    <aside id="sidebar">
+        <div>
+            <span class="section-title">Transfer Controls</span>
+            <div class="card">
+                <div class="file-input-group">
+                    <label style="font-size: 11px; opacity: 0.8;">Send to Device</label>
+                    <input type="file" id="put-file-select" title="Choose file to upload">
+                    <div id="put-file-list" style="color:var(--vscode-descriptionForeground); font-size:10px; margin-top:2px">No file selected</div>
+                    <button id="put-file-button" class="btn" onclick="putFile()" disabled>
+                        <span>↑</span> Upload File
+                    </button>
+                </div>
+                
+                <div class="file-input-group" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+                    <label style="font-size: 11px; opacity: 0.8;">Download from Device</label>
+                    <input type="text" id="get_filename" placeholder="/main.py">
+                    <button class="btn" onclick="getFile()">
+                        <span>↓</span> Download File
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <span class="section-title">Transfer Status</span>
+            <div class="card" id="file-status-container">
+                <div id="file-status">Ready</div>
+            </div>
+        </div>
+
+        <div style="margin-top: auto;">
+            <div style="font-size: 10px; opacity: 0.5; text-align: center;">
+                MicroPython Studio WebREPL v1.1
+            </div>
+        </div>
+    </aside>
 </div>
 
 <script src="${termJsUri}"></script>
@@ -427,58 +496,71 @@ function getHtml(ip, csp, termJsUri, fileSaverUri, cssUri) {
 <script>
 const vscodeApi = acquireVsCodeApi();
 
-// ── Terminal setup ──────────────────────────────────────────────────────────
+// --- Terminal setup ---
 function calcSize() {
+    const wrap = document.getElementById('term-wrap');
     return [
-        Math.max(80, Math.min(200, (window.innerWidth - 230) / 7.2) | 0),
-        Math.max(20, Math.min(80,  (window.innerHeight - 60) / 14) | 0)
+        Math.max(80, Math.min(220, (wrap.clientWidth - 24) / 7.2) | 0),
+        Math.max(20, Math.min(100, (wrap.clientHeight - 24) / 14) | 0)
     ];
 }
 
 var term;
 window.onload = function() {
     var [cols, rows] = calcSize();
-    term = new Terminal({ cols, rows, useStyle: true, screenKeys: true, cursorBlink: true });
+    term = new Terminal({ 
+        cols: cols, 
+        rows: rows, 
+        useStyle: true, 
+        screenKeys: true, 
+        cursorBlink: true,
+        theme: {
+            background: '#1e1e1e',
+            foreground: '#cccccc',
+            cursor: '#aeafad',
+            selection: '#3a3d41'
+        }
+    });
     term.open(document.getElementById('term'));
     term.on('data', function(data) {
         var bytes = Array.from(new TextEncoder().encode(data));
         vscodeApi.postMessage({ type: 'input', data: bytes });
     });
+    
+    // Initial focus
+    setTimeout(() => term.focus(), 100);
 };
 
 window.addEventListener('resize', function() {
     if (term) { var [c,r] = calcSize(); term.resize(c,r); }
 });
 
-// ── Message bridge from extension host ─────────────────────────────────────
+// --- Message bridge ---
 window.addEventListener('message', function(event) {
     const msg = event.data;
     if (msg.type === 'output') {
-        // Convert byte array back to string for the terminal
-        const str = String.fromCharCode.apply(null, msg.data);
+        const str = new TextDecoder().decode(new Uint8Array(msg.data));
         term.write(str);
     } else if (msg.type === 'status') {
         const dot = document.getElementById('status-dot');
         const txt = document.getElementById('status-text');
         if (msg.state === 'connected') {
             dot.className = 'ok';
-            txt.textContent = 'Connected to ${ip}:8266';
-            term.write('\\x1b[32mWebREPL connected\\x1b[m\\r\\n');
+            txt.textContent = 'CONNECTED';
+            term.write('\\x1b[38;5;48m✔ WebREPL connected to ${ip}\\x1b[m\\r\\n');
         } else {
             dot.className = '';
-            txt.textContent = 'Disconnected: ' + (msg.reason || '');
-            term.write('\\x1b[31m\\r\\nDisconnected\\x1b[m\\r\\n');
+            txt.textContent = 'DISCONNECTED';
+            term.write('\\x1b[38;5;203m✘ Disconnected: ' + (msg.reason || 'Server closed') + '\\x1b[m\\r\\n');
         }
     } else if (msg.type === 'fileStatus') {
-        document.getElementById('file-status').innerHTML =
-            '<span style="font-size:11px">' + msg.html + '</span>';
+        document.getElementById('file-status').innerHTML = msg.html;
     } else if (msg.type === 'fileData') {
-        // File received from device — trigger browser save dialog
         saveAs(new Blob([new Uint8Array(msg.bytes)], {type:'application/octet-stream'}), msg.name);
     }
 });
 
-// ── File transfer ───────────────────────────────────────────────────────────
+// --- File transfer ---
 var _putName = null, _putData = null;
 
 document.getElementById('put-file-select').addEventListener('change', function(evt) {
@@ -488,7 +570,7 @@ document.getElementById('put-file-select').addEventListener('change', function(e
     var reader = new FileReader();
     reader.onload = function(e) {
         _putData = new Uint8Array(e.target.result);
-        document.getElementById('put-file-list').textContent = f.name + ' - ' + _putData.length + ' bytes';
+        document.getElementById('put-file-list').textContent = f.name + ' (' + (_putData.length/1024).toFixed(1) + ' KB)';
         document.getElementById('put-file-button').disabled = false;
     };
     reader.readAsArrayBuffer(f);
@@ -496,14 +578,14 @@ document.getElementById('put-file-select').addEventListener('change', function(e
 
 function putFile() {
     if (!_putName || !_putData) return;
-    document.getElementById('file-status').innerHTML = 'Sending ' + _putName + '...';
+    document.getElementById('file-status').innerHTML = '<span class="file-status-icon">⌛</span> Sending...';
     vscodeApi.postMessage({ type: 'putFile', name: _putName, bytes: Array.from(_putData) });
 }
 
 function getFile() {
     var name = document.getElementById('get_filename').value.trim();
     if (!name) return;
-    document.getElementById('file-status').innerHTML = 'Getting ' + name + '...';
+    document.getElementById('file-status').innerHTML = '<span class="file-status-icon">⌛</span> Requesting...';
     vscodeApi.postMessage({ type: 'getFile', name });
 }
 </script>
