@@ -99,7 +99,6 @@ function runPythonProcess(exe, args, onComplete) {
 function runUpload(exe, baseArgs, onDone) {
     runPythonProcess(exe, baseArgs, async (code) => {
         if (code === 3) {
-            // Conflicts found — ask user
             const answer = await vscode.window.showWarningMessage(
                 'Some files already exist on the device. Overwrite them?',
                 { modal: true },
@@ -111,6 +110,71 @@ function runUpload(exe, baseArgs, onDone) {
             }
         } else {
             if (onDone) onDone();
+        }
+    });
+}
+
+/**
+ * Run a download command. Captures stdout to detect conflict JSON (exit code 3),
+ * then shows a QuickPick with Overwrite all / Skip existing / Choose files options.
+ * @param {string} exe
+ * @param {string[]} baseArgs - args WITHOUT --overwrite / --skip / --overwrite-files
+ */
+function runDownload(exe, baseArgs) {
+    let stdoutBuf = '';
+    const channel = vscode.window.createOutputChannel('MicroPython Studio');
+    channel.show(true);
+    channel.appendLine('─'.repeat(50));
+
+    const proc = spawn(exe, baseArgs);
+    proc.stdout.on('data', d => {
+        stdoutBuf += d.toString();
+        channel.append(d.toString());
+    });
+    proc.stderr.on('data', d => channel.append(d.toString()));
+    proc.on('error', err => channel.appendLine(`❌ ${err.message}`));
+
+    proc.on('close', async (code) => {
+        if (code !== 3) return;
+
+        // Parse conflict list from stdout JSON line
+        let conflicts = [];
+        for (const line of stdoutBuf.split('\n')) {
+            try {
+                const msg = JSON.parse(line.trim());
+                if (msg.conflicts) { conflicts = msg.conflicts; break; }
+            } catch (_) {}
+        }
+
+        // Show the three options
+        const pick = await vscode.window.showQuickPick([
+            { label: '$(sync)       Overwrite all',       id: 'overwrite' },
+            { label: '$(debug-step-over) Skip existing',  id: 'skip' },
+            { label: '$(list-tree)  Choose files',        id: 'choose' }
+        ], { placeHolder: `${conflicts.length} file(s) already exist locally. What should we do?` });
+
+        if (!pick) return;
+
+        if (/** @type {any} */(pick).id === 'overwrite') {
+            runPythonProcess(exe, [...baseArgs, '--overwrite'], undefined);
+
+        } else if (/** @type {any} */(pick).id === 'skip') {
+            runPythonProcess(exe, [...baseArgs, '--skip'], undefined);
+
+        } else {
+            // Choose files: show multi-select of conflicting files
+            const items = /** @type {vscode.QuickPickItem[]} */ (
+                conflicts.map(f => ({ label: /** @type {string} */ (f), picked: true }))
+            );
+            const chosen = /** @type {vscode.QuickPickItem[] | undefined} */ (
+                await vscode.window.showQuickPick(items, {
+                    placeHolder: 'Select files to overwrite (unchecked = skip)',
+                    canPickMany: true
+                })
+            );
+            if (!chosen || chosen.length === 0) return;
+            const owf = chosen.map(i => i.label).join('|');
+            runPythonProcess(exe, [...baseArgs, '--overwrite-files', owf], undefined);
         }
     });
 }
@@ -592,6 +656,27 @@ function activate(context) {
                 updateDeviceStatusBar();
                 if (deviceFileExplorer) deviceFileExplorer.setPort(newPort);
             });
+        })
+    );
+
+    // Download all files from device → local main/ folder
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.downloadFromDevice', async () => {
+            if (!gRemoteDevicePort) {
+                vscode.window.showWarningMessage('No device connected. Refresh first.');
+                return;
+            }
+            if (!gDeviceCodeDir) {
+                vscode.window.showWarningMessage('No project detected. Open a project first.');
+                return;
+            }
+            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            runDownload(venvPython, [
+                scriptPath, '--python', venvPython,
+                'download', '--port', gRemoteDevicePort,
+                '--dest', gDeviceCodeDir
+            ]);
         })
     );
 

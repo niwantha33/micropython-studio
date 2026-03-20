@@ -617,6 +617,175 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
 # ----------------------------
 # Command: exec
 # ----------------------------
+# ----------------------------
+# Command: download
+# ----------------------------
+
+def _get_device_files(python_exe: str, port: str) -> 'list[str]':
+    """Return a list of all file paths on the device (recursive)."""
+    import json as _json
+
+    # Script that walks the device filesystem and prints a JSON list of file paths
+    walk_code = (
+        "import os,json\n"
+        "def _w(p,r):\n"
+        " try:\n"
+        "  for e in os.listdir(p):\n"
+        "   f=(p+'/'+e).replace('//','/') \n"
+        "   try:\n"
+        "    if os.stat(f)[0]&0x4000:_w(f,r)\n"
+        "    else:r.append(f)\n"
+        "   except:pass\n"
+        " except:pass\n"
+        "r=[]\n"
+        "_w('/',r)\n"
+        "print(json.dumps(r))\n"
+    )
+
+    tmp = Path(sys.executable).parent / '_mps_ls.py'
+    output: str = ''
+    try:
+        tmp.write_text(walk_code, encoding='utf-8')
+        if _is_ws_port(port):
+            host, password = _parse_ws_port(port)
+            conn = WebReplConnection(host, password)
+            try:
+                conn.connect()
+                import io as _io
+                _buf = _io.BytesIO()
+                old_stdout = sys.stdout
+                sys.stdout = _io.TextIOWrapper(_buf, encoding='utf-8')
+                conn.exec_code(walk_code)
+                sys.stdout.flush()
+                sys.stdout = old_stdout
+                output = _buf.getvalue().decode('utf-8', errors='ignore')
+            finally:
+                conn.close()
+        else:
+            import subprocess as _sp
+            proc = _sp.Popen(
+                [python_exe, '-m', 'mpremote', 'connect', port, 'run', str(tmp)],
+                stdout=_sp.PIPE, stderr=_sp.PIPE, stdin=_sp.DEVNULL
+            )
+            raw_bytes, _ = proc.communicate(timeout=30)
+            output = bytes(raw_bytes).decode('utf-8', errors='ignore')
+    finally:
+        try: tmp.unlink()
+        except Exception: pass
+
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith('['):
+            try:
+                return _json.loads(line)
+            except Exception:
+                pass
+    return []
+
+
+def cmd_download(python_exe: str, port: str, dest_dir: str,
+                 overwrite: bool = False, skip: bool = False,
+                 overwrite_files: 'list[str] | None' = None) -> None:
+    """Download all files from the device to a local directory."""
+    import json as _json
+
+    dest = Path(dest_dir).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+
+    print("🔍 Reading device filesystem...", file=sys.stderr)
+    device_files = _get_device_files(python_exe, port)
+
+    if not device_files:
+        print("⚠️  No files found on device.", file=sys.stderr)
+        sys.exit(0)
+
+    print(f"📋 Found {len(device_files)} file(s) on device.", file=sys.stderr)
+
+    # Detect conflicts (files that already exist locally)
+    conflicts = [
+        f for f in device_files
+        if (dest / f.lstrip('/')).exists()
+    ]
+
+    if conflicts and not overwrite and not skip and overwrite_files is None:
+        # Signal the extension: print conflict list as JSON then exit 3
+        for c in conflicts:
+            print(f"   • {c}", file=sys.stderr)
+        print(_json.dumps({'conflicts': conflicts}), flush=True)
+        sys.exit(3)
+
+    print(f"📥 Downloading to: {dest}", file=sys.stderr)
+    print("-" * 50, file=sys.stderr)
+
+    downloaded = 0
+    skipped = 0
+
+    for remote_path in device_files:
+        rel = remote_path.lstrip('/')
+        local_path = dest / rel
+
+        # Decide: overwrite / skip / selective
+        if local_path.exists():
+            if skip:
+                print(f"⏭  Skipped:  {rel}", file=sys.stderr)
+                skipped += 1
+                continue
+            _owf: 'list[str]' = overwrite_files or []  # type: ignore[assignment]
+            if overwrite_files is not None and remote_path not in _owf:
+                print(f"⏭  Skipped:  {rel}", file=sys.stderr)
+                skipped += 1
+                continue
+            # fall through → overwrite
+
+        # Create parent directories locally
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+
+        print(f"⬇  {remote_path}  →  {rel}", file=sys.stderr)
+
+        if _is_ws_port(port):
+            host, password = _parse_ws_port(port)
+            conn = WebReplConnection(host, password)
+            try:
+                conn.connect()
+                # Read file via exec_code, capture output
+                read_code = (
+                    f"import binascii\n"
+                    f"with open({remote_path!r},'rb') as _f:\n"
+                    f"    print(binascii.hexlify(_f.read()).decode())\n"
+                )
+                import io as _io
+                buf = _io.BytesIO()
+                old = sys.stdout
+                sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
+                conn.exec_code(read_code)
+                sys.stdout.flush()
+                sys.stdout = old
+                hex_str = buf.getvalue().decode('utf-8', errors='ignore').strip()
+                import binascii as _ba
+                local_path.write_bytes(_ba.unhexlify(hex_str))
+            except Exception as e:
+                print(f"❌ Failed: {remote_path}: {e}", file=sys.stderr)
+                continue
+            finally:
+                conn.close()
+        else:
+            import subprocess as _sp
+            result = _sp.run(
+                [python_exe, '-m', 'mpremote', 'connect', port,
+                 'fs', 'cp', f':{remote_path}', str(local_path)],
+                capture_output=True, timeout=30
+            )
+            if result.returncode != 0:
+                err = result.stderr.decode('utf-8', errors='ignore').strip()
+                print(f"❌ Failed: {remote_path}: {err}", file=sys.stderr)
+                continue
+
+        downloaded += 1
+
+    print("-" * 50, file=sys.stderr)
+    print(f"✅ Download complete: {downloaded} downloaded, {skipped} skipped.", file=sys.stderr)
+
+
 def cmd_exec(python_exe, port, code):
     if not code.strip():
         print("❌ No code to execute", file=sys.stderr)
@@ -679,6 +848,14 @@ def main():
     upload_p.add_argument('--dest', default='/', help='Remote destination path (default: /)')
     upload_p.add_argument('--overwrite', action='store_true', help='Overwrite existing files without prompting')
 
+    # Download
+    dl_p = subparsers.add_parser('download', help='Download all files from device to local folder')
+    dl_p.add_argument('--port', required=True, help='Serial port or ws: address')
+    dl_p.add_argument('--dest', required=True, help='Local destination folder (e.g. main/)')
+    dl_p.add_argument('--overwrite', action='store_true', help='Overwrite all existing local files')
+    dl_p.add_argument('--skip', action='store_true', help='Skip files that already exist locally')
+    dl_p.add_argument('--overwrite-files', default='', help='Pipe-separated list of specific files to overwrite')
+
     # Exec
     exec_p = subparsers.add_parser('exec', help='Execute code on device')
     exec_p.add_argument('--port', required=True, help='Serial port (e.g., COM9)')
@@ -708,6 +885,9 @@ def main():
         cmd_exec(args.python, args.port, args.code)
     elif args.command == 'upload':
         cmd_upload(args.python, args.port, args.source, args.dest, args.overwrite)
+    elif args.command == 'download':
+        owf = [f for f in args.overwrite_files.split('|') if f] if args.overwrite_files else None
+        cmd_download(args.python, args.port, args.dest, args.overwrite, args.skip, owf)
 
 
 if __name__ == '__main__':

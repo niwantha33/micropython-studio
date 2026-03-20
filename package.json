@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and debug MicroPython on real hardware",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {
@@ -208,6 +208,12 @@
         "title": "MicroPython: Open Device Dashboard",
         "category": "MicroPython Studio",
         "icon": "$(dashboard)"
+      },
+      {
+        "command": "micropython-ide.downloadFromDevice",
+        "title": "MicroPython: Download Files from Device",
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-download)"
       }
     ],
     "menus": {
