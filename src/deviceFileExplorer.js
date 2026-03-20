@@ -10,6 +10,9 @@
 const vscode = require('vscode');
 const { exec } = require('child_process');
 const { promisify } = require('util');
+const os = require('os');
+const fs = require('fs');
+const pathMod = require('path');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 
 const execAsync = promisify(exec);
@@ -197,6 +200,112 @@ class DeviceFileExplorerProvider {
 
         return items;
     }
+
+    // ── Drag and Drop Controller ──────────────────────────────────────────────
+
+    get dragMimeTypes() {
+        return ['application/vnd.mps-device-file'];
+    }
+
+    get dropMimeTypes() {
+        return ['application/vnd.mps-device-file'];
+    }
+
+    /**
+     * Called when the user starts dragging a tree item.
+     * We only allow dragging files (not folders — too risky to move recursively).
+     */
+    handleDrag(source, dataTransfer) {
+        const files = source.filter(item => !item.isDirectory);
+        if (files.length === 0) return;
+        // Store the device paths of dragged files as JSON
+        dataTransfer.set(
+            'application/vnd.mps-device-file',
+            new vscode.DataTransferItem(JSON.stringify(files.map(f => f.devicePath)))
+        );
+    }
+
+    /**
+     * Called when the user drops onto a tree item (or the root).
+     * Moves each dragged file to the target directory.
+     */
+    async handleDrop(target, dataTransfer) {
+        const item = dataTransfer.get('application/vnd.mps-device-file');
+        if (!item) return;
+
+        let sourcePaths;
+        try {
+            sourcePaths = JSON.parse(item.value);
+        } catch (_) { return; }
+
+        // Determine destination directory
+        let destDir;
+        if (!target) {
+            destDir = '/';                        // dropped on empty area → root
+        } else if (target.isDirectory) {
+            destDir = target.devicePath;          // dropped on a folder
+        } else {
+            // dropped on a file → same directory as that file
+            const parts = target.devicePath.split('/');
+            parts.pop();
+            destDir = parts.join('/') || '/';
+        }
+
+        // Normalise trailing slash
+        if (destDir !== '/' && destDir.endsWith('/')) {
+            destDir = destDir.slice(0, -1);
+        }
+
+        let moved = 0;
+        for (const srcPath of sourcePaths) {
+            const fileName = srcPath.split('/').pop();
+            const destPath = destDir === '/' ? `/${fileName}` : `${destDir}/${fileName}`;
+
+            if (srcPath === destPath) continue;   // already in that location
+
+            try {
+                await this._moveFileOnDevice(srcPath, destPath);
+                moved++;
+            } catch (err) {
+                vscode.window.showErrorMessage(
+                    `Failed to move ${srcPath} → ${destPath}: ${err.message}`
+                );
+            }
+        }
+
+        if (moved > 0) {
+            this.refresh();
+        }
+    }
+
+    /**
+     * Move a single file on the device using os.rename().
+     * Writes a temp Python script to avoid shell-quoting issues on Windows.
+     */
+    _moveFileOnDevice(srcPath, destPath) {
+        return new Promise((resolve, reject) => {
+            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+
+            const code = [
+                'import os',
+                `os.rename(${JSON.stringify(srcPath)}, ${JSON.stringify(destPath)})`,
+                "print('ok')"
+            ].join('\n');
+
+            const tmpFile = pathMod.join(os.tmpdir(), 'mps_move.py');
+            fs.writeFileSync(tmpFile, code, 'utf8');
+
+            const cmd = `"${venvPython}" -m mpremote connect ${this._port} run "${tmpFile}"`;
+            exec(cmd, { timeout: 15000 }, (error, _stdout, stderr) => {
+                try { fs.unlinkSync(tmpFile); } catch (_) {}
+                if (error || (stderr && stderr.includes('Traceback'))) {
+                    reject(new Error(stderr || error?.message || 'Unknown error'));
+                } else {
+                    resolve();
+                }
+            });
+        });
+    }
 }
 
 /**
@@ -269,9 +378,64 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
     });
 }
 
+/**
+ * Recursively delete a folder from the device.
+ * Uses `mpremote exec` to run a small Python snippet that walks and removes.
+ * @param {string} port - Device port
+ * @param {string} deviceFolderPath - Path on device (e.g. '/lib')
+ * @param {DeviceFileExplorerProvider} provider - Provider to refresh after delete
+ */
+async function deleteDeviceFolder(port, deviceFolderPath, provider) {
+    if (!port) {
+        vscode.window.showWarningMessage('No device connected.');
+        return;
+    }
+
+    const confirm = await vscode.window.showWarningMessage(
+        `Delete folder "${deviceFolderPath}" and ALL its contents from device? This cannot be undone.`,
+        { modal: true },
+        'Delete'
+    );
+    if (confirm !== 'Delete') return;
+
+    const venvFolder = getVenvPythonPathFolder();
+    const venvPython = getVenvPythonPath(venvFolder);
+
+    // Write the recursive-delete script to a temp file to avoid shell quoting issues
+    const code = [
+        'import os',
+        'def _rm(p):',
+        '    try:',
+        '        for e in os.listdir(p):',
+        '            _rm(p + "/" + e)',
+        '        os.rmdir(p)',
+        '    except OSError:',
+        '        os.remove(p)',
+        `_rm(${JSON.stringify(deviceFolderPath)})`,
+        "print('ok')"
+    ].join('\n');
+
+    const tmpFile = pathMod.join(os.tmpdir(), 'mps_rmtree.py');
+    fs.writeFileSync(tmpFile, code, 'utf8');
+
+    const cmd = `"${venvPython}" -m mpremote connect ${port} run "${tmpFile}"`;
+
+    exec(cmd, { timeout: 30000 }, (error, _stdout, stderr) => {
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+        if (error || (stderr && stderr.includes('Traceback'))) {
+            const msg = stderr || error?.message || 'Unknown error';
+            vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${msg}`);
+        } else {
+            vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
+            provider.refresh();
+        }
+    });
+}
+
 module.exports = {
     DeviceFileExplorerProvider,
     DeviceFileItem,
     readDeviceFile,
-    deleteDeviceFile
+    deleteDeviceFile,
+    deleteDeviceFolder
 };

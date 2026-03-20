@@ -1,231 +1,277 @@
 #!/usr/bin/env python3
+"""
+serial_reader.py
+UART debug monitor for MicroPython Studio.
+
+Connects to a SEPARATE hardware UART port (e.g. COM8 via USB-UART adapter)
+to read debug output sent from MCU UART1/UART2 — completely independent of
+the mpremote USB REPL connection (COM7).
+
+Fast read pattern (from rfc_server.py):
+  ser.read(1)              — blocks until first byte of a burst arrives
+  ser.read(ser.in_waiting) — drains all remaining bytes already in OS buffer
+No readline() timeout → latency is ~1ms instead of up to 100ms.
+
+Protocol (newline-delimited JSON over stdin/stdout):
+  stdin commands:
+    {"action":"connect",   "port":"COM8", "baud":115200}
+    {"action":"disconnect"}
+    {"action":"start_save","filename":"debug.log"}
+    {"action":"stop_save"}
+    {"action":"list_ports"}
+  stdout events:
+    {"status":"python_script_started"}
+    {"ports":[{"path":"COM8","description":"...","manufacturer":"..."},...]}
+    {"status":"connected","port":"COM8","baud":115200}
+    {"status":"disconnected"}
+    {"status":"saving_started","filename":"..."}
+    {"status":"saving_stopped"}
+    {"channel":"1","timestamp":...,"elapsed_ms":...,"data":"hello","raw":"[1] hello"}
+    {"error":"..."}
+"""
+
+import json
 import serial
 import serial.tools.list_ports
-import json
 import sys
-import time
 import threading
+import time
 
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _send(obj: dict) -> None:
+    print(json.dumps(obj), flush=True)
+
+
+# ── reader ────────────────────────────────────────────────────────────────────
 
 class SerialReader:
-    def __init__(self):
-        self.serial_conn = None
-        self.running = False
-        self.port = None
-        self.baudrate = 1000000
-        self.save_file = None
-        self.saving = False
-        self.start_time = None
+    def __init__(self) -> None:
+        self._conn: 'serial.Serial | None' = None
+        self._thread: 'threading.Thread | None' = None
+        self._running = False
+        self.port: 'str | None' = None
+        self._start_time: float = 0.0
+        self._save_file = None
+        self._saving = False
 
-    def list_ports(self):
-        """List all available serial ports with proper error handling"""
+    # ── port listing ──────────────────────────────────────────────────────────
+
+    def list_ports(self) -> None:
         try:
-            ports = serial.tools.list_ports.comports()
             result = []
-            for port in ports:
-                port_info = {
-                    'path': port.device,
-                    'manufacturer': port.manufacturer or 'Unknown',
-                    'description': port.description or '',
-                    'hwid': port.hwid or ''
+            for p in serial.tools.list_ports.comports():
+                info = {
+                    'path': p.device,
+                    'manufacturer': p.manufacturer or 'Unknown',
+                    'description': p.description or '',
+                    'hwid': p.hwid or '',
                 }
-                # Try to get more info if available
-                if hasattr(port, 'product'):
-                    port_info['product'] = port.product or ''
-                if hasattr(port, 'serial_number'):
-                    port_info['serial_number'] = port.serial_number or ''
-
-                result.append(port_info)
-
-            print(json.dumps({'ports': result}), flush=True)
-            return result
-
+                if hasattr(p, 'product'):
+                    info['product'] = p.product or ''
+                if hasattr(p, 'serial_number'):
+                    info['serial_number'] = p.serial_number or ''
+                result.append(info)
+            _send({'ports': result})
         except Exception as e:
-            error_msg = {'error': f"Failed to list ports: {str(e)}"}
-            print(json.dumps(error_msg), flush=True)
-            return []
+            _send({'error': f'list_ports failed: {e}'})
 
-    def connect(self, port_path):
-        """Connect to specified serial port"""
+    # ── connect ───────────────────────────────────────────────────────────────
+
+    def connect(self, port: str, baud: int = 115200) -> bool:
         try:
-            self.serial_conn = serial.Serial(
-                port=port_path,
-                baudrate=self.baudrate,
+            self._conn = serial.Serial(
+                port=port,
+                baudrate=baud,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.1,
-                write_timeout=0.1
+                timeout=None,       # blocking read — no timeout delay
+                write_timeout=1.0,
             )
-
-            # Test if port is actually accessible
-            if self.serial_conn.is_open:
-                self.port = port_path
-                self.running = True
-                self.start_time = time.time()
-                print(json.dumps({'status': 'connected',
-                      'port': port_path}), flush=True)
-                return True
-            else:
-                raise Exception("Port opened but not accessible")
-
+            if not self._conn.is_open:
+                raise serial.SerialException('Port opened but not accessible')
         except serial.SerialException as e:
-            error_msg = {'error': f"Serial connection failed: {str(e)}"}
-            print(json.dumps(error_msg), flush=True)
+            _send({'error': f'Serial connection failed: {e}'})
             return False
         except Exception as e:
-            error_msg = {'error': f"Connection error: {str(e)}"}
-            print(json.dumps(error_msg), flush=True)
+            _send({'error': f'Connection error: {e}'})
             return False
 
-    def start_saving(self, filename):
-        """Start saving data to file"""
+        self.port = port
+        self._running = True
+        self._start_time = time.time()
+        _send({'status': 'connected', 'port': port, 'baud': baud})
+
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
+        return True
+
+    # ── read loop ─────────────────────────────────────────────────────────────
+
+    def _read_loop(self) -> None:
+        """
+        Fast read loop — same pattern as rfc_server.py:
+          ser.read(1)               blocks until the first byte of a burst arrives
+          ser.read(ser.in_waiting)  drains everything already in the OS buffer
+
+        This gives ~1 ms latency vs up to 100 ms with readline(timeout=0.1).
+        No sleep() needed — the blocking read(1) keeps CPU at 0 % while idle.
+        """
+        buf = b''
+        conn = self._conn
+
+        while self._running:
+            try:
+                # Wait for the start of a new burst
+                byte = conn.read(1)
+                if not byte:
+                    continue
+
+                # Grab everything else already buffered
+                waiting = conn.in_waiting
+                burst = byte + (conn.read(waiting) if waiting else b'')
+                buf += burst
+
+                # Process every complete line
+                while b'\n' in buf:
+                    line_bytes, buf = buf.split(b'\n', 1)
+                    line = line_bytes.decode('utf-8', errors='ignore').rstrip('\r')
+                    if line:
+                        self._process_line(line)
+
+            except serial.SerialException as e:
+                _send({'error': f'Read error: {e}'})
+                break
+            except Exception as e:
+                _send({'error': f'Unexpected read error: {e}'})
+                break
+
+        # Flush any leftover bytes without a trailing newline
+        if buf:
+            line = buf.decode('utf-8', errors='ignore').strip()
+            if line:
+                self._process_line(line)
+
+        if self._running:
+            _send({'status': 'disconnected', 'reason': 'port closed'})
+            self._running = False
+
+    def _process_line(self, decoded: str) -> None:
+        elapsed_ms = int((time.time() - self._start_time) * 1000)
+
+        # Expected format: "[channel] message"  e.g. "[1] sensor=23.4"
+        if decoded.startswith('[') and ']' in decoded:
+            end = decoded.find(']')
+            ch = decoded[1:end]
+            message = decoded[end + 1:].strip()
+        else:
+            ch = 'raw'
+            message = decoded
+
+        result = {
+            'channel':    ch,
+            'timestamp':  int(self._start_time * 1000),
+            'elapsed_ms': elapsed_ms,
+            'data':       message,
+            'raw':        decoded,
+        }
+
+        if self._saving and self._save_file:
+            try:
+                self._save_file.write(
+                    f"{ch} {int(self._start_time * 1000)} {elapsed_ms} {message}\n"
+                )
+            except Exception:
+                pass
+
+        _send(result)
+
+    # ── disconnect ────────────────────────────────────────────────────────────
+
+    def disconnect(self) -> None:
+        self._running = False
+        self.stop_saving()
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+        _send({'status': 'disconnected'})
+
+    # ── save ──────────────────────────────────────────────────────────────────
+
+    def start_saving(self, filename: str) -> None:
         try:
-            self.save_file = open(filename, 'w', buffering=1)
-            self.saving = True
-            print(json.dumps({'status': 'saving_started',
-                  'filename': filename}), flush=True)
-            return True
+            self._save_file = open(filename, 'w', buffering=1)
+            self._saving = True
+            _send({'status': 'saving_started', 'filename': filename})
         except Exception as e:
-            error_msg = {'error': f"Failed to start saving: {str(e)}"}
-            print(json.dumps(error_msg), flush=True)
-            return False
+            _send({'error': f'start_save failed: {e}'})
 
-    def stop_saving(self):
-        """Stop saving data"""
-        try:
-            if self.save_file:
-                self.save_file.close()
-            self.saving = False
-            print(json.dumps({'status': 'saving_stopped'}), flush=True)
-            return True
-        except Exception as e:
-            error_msg = {'error': f"Failed to stop saving: {str(e)}"}
-            print(json.dumps(error_msg), flush=True)
-            return False
-
-    def disconnect(self):
-        """Disconnect from serial port"""
-        try:
-            self.stop_saving()
-            if self.serial_conn and self.serial_conn.is_open:
-                self.serial_conn.close()
-            self.running = False
-            self.port = None
-            print(json.dumps({'status': 'disconnected'}), flush=True)
-            return True
-        except Exception as e:
-            error_msg = {'error': f"Disconnect error: {str(e)}"}
-            print(json.dumps(error_msg), flush=True)
-            return False
-
-    def read_data(self):
-        """Read data from serial port with error handling"""
-        if not self.serial_conn or not self.serial_conn.is_open or not self.running:
-            return None
-
-        try:
-            # Read available data
-            if self.serial_conn.in_waiting > 0:
-                data = self.serial_conn.readline()
-                if data:
-                    decoded = data.decode('utf-8', errors='ignore').strip()
-                    if decoded:
-                        current_time = time.time()
-                        elapsed_ms = int(
-                            (current_time - self.start_time) * 1000)
-
-                        # Process data format: [ch] data...
-                        if decoded.startswith('[') and ']' in decoded:
-                            end_bracket = decoded.find(']')
-                            ch = decoded[1:end_bracket]
-                            message = decoded[end_bracket+1:].strip()
-
-                            result = {
-                                'channel': ch,
-                                'timestamp': int(self.start_time * 1000),
-                                'elapsed_ms': elapsed_ms,
-                                'data': message,
-                                'raw': decoded
-                            }
-
-                            # Save to file if enabled
-                            if self.saving and self.save_file:
-                                save_line = f"{ch} {int(self.start_time * 1000)} {elapsed_ms} {message}\n"
-                                self.save_file.write(save_line)
-
-                            return result
-            return None
-
-        except serial.SerialException as e:
-            error_msg = {'error': f"Read error: {str(e)}"}
-            print(json.dumps(error_msg), flush=True)
-            self.disconnect()
-            return None
-        except Exception as e:
-            error_msg = {'error': f"Unexpected read error: {str(e)}"}
-            print(json.dumps(error_msg), flush=True)
-            return None
-
-    def read_loop(self):
-        """Main reading loop"""
-        while self.running:
-            data = self.read_data()
-            if data:
-                print(json.dumps(data), flush=True)
-            time.sleep(0.001)  # Small delay to prevent CPU overload
+    def stop_saving(self) -> None:
+        self._saving = False
+        if self._save_file:
+            try:
+                self._save_file.close()
+            except Exception:
+                pass
+            self._save_file = None
+        _send({'status': 'saving_stopped'})
 
 
-def main():
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
     reader = SerialReader()
-    read_thread = None
-
-    print(json.dumps({'status': 'python_script_started'}), flush=True)
+    _send({'status': 'python_script_started'})
 
     try:
         while True:
+            line = sys.stdin.readline()
+            if not line:
+                break
+            line = line.strip()
+            if not line:
+                continue
             try:
-                line = sys.stdin.readline().strip()
-                if not line:
-                    break
-
-                command = json.loads(line)
-                action = command.get('action')
-
-                if action == 'list_ports':
-                    reader.list_ports()
-
-                elif action == 'connect':
-                    port = command.get('port')
-                    if port and reader.connect(port):
-                        read_thread = threading.Thread(
-                            target=reader.read_loop, daemon=True)
-                        read_thread.start()
-
-                elif action == 'start_save':
-                    filename = command.get('filename', 'uart_capture.log')
-                    reader.start_saving(filename)
-
-                elif action == 'stop_save':
-                    reader.stop_saving()
-
-                elif action == 'disconnect':
-                    reader.disconnect()
-                    break
-
+                cmd = json.loads(line)
             except json.JSONDecodeError:
-                error_msg = {'error': 'Invalid JSON command'}
-                print(json.dumps(error_msg), flush=True)
-            except Exception as e:
-                error_msg = {'error': f"Command processing error: {str(e)}"}
-                print(json.dumps(error_msg), flush=True)
+                _send({'error': 'Invalid JSON command'})
+                continue
+
+            action = cmd.get('action')
+
+            if action == 'list_ports':
+                reader.list_ports()
+
+            elif action == 'connect':
+                port = cmd.get('port', '')
+                baud = int(cmd.get('baud', 115200))
+                if port:
+                    reader.connect(port, baud)
+                else:
+                    _send({'error': 'connect: missing port'})
+
+            elif action == 'disconnect':
+                reader.disconnect()
+                break
+
+            elif action == 'start_save':
+                reader.start_saving(cmd.get('filename', 'debug.log'))
+
+            elif action == 'stop_save':
+                reader.stop_saving()
+
+            else:
+                _send({'error': f'Unknown action: {action}'})
 
     except KeyboardInterrupt:
         pass
     finally:
         reader.disconnect()
-        if read_thread and read_thread.is_alive():
-            read_thread.join(timeout=1.0)
 
 
 if __name__ == '__main__':

@@ -11,7 +11,7 @@ const languageOption = ['Micropython', 'CircuitPython'];
 // --- MicroPython ---
 const mcuOptions_MP = ['RP2', 'ESP', 'STM', 'SAM', 'NRF', 'RA', 'Any'];
 
-const rpBoards_MP = ['rp2040', 'rp2350'];
+const rpBoards_MP = ['rp2040', 'rp2350', 'Raspberry Pi Pico', 'Raspberry Pi Pico W', 'Raspberry Pi Pico H', 'Raspberry Pi Pico WH', 'Raspberry Pi Pico 2', 'Raspberry Pi Pico 2 W', 'Raspberry Pi Pico 2 H', 'Raspberry Pi Pico 2 WH'];
 
 const espBoards_MP = ['esp32', 'esp32c3', 'esp32c6', 'esp32s2', 'esp32s3', 'esp8266'];
 

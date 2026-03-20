@@ -2,8 +2,9 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and debug MicroPython on real hardware",
-  "version": "0.6.2",
+  "version": "0.6.4",
   "publisher": "niwantha33",
+  "license": "MIT",
   "author": {
     "name": "Niwantha Meepage",
     "email": "niwantha33@gmail.com"
@@ -71,7 +72,7 @@
     "viewsWelcome": [
       {
         "view": "micropython-ide-launch-view",
-        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
+        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package (mip)](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
         "when": "true"
       }
     ],
@@ -149,8 +150,20 @@
         "icon": "$(trash)"
       },
       {
+        "command": "micropython-ide.deleteDeviceFolder",
+        "title": "MicroPython: Delete Folder from Device",
+        "category": "MicroPython Studio",
+        "icon": "$(trash)"
+      },
+      {
         "command": "micropython-ide.uploadFileToDevice",
         "title": "MicroPython: Upload Current File to Device",
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "micropython-ide.uploadFolderToDevice",
+        "title": "MicroPython: Upload Folder to Device",
         "category": "MicroPython Studio",
         "icon": "$(cloud-upload)"
       },
@@ -171,6 +184,30 @@
         "title": "MicroPython: Generate Flowchart (code2flow)",
         "category": "MicroPython Studio",
         "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "micropython-ide.installPackage",
+        "title": "MicroPython: Install Package (mip)",
+        "category": "MicroPython Studio",
+        "icon": "$(package)"
+      },
+      {
+        "command": "micropython-ide.flashFirmware",
+        "title": "MicroPython: Flash Firmware to Device",
+        "category": "MicroPython Studio",
+        "icon": "$(flame)"
+      },
+      {
+        "command": "micropython-ide.downloadFirmware",
+        "title": "MicroPython: Download Firmware",
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "micropython-ide.openDeviceDashboard",
+        "title": "MicroPython: Open Device Dashboard",
+        "category": "MicroPython Studio",
+        "icon": "$(dashboard)"
       }
     ],
     "menus": {
@@ -226,6 +263,22 @@
         {
           "command": "micropython-ide.generateFlowchart",
           "when": "true"
+        },
+        {
+          "command": "micropython-ide.installPackage",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.flashFirmware",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.downloadFirmware",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.openDeviceDashboard",
+          "when": "true"
         }
       ],
       "explorer/context": [
@@ -237,6 +290,11 @@
         {
           "command": "micropython-ide.uploadFileToDevice",
           "when": "resourceExtname == .py || resourceExtname == .mpy",
+          "group": "micropython@1"
+        },
+        {
+          "command": "micropython-ide.uploadFolderToDevice",
+          "when": "explorerResourceIsFolder",
           "group": "micropython@1"
         },
         {
@@ -270,6 +328,11 @@
           "command": "micropython-ide.uploadProjectToDevice",
           "when": "view == micropython-ide-device-files",
           "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.installPackage",
+          "when": "view == micropython-ide-device-files",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -281,6 +344,16 @@
         {
           "command": "micropython-ide.deleteDeviceFile",
           "when": "view == micropython-ide-device-files && viewItem == deviceFile",
+          "group": "context"
+        },
+        {
+          "command": "micropython-ide.deleteDeviceFolder",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
+          "group": "inline"
+        },
+        {
+          "command": "micropython-ide.deleteDeviceFolder",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
           "group": "context"
         }
       ]

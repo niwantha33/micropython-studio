@@ -1,0 +1,42 @@
+#,Area,Feature,How to Test,Expected Result,Status,Notes
+SETUP
+1,Setup,Setup Virtual Environment,Command Palette → Setup Environment,.venv created + mpremote installed,,
+2,Setup,Create New Project,Status bar MPS vX.X → Create New Project,Project folder + device.cfg created,,
+3,Setup,Open Existing Project,Command Palette → Open Existing Project,Workspace opens + device.cfg detected,,
+CONNECTION
+4,Connect,Auto-detect device (USB),Connect board via USB + click Refresh,Status bar shows COM port,,
+5,Connect,Auto-detect device (Wi-Fi),webrepl_enabled=true in device.cfg + click Refresh,Status bar shows Wi-Fi IP,,
+6,Connect,Manual port override,Command Palette → Update Device Port,Port updates in status bar,,
+7,Connect,Port picker USB vs Wi-Fi,Click device status bar button (when webrepl_enabled=true),QuickPick shows USB + Wi-Fi options,,
+8,Connect,WebREPL terminal,Click status bar WebREPL button,Terminal panel opens + shows >>> prompt,,
+RUN
+9,Run,Run on Host (mount mode),USB connected + target=Host + click Run,Script runs via mounted folder,,
+10,Run,Run on MCU (USB),USB connected + target=MCU + click Run,Script executed on device via serial,,
+11,Run,Run via Wi-Fi,Wi-Fi port selected + click Run,Script runs over WebREPL,,
+12,Run,Right-click Run script,Right-click .py file → Run on MCU Console,Script runs in terminal,,
+13,Run,Stop running script,Click Stop button during run,Device soft reset + >>> prompt returns,,
+14,Run,Switch Host/MCU target,Click Host/MCU button in status bar,Label updates + next run uses new target,,
+FILE UPLOAD
+15,Upload,Upload single file,Right-click .py → Upload Current File,File copied to / on device,,
+16,Upload,Upload folder (flat),Right-click folder → Upload Folder to Device,/foldername created on device + all files uploaded,,
+17,Upload,Upload folder with subfolders,Right-click folder containing nested subfolders,Subdirs created first + all files uploaded correctly,,
+18,Upload,Upload overwrite prompt,Upload folder that already exists on device with matching files,Shows conflicting file list + asks Overwrite Y/N,,
+19,Upload,Upload project,Command Palette → Upload Project to Device,All project main/ files copied to device root,,
+DEVICE FILE EXPLORER
+20,Explorer,Browse device files,Expand Device Files panel tree,Files and folders listed correctly,,
+21,Explorer,Read file from device,Click a file in the tree,File contents open in editor (read-only),,
+22,Explorer,Delete file,Right-click file → Delete File,Confirm dialog + file removed + tree refreshes,,
+23,Explorer,Delete folder (with contents),Right-click folder → Delete Folder,Confirm dialog + folder + all contents removed + tree refreshes,,
+24,Explorer,Refresh tree manually,Click refresh icon in Device Files panel header,Tree re-reads device filesystem,,
+TOOLS
+25,Tools,Open REPL Shell,Click Shell button in status bar,mpremote interactive REPL opens in terminal,,
+26,Tools,Compile to bytecode,Right-click .py → Compile to Bytecode,.mpy file generated in same folder,,
+27,Tools,Generate flowchart,Right-click .py → Generate Flowchart,Flowchart panel opens,,
+28,Tools,Install package (mip),Status bar / Command Palette → Install Package,Package installed on device via mip,,
+29,Tools,Flash firmware,Click Flash button in status bar,Firmware selection dialog + flash to device,,
+30,Tools,Download firmware,Command Palette → Download Firmware,Firmware downloaded to local folder,,
+DASHBOARD
+31,Dashboard,Open dashboard,Click Dashboard in status bar,Dashboard panel opens,,
+32,Dashboard,Wi-Fi Manager tab,Dashboard → Wi-Fi tab,Can set SSID + password + save to device,,
+33,Dashboard,WebREPL config,Dashboard → Wi-Fi → enable WebREPL,webrepl_enabled saved to device.cfg,,
+34,Dashboard,Pinout view,Dashboard → Pinout tab,Board pinout diagram shown correctly,,

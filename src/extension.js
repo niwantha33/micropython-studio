@@ -7,13 +7,18 @@
  */
 
 const vscode = require('vscode');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const path = require('path');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
-const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath } = require('./commonFxn');
-const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile } = require('./deviceFileExplorer');
+const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue } = require('./commonFxn');
+const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder } = require('./deviceFileExplorer');
+const { openPackageManager } = require('./packageManager');
+const { flashFirmware, downloadFirmware } = require('./flashFirmware');
+const { updateCfgComponent } = require('./commonFxn');
+const { openDeviceDashboard } = require('./deviceDashboard');
+const { openWebReplTerminal } = require('./webReplTerminal');
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
@@ -29,12 +34,87 @@ let currentTarget = 'Host';
 let deviceStatusBarItem = null;
 let deviceFileExplorer = null;
 
+// ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
+
+/**
+ * Build the list of selectable port options from device.cfg.
+ * Always includes the USB COM port (if we have one) plus Wi-Fi if webrepl_enabled=true.
+ * Returns null when there is no choice to offer (WebREPL not configured).
+ */
+async function _buildRunPortOptions() {
+    if (!gDeviceCodeDir) return null;
+
+    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+    const savedCom = await getConfigValue(cfgPath, 'device', 'port');
+    const enabled  = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
+    const ip       = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
+    const password = await getConfigValue(cfgPath, 'remote', 'webrepl_password');
+
+    if (enabled !== 'true' || !ip) return null;
+
+    const items = [];
+    if (savedCom) {
+        items.push({ label: `$(plug) USB — ${savedCom}`, port: savedCom });
+    }
+    items.push({ label: `$(remote) Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
+    return items;
+}
+
 // ─── Terminal Management ─────────────────────────────────────────────────────
 
 /**
  * Get or create the MicroPython terminal.
  * Reuses existing terminal if it's still alive.
  */
+/**
+ * Run a Python subprocess (no shell) and show output in an OutputChannel.
+ * Avoids Git Bash / MSYS2 shell quoting issues entirely.
+ * @param {string} exe - Absolute path to python.exe
+ * @param {string[]} args - Arguments (no quoting needed)
+ * @param {((code:number|null)=>void)} [onComplete] - Called when process exits
+ */
+function runPythonProcess(exe, args, onComplete) {
+    const channel = vscode.window.createOutputChannel('MicroPython Studio');
+    channel.show(true);
+    channel.appendLine('─'.repeat(50));
+
+    const proc = spawn(exe, args);
+    proc.stdout.on('data', d => channel.append(d.toString()));
+    proc.stderr.on('data', d => channel.append(d.toString()));
+    proc.on('close', code => {
+        if (onComplete) onComplete(code);
+    });
+    proc.on('error', err => {
+        channel.appendLine(`❌ Failed to start process: ${err.message}`);
+    });
+}
+
+/**
+ * Run an upload command. If the script exits with code 3 (conflicts found),
+ * show a VSCode confirmation dialog and re-run with --overwrite.
+ * @param {string} exe
+ * @param {string[]} baseArgs - args WITHOUT --overwrite
+ * @param {()=>void} [onDone]
+ */
+function runUpload(exe, baseArgs, onDone) {
+    runPythonProcess(exe, baseArgs, async (code) => {
+        if (code === 3) {
+            // Conflicts found — ask user
+            const answer = await vscode.window.showWarningMessage(
+                'Some files already exist on the device. Overwrite them?',
+                { modal: true },
+                'Overwrite',
+                'Cancel'
+            );
+            if (answer === 'Overwrite') {
+                runPythonProcess(exe, [...baseArgs, '--overwrite'], onDone);
+            }
+        } else {
+            if (onDone) onDone();
+        }
+    });
+}
+
 function getMpremoteTerminal() {
     if (!gMpremoteTerminal || gMpremoteTerminal.exitStatus) {
         gMpremoteTerminal = vscode.window.createTerminal({
@@ -88,7 +168,9 @@ function updateDeviceStatusBar() {
     if (!deviceStatusBarItem) return;
 
     if (gRemoteDevicePort) {
-        deviceStatusBarItem.text = `$(plug) ${gRemoteDevicePort}`;
+        const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
+        const portLabel = wsMatch ? `📡 ${wsMatch[1]}` : gRemoteDevicePort;
+        deviceStatusBarItem.text = `$(plug) ${portLabel}`;
         deviceStatusBarItem.tooltip = `Connected to ${gRemoteDevicePort}`;
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
@@ -96,6 +178,7 @@ function updateDeviceStatusBar() {
         deviceStatusBarItem.tooltip = 'No device connected — click Refresh Device Files';
         deviceStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     }
+
 }
 
 // ─── Extension Activation ────────────────────────────────────────────────────
@@ -216,13 +299,17 @@ function activate(context) {
                 return;
             }
 
+            const runPort = gRemoteDevicePort;
+            if (!runPort) return;
+
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
             const isMpy = filePath.endsWith('.mpy');
+            const isWireless = runPort.startsWith('ws:');
             let cmd;
 
-            if (!isMpy && currentTarget === 'Host') {
+            if (!isMpy && !isWireless && currentTarget === 'Host') {
                 // Run on Host — mount project folder to device via USB, then run from host FS
-                // .mpy bytecode files cannot use mount+run; they always go via run_mcu
+                // .mpy files and wireless (ws:) connections cannot use mount+run; always run_mcu
                 if (gDeviceCodeDir && !isFileInProjectFolder(filePath, gDeviceCodeDir)) {
                     const choice = await vscode.window.showWarningMessage(
                         `File "${fileName}" is not in the main project folder.`,
@@ -235,19 +322,19 @@ function activate(context) {
                     `"${scriptPath}"`,
                     `--python "${venvPython}"`,
                     `run`,
-                    `--port "${gRemoteDevicePort}"`,
+                    `--port "${runPort}"`,
                     `--folder "${gDeviceCodeDir}"`,
                     `--file "${filePath}"`
                 ].join(' ');
             } else {
                 // Run on MCU — send file directly to device and run it (mpremote run <file>)
-                // Always used for .mpy bytecode files regardless of currentTarget
+                // Always used for: .mpy bytecode, wireless (ws:) connections, MCU target mode
                 cmd = [
                     `"${venvPython}"`,
                     `"${scriptPath}"`,
                     `--python "${venvPython}"`,
                     `run_mcu`,
-                    `--port "${gRemoteDevicePort}"`,
+                    `--port "${runPort}"`,
                     `--file "${filePath}"`
                 ].join(' ');
             }
@@ -290,22 +377,41 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
 
-            const cmd = [
-                `"${venvPython}"`,
-                `"${scriptPath}"`,
-                `--python "${venvPython}"`,
-                `upload`,
-                `--port "${gRemoteDevicePort}"`,
-                `--source "${filePath}"`,
-                `--dest /`
-            ].join(' ');
+            runPythonProcess(venvPython, [
+                scriptPath, '--python', venvPython,
+                'upload', '--port', gRemoteDevicePort,
+                '--source', filePath, '--dest', ''
+            ], () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+        })
+    );
 
-            const terminal = getMpremoteTerminal();
-            terminal.show();
-            terminal.sendText(cmd);
+    // Upload a folder (with all subfolders/files) to the device — right-click in explorer
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.uploadFolderToDevice', async (uri) => {
+            const folderPath = uri ? uri.fsPath : null;
+            if (!folderPath) {
+                vscode.window.showWarningMessage('No folder selected.');
+                return;
+            }
+            if (!gRemoteDevicePort) {
+                vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
+                return;
+            }
 
-            // Refresh device file tree after a short delay
-            setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 4000);
+            // Use folder name as dest — no leading slash to avoid MSYS2/Git Bash
+            // path conversion (which turns /foo into C:/Program Files/Git/foo).
+            // _normalize_dest() in mpremotesubpro.py adds the leading slash.
+            const dest = path.basename(folderPath);
+
+            const venvFolder = getVenvPythonPathFolder();
+            const venvPython = getVenvPythonPath(venvFolder);
+            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+
+            runUpload(venvPython, [
+                scriptPath, '--python', venvPython,
+                'upload', '--port', gRemoteDevicePort,
+                '--source', folderPath, '--dest', dest
+            ], () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
         })
     );
 
@@ -325,22 +431,11 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
 
-            const cmd = [
-                `"${venvPython}"`,
-                `"${scriptPath}"`,
-                `--python "${venvPython}"`,
-                `upload`,
-                `--port "${gRemoteDevicePort}"`,
-                `--source "${gDeviceCodeDir}"`,
-                `--dest /`
-            ].join(' ');
-
-            const terminal = getMpremoteTerminal();
-            terminal.show();
-            terminal.sendText(cmd);
-
-            // Refresh device file tree after upload finishes
-            setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 8000);
+            runUpload(venvPython, [
+                scriptPath, '--python', venvPython,
+                'upload', '--port', gRemoteDevicePort,
+                '--source', gDeviceCodeDir, '--dest', ''
+            ], () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
         })
     );
 
@@ -358,7 +453,7 @@ function activate(context) {
 
             qp.onDidChangeSelection(selection => {
                 if (!selection[0]) return;
-                currentTarget = selection[0].target;
+                currentTarget = /** @type {any} */ (selection[0]).target;
                 updateRunTargetButton();
                 console.log(`Run target changed to: ${currentTarget}`);
                 qp.hide();
@@ -366,6 +461,30 @@ function activate(context) {
 
             qp.onDidHide(() => qp.dispose());
             qp.show();
+        })
+    );
+
+    // Choose Run Transport (USB / Wi-Fi)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.chooseRunPort', async () => {
+            if (!gRemoteDevicePort) {
+                vscode.window.showWarningMessage('No device connected. Refresh first.');
+                return;
+            }
+            const items = await _buildRunPortOptions();
+            if (!items) {
+                vscode.window.showInformationMessage(
+                    'WebREPL is not enabled. Only USB is available.'
+                );
+                return;
+            }
+            const pick = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Choose run transport'
+            });
+            if (!pick) return;
+            gRemoteDevicePort = /** @type {any} */ (pick).port;
+            updateDeviceStatusBar();
+            if (deviceFileExplorer) deviceFileExplorer.setPort(gRemoteDevicePort);
         })
     );
 
@@ -428,6 +547,61 @@ function activate(context) {
         })
     );
 
+    // Install package from micropython-lib via mip
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.installPackage', async () => {
+            const terminal = getMpremoteTerminal();
+            await openPackageManager(context, gRemoteDevicePort, terminal);
+            
+            // Auto refresh the tree view after 5 seconds to show the newly installed /lib folder
+            setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 5000);
+        })
+    );
+
+    // Flash firmware to device via mpflash
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.flashFirmware', async () => {
+            const terminal = getMpremoteTerminal();
+            const result = await flashFirmware(outputChannel, terminal);
+            if (result && gDeviceCodeDir) {
+                // Record the flashed version in device.cfg
+                const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                await updateCfgComponent(cfgPath, 'device', 'last_flashed_version', result.version);
+                await updateCfgComponent(cfgPath, 'device', 'last_flashed_board', result.board);
+                // Update status bar tooltip to show firmware version
+                if (deviceStatusBarItem) {
+                    deviceStatusBarItem.tooltip = `Connected to ${result.port} — firmware ${result.version}`;
+                }
+            }
+        })
+    );
+
+    // Download firmware only (no flash)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.downloadFirmware', async () => {
+            const terminal = getMpremoteTerminal();
+            await downloadFirmware(outputChannel, terminal);
+        })
+    );
+
+    // Open Device Dashboard Webview Panel
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.openDeviceDashboard', async () => {
+            await openDeviceDashboard(context, outputChannel, gRemoteDevicePort, (newPort) => {
+                gRemoteDevicePort = newPort;
+                updateDeviceStatusBar();
+                if (deviceFileExplorer) deviceFileExplorer.setPort(newPort);
+            });
+        })
+    );
+
+    // Open WebREPL Terminal (browser-based terminal for ws: connections)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.openWebReplTerminal', async () => {
+            await openWebReplTerminal(context, gRemoteDevicePort);
+        })
+    );
+
     // Generate flowchart from .py file using code2flow
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.generateFlowchart', async (uri) => {
@@ -473,7 +647,8 @@ function activate(context) {
     deviceFileExplorer = new DeviceFileExplorerProvider();
     const treeView = vscode.window.createTreeView('micropython-ide-device-files', {
         treeDataProvider: deviceFileExplorer,
-        showCollapseAll: true
+        showCollapseAll: true,
+        dragAndDropController: deviceFileExplorer
     });
     context.subscriptions.push(treeView);
 
@@ -504,6 +679,15 @@ function activate(context) {
         })
     );
 
+    // Delete a folder (and all contents) from the device
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.deleteDeviceFolder', async (item) => {
+            if (item && item.devicePath) {
+                await deleteDeviceFolder(gRemoteDevicePort, item.devicePath, deviceFileExplorer);
+            }
+        })
+    );
+
     // ── Listen for terminal close events ─────────────────────────────────
 
     context.subscriptions.push(
@@ -528,6 +712,7 @@ function updateRunTargetButton() {
     }
 }
 
+
 function createStatusBar(context) {
     // Priority determines ordering: higher = more to the left
 
@@ -542,7 +727,7 @@ function createStatusBar(context) {
 
     // 1. Device connection indicator
     deviceStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 105);
-    deviceStatusBarItem.command = 'micropython-ide.refreshMcuFolder';
+    deviceStatusBarItem.command = 'micropython-ide.chooseRunPort';
     updateDeviceStatusBar();
     deviceStatusBarItem.show();
     context.subscriptions.push(deviceStatusBarItem);
@@ -579,6 +764,31 @@ function createStatusBar(context) {
     stopButton.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     stopButton.show();
     context.subscriptions.push(stopButton);
+
+    // 6. Flash firmware button
+    const flashButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    flashButton.text = '$(flame) Flash';
+    flashButton.tooltip = 'Flash MicroPython firmware to device';
+    flashButton.command = 'micropython-ide.flashFirmware';
+    flashButton.show();
+    context.subscriptions.push(flashButton);
+
+    // 7. Device Dashboard Button
+    const dashboardButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+    dashboardButton.text = '$(dashboard) Dashboard';
+    dashboardButton.tooltip = 'Open the MicroPython Device Dashboard UI';
+    dashboardButton.command = 'micropython-ide.openDeviceDashboard';
+    dashboardButton.show();
+    context.subscriptions.push(dashboardButton);
+
+    // 8. WebREPL Terminal Button
+    const webReplButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+    webReplButton.text = '$(remote) WebREPL';
+    webReplButton.tooltip = 'Open WebREPL Terminal (Wi-Fi)';
+    webReplButton.command = 'micropython-ide.openWebReplTerminal';
+    webReplButton.show();
+    context.subscriptions.push(webReplButton);
+
 }
 
 // ─── Extension Deactivation ──────────────────────────────────────────────────

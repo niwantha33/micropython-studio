@@ -1,0 +1,202 @@
+:root {
+    --panel-bg: var(--vscode-sideBar-background, #252526);
+    --border-color: var(--vscode-panel-border, #3c3c3c);
+    --header-bg: var(--vscode-editor-background, #1e1e1e);
+    --text-color: var(--vscode-foreground, #cccccc);
+    --accent-color: var(--vscode-button-background, #0e639c);
+    --accent-hover: var(--vscode-button-hoverBackground, #1177bb);
+    --input-bg: var(--vscode-input-background, #3c3c3c);
+    --success-color: #4ec9b0;
+    --error-color: #f48771;
+    --warning-color: #cca700;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    margin: 0;
+    background-color: var(--vscode-editor-background, #1e1e1e);
+    color: var(--text-color);
+    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif);
+}
+
+/* --- Header / Toolbar --- */
+.header {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border-color);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    z-index: 10;
+}
+
+.device-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.status-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+#status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--error-color);
+    box-shadow: 0 0 8px var(--error-color);
+    transition: all 0.3s ease;
+}
+
+#status-dot.ok {
+    background: var(--success-color);
+    box-shadow: 0 0 10px var(--success-color);
+}
+
+.header-actions button {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.header-actions button:hover {
+    background: rgba(255,255,255,0.1);
+    border-color: var(--text-color);
+}
+
+/* --- Main Layout --- */
+#main-area {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+#term-wrap {
+    flex: 1;
+    overflow: hidden;
+    padding: 12px;
+    position: relative;
+}
+
+#term {
+    height: 100%;
+    width: 100%;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+/* --- Sidebar --- */
+#sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    background: var(--panel-bg);
+    border-left: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px;
+    overflow-y: auto;
+}
+
+.section-title {
+    font-size: 11px;
+    font-weight: bold;
+    text-transform: uppercase;
+    color: var(--vscode-descriptionForeground, #858585);
+    margin-bottom: 8px;
+    display: block;
+}
+
+.card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.file-input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+input[type="text"], input[type="file"] {
+    width: 100%;
+    background: var(--input-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    padding: 6px 8px;
+    font-size: 12px;
+    border-radius: 4px;
+    outline: none;
+}
+
+input[type="text"]:focus {
+    border-color: var(--accent-color);
+}
+
+.btn {
+    width: 100%;
+    background: var(--accent-color);
+    color: var(--vscode-button-foreground, white);
+    border: none;
+    padding: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.btn:hover:not(:disabled) {
+    background: var(--accent-hover);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#file-status {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #858585);
+    min-height: 20px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.file-status-icon {
+    font-size: 14px;
+}
+
+/* --- Scrollbar --- */
+#sidebar::-webkit-scrollbar { width: 10px; }
+#sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 5px; }
+#sidebar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
