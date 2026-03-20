@@ -647,7 +647,8 @@ function activate(context) {
     deviceFileExplorer = new DeviceFileExplorerProvider();
     const treeView = vscode.window.createTreeView('micropython-ide-device-files', {
         treeDataProvider: deviceFileExplorer,
-        showCollapseAll: true
+        showCollapseAll: true,
+        dragAndDropController: deviceFileExplorer
     });
     context.subscriptions.push(treeView);
 

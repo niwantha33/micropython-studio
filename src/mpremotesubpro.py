@@ -3,9 +3,10 @@ import argparse
 import re
 import subprocess
 import sys
+import struct
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 
 # ---------------------------------------------------------------------------
@@ -20,7 +21,7 @@ class WebReplConnection:
     WebREPL transport using websocket-client for the WS layer.
     Handles authentication, raw-REPL code execution, and file upload.
     """
-    CHUNK = 256  # raw-REPL send chunk size
+    CHUNK = 512  # raw-REPL send/receive chunk size
 
     def __init__(self, host: str, password: str, port: int = 8266) -> None:
         self.host = host
@@ -42,13 +43,26 @@ class WebReplConnection:
         self.ws.settimeout(timeout)
         try:
             data = self.ws.recv()
+            if data is None:
+                return b''
             if isinstance(data, str):
                 return data.encode('utf-8')
-            return data or b''
+            return data
         except _wslib.WebSocketTimeoutException:
             return b''
         except Exception:
             return b''
+
+    def _ws_recv_exact(self, size: int, timeout: float = 10) -> bytes:
+        """Receive exactly 'size' bytes or timeout."""
+        buf = bytearray()
+        deadline = time.time() + timeout
+        while len(buf) < size and time.time() < deadline:
+            chunk = self._ws_recv(deadline - time.time())
+            if not chunk:
+                break
+            buf.extend(chunk)
+        return bytes(buf)
 
     # ── Connect and authenticate ─────────────────────────────────────────────
 
@@ -97,40 +111,45 @@ class WebReplConnection:
         while self._ws_recv(0.3):
             pass
 
-    def exec_code(self, code: 'str | bytes', timeout: float = 30) -> int:
+    def exec_code(self, code: 'Union[str, bytes]', timeout: float = 30) -> int:
         """
         Execute code via raw REPL. Streams stdout to sys.stdout.
         Raw REPL response format after Ctrl+D:  OK<stdout>\x04<stderr>\x04>
         Returns 0 on success, 1 if there was stderr output.
         """
-        code_buf: bytearray = bytearray(code.encode() if isinstance(code, str) else code)
-
+        code_buf = code.encode() if isinstance(code, str) else code
         self._enter_raw_repl()
 
-        # Send code in CHUNK-byte pieces then Ctrl+D to execute
+        # Send code in chunks
         offset = 0
         while offset < len(code_buf):
-            self._ws_send(bytes(code_buf[offset:offset + self.CHUNK]))  # type: ignore[index]
+            self._ws_send(code_buf[offset:offset + self.CHUNK])
             offset += self.CHUNK
-            time.sleep(0.02)
-        self._ws_send('\x04')
+            # Minimal sleep to allow small device buffers to catch up if needed
+            # but much less than the original 0.02s
+            time.sleep(0.001)
+
+        self._ws_send('\x04')  # Ctrl+D to execute
 
         # Accumulate response until we see the end marker \x04>
-        buf: bytearray = bytearray()
+        buf = bytearray()
         deadline = time.time() + timeout
         while time.time() < deadline:
-            chunk = self._ws_recv(2)
+            chunk = self._ws_recv(1)  # short timeout for chunks
             if chunk:
                 buf.extend(chunk)
-                if b'\x04>' in buf:
+                if buf.endswith(b'\x04>'):
                     break
+            else:
+                # No data yet, wait a bit
+                time.sleep(0.01)
 
         self._exit_raw_repl()
 
         # Parse:  OK<stdout>\x04<stderr>\x04>
-        raw: bytearray = buf
+        raw = bytes(buf)
         if raw.startswith(b'OK'):
-            raw = bytearray(raw[2:])  # type: ignore[index]
+            raw = raw[2:]
 
         # Split on \x04 — [stdout, stderr, '>']
         parts = bytes(raw).split(b'\x04')
@@ -152,24 +171,50 @@ class WebReplConnection:
         return self.exec_code(code)
 
     def upload_file(self, local_path, remote_path):
-        """Upload a file using raw REPL (base64 chunks — works for any file size)."""
-        import binascii
-        data = Path(local_path).read_bytes()
-        hex_data = binascii.hexlify(data).decode()
+        """Upload a file using the WebREPL binary protocol (fastest)."""
+        return self._ws_put_file(Path(local_path), remote_path)
 
-        # Write in 128-byte hex chunks to avoid raw REPL line length limits
-        chunk_size = 128
-        code_lines = [
-            f"import binascii",
-            f"_f = open({remote_path!r}, 'wb')",
-        ]
-        for i in range(0, len(hex_data), chunk_size):
-            chunk = hex_data[i:i + chunk_size]  # type: ignore[index]
-            code_lines.append(f"_f.write(binascii.unhexlify({chunk!r}))")
-        code_lines.append("_f.close()")
-        code_lines.append("print('OK')")
+    def _ws_put_file(self, source: Path, remote: str) -> int:
+        """Implementation of the MicroPython WebREPL binary protocol for file upload."""
+        data = source.read_bytes()
+        dest = remote.lstrip('/')
+        
+        # Binary protocol header:
+        # 2 bytes 'WA'
+        # 1 byte command (PUT_FILE=1)
+        # 1 byte reserved (0)
+        # 2 bytes password length (0 since we're already authenticated)
+        # 2 bytes filename length
+        # 4 bytes file size (little endian)
+        # 2 bytes total message length (password + filename)
+        
+        # WebREPL is already authenticated at this point in our connection flow,
+        # but the binary protocol handler in webrepl.py still expects the 
+        # password/header if we just send the binary prefix.
+        # However, we can send a dummy or empty password if authenticated.
+        
+        # webrepl.py: PUT_FILE = 1
+        header = b'WA' + struct.pack('<BBHHHI', 1, 0, 0, len(dest), len(data), len(dest))
+        self.ws.send_binary(header + dest.encode())
 
-        return self.exec_code('\n'.join(code_lines))
+        # Connection should respond with b'WB' + 2 bytes status (0=OK)
+        resp = self._ws_recv_exact(4)
+        if not resp.startswith(b'WB') or struct.unpack('<H', resp[2:4])[0] != 0:
+            # Fall back to raw REPL method if binary protocol fails
+            return _ws_upload_file_legacy(self, source, remote)
+
+        # Send file data in chunks
+        offset = 0
+        while offset < len(data):
+            chunk = data[offset:offset + self.CHUNK]
+            self.ws.send_binary(chunk)
+            offset += len(chunk)
+
+        # Final response
+        resp = self._ws_recv_exact(4)
+        if resp.startswith(b'WB') and struct.unpack('<H', resp[2:4])[0] == 0:
+            return 0
+        return 1
 
 
 def _parse_ws_port(port):
@@ -427,8 +472,8 @@ def cmd_unmount(python_exe, port):
 # Command: upload
 # ----------------------------
 
-def _ws_upload_file(conn: WebReplConnection, source: Path, remote: str) -> int:
-    """Upload a single file via WebREPL raw REPL using hex encoding."""
+def _ws_upload_file_legacy(conn: WebReplConnection, source: Path, remote: str) -> int:
+    """Upload a single file via WebREPL raw REPL using hex encoding (fallback)."""
     import binascii
     data = source.read_bytes()
     hex_data = binascii.hexlify(data).decode()
@@ -436,11 +481,16 @@ def _ws_upload_file(conn: WebReplConnection, source: Path, remote: str) -> int:
     chunk_size = 120  # hex chars per line (60 bytes) — safe for raw REPL line buffer
     lines = ['import binascii', f"_f=open({remote!r},'wb')"]
     for i in range(0, len(hex_data), chunk_size):
-        chunk = hex_data[i:i+chunk_size]  # type: ignore[index]
+        chunk = hex_data[i:i+chunk_size]
         lines.append(f"_f.write(binascii.unhexlify({chunk!r}))")
     lines.append('_f.close()')
     lines.append("print('OK')")
     return conn.exec_code('\n'.join(lines))
+
+
+def _ws_upload_file(conn: WebReplConnection, source: Path, remote: str) -> int:
+    """Upload a single file using the best available WebREPL method."""
+    return conn.upload_file(source, remote)
 
 
 def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = False):
