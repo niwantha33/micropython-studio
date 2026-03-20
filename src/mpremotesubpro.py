@@ -443,7 +443,7 @@ def _ws_upload_file(conn: WebReplConnection, source: Path, remote: str) -> int:
     return conn.exec_code('\n'.join(lines))
 
 
-def cmd_upload(python_exe, port, source, dest: str = '/'):
+def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = False):
     """Upload a file or folder to the device filesystem."""
     dest = _normalize_dest(dest)
     source = Path(source).resolve()
@@ -526,10 +526,12 @@ def cmd_upload(python_exe, port, source, dest: str = '/'):
             print(f"⚠️  These files already exist in {dest} on the device:", file=sys.stderr)
             for c in sorted(conflicts):
                 print(f"   • {c}", file=sys.stderr)
-            answer = input("Overwrite? [y/N]: ").strip().lower()
-            if answer != 'y':
-                print("❌ Upload cancelled.", file=sys.stderr)
-                sys.exit(0)
+            if not overwrite:
+                # Exit code 3 signals the extension to show a confirmation dialog
+                # and re-run with --overwrite if the user confirms.
+                print("CONFLICTS_FOUND", flush=True)
+                sys.exit(3)
+            print("⚠️  Overwriting existing files...", file=sys.stderr)
 
     dirs_to_create = sorted(set(
         str(f.relative_to(source).parent).replace('\\', '/')
@@ -625,6 +627,7 @@ def main():
     upload_p.add_argument('--port', required=True, help='Serial port (e.g., COM9)')
     upload_p.add_argument('--source', required=True, help='Local file or folder to upload')
     upload_p.add_argument('--dest', default='/', help='Remote destination path (default: /)')
+    upload_p.add_argument('--overwrite', action='store_true', help='Overwrite existing files without prompting')
 
     # Exec
     exec_p = subparsers.add_parser('exec', help='Execute code on device')
@@ -654,7 +657,7 @@ def main():
     elif args.command == 'exec':
         cmd_exec(args.python, args.port, args.code)
     elif args.command == 'upload':
-        cmd_upload(args.python, args.port, args.source, args.dest)
+        cmd_upload(args.python, args.port, args.source, args.dest, args.overwrite)
 
 
 if __name__ == '__main__':

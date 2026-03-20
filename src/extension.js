@@ -89,6 +89,32 @@ function runPythonProcess(exe, args, onComplete) {
     });
 }
 
+/**
+ * Run an upload command. If the script exits with code 3 (conflicts found),
+ * show a VSCode confirmation dialog and re-run with --overwrite.
+ * @param {string} exe
+ * @param {string[]} baseArgs - args WITHOUT --overwrite
+ * @param {()=>void} [onDone]
+ */
+function runUpload(exe, baseArgs, onDone) {
+    runPythonProcess(exe, baseArgs, async (code) => {
+        if (code === 3) {
+            // Conflicts found — ask user
+            const answer = await vscode.window.showWarningMessage(
+                'Some files already exist on the device. Overwrite them?',
+                { modal: true },
+                'Overwrite',
+                'Cancel'
+            );
+            if (answer === 'Overwrite') {
+                runPythonProcess(exe, [...baseArgs, '--overwrite'], onDone);
+            }
+        } else {
+            if (onDone) onDone();
+        }
+    });
+}
+
 function getMpremoteTerminal() {
     if (!gMpremoteTerminal || gMpremoteTerminal.exitStatus) {
         gMpremoteTerminal = vscode.window.createTerminal({
@@ -381,7 +407,7 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
 
-            runPythonProcess(venvPython, [
+            runUpload(venvPython, [
                 scriptPath, '--python', venvPython,
                 'upload', '--port', gRemoteDevicePort,
                 '--source', folderPath, '--dest', dest
@@ -405,7 +431,7 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
 
-            runPythonProcess(venvPython, [
+            runUpload(venvPython, [
                 scriptPath, '--python', venvPython,
                 'upload', '--port', gRemoteDevicePort,
                 '--source', gDeviceCodeDir, '--dest', ''
