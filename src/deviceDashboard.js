@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { runMpremote } = require('./runCommand');
-const { updateCfgComponent, getVenvPythonPath, getVenvPythonPathFolder } = require('./commonFxn');
+const { updateCfgComponent, getVenvPythonPath, getVenvPythonPathFolder, getConfigValue } = require('./commonFxn');
 
 /**
  * Gathers all metrics from the device and converts them to a structured object.
@@ -245,25 +245,62 @@ function createDonutChart(used, total) {
 }
 
 /**
- * Known Board Pinouts for the interactive diagram
+ * Known Board Pinouts — loaded from resource/pinouts/pinouts.json.
+ * To add a new board or update pins, edit that file directly.
+ * @type {Record<string, {name: string, left: string[], right: string[]}>}
  */
-const PINOUT_DATA = {
-    'rp2': {
-        name: 'Raspberry Pi Pico (RP2040)',
-        left: ['GP0', 'GP1', 'GND', 'GP2', 'GP3', 'GP4', 'GP5', 'GND', 'GP6', 'GP7', 'GP8', 'GP9', 'GND', 'GP10', 'GP11', 'GP12', 'GP13', 'GND', 'GP14', 'GP15'],
-        right: ['VBUS', 'VSYS', 'GND', '3V3_EN', '3V3', 'ADC_VREF', 'GP28_A2', 'GND', 'GP27_A1', 'GP26_A0', 'RUN', 'GP22', 'GND', 'GP21', 'GP20', 'GP19', 'GP18', 'GND', 'GP17', 'GP16']
-    },
-    'esp32': {
-        name: 'ESP32 (Standard 30-Pin)',
-        left: ['3V3', 'EN', 'VP_36', 'VN_39', '34', '35', '32', '33', '25', '26', '27', '14', '12', '13', 'GND'],
-        right: ['VIN', 'GND', '23', '22', 'TX_1', 'RX_3', '21', '19', '18', '5', '17', '16', '4', '0', '2', '15']
-    },
-    'esp8266': {
-        name: 'ESP8266 (NodeMCU)',
-        left: ['A0', 'ADC', 'RSV', 'RSV', 'D0(16)', 'D1(5)', 'D2(4)', 'D3(0)', 'D4(2)', '3V3', 'GND', 'D5(14)', 'D6(12)', 'D7(13)', 'D8(15)'],
-        right: ['3V3', 'EN', 'RST', 'GND', 'VIN', '3V3', 'GND', 'TX', 'RX', 'D9(3)', 'D10(1)', 'GND', '3V3', 'RSV', 'RSV']
+let PINOUT_DATA = {};
+try {
+    const pinoutsPath = path.join(__dirname, '..', 'resource', 'pinouts', 'pinouts.json');
+    PINOUT_DATA = JSON.parse(fs.readFileSync(pinoutsPath, 'utf8'));
+} catch (e) {
+    // fallback — empty, pinout section will show nothing
+}
+
+/**
+ * Map sys.platform / device.cfg mcu values → pinouts.json key.
+ * Priority: connected device sys.platform > device.cfg mcu field > first available key.
+ * @param {string} platform  - sys.platform from device (e.g. 'rp2', 'esp32') or 'Unknown'
+ * @param {string} mcuFromCfg - mcu value from device.cfg (e.g. 'rp2350', 'rp2_w', 'esp32')
+ * @returns {string} key into PINOUT_DATA
+ */
+function resolvePinoutKey(platform, mcuFromCfg) {
+    // 1. device.cfg mcu is most specific — sys.platform returns 'rp2' for BOTH RP2040 and RP2350
+    //    so cfg takes priority to get the correct board name
+    if (mcuFromCfg) {
+        const m = mcuFromCfg.toLowerCase().trim();
+        if (PINOUT_DATA[m]) return m;
+        // prefix matches: rp2350w → rp2350_w, rp2w → rp2_w, etc.
+        /** @type {Array<[RegExp, string]>} */
+        const aliases = [
+            // Full human-readable names (from project wizard board picker)
+            [/pico\s*2\s*w/i,           'rp2350_w'],
+            [/pico\s*2/i,               'rp2350'],
+            [/pico\s*w/i,               'rp2_w'],
+            [/pico/i,                   'rp2'],
+            // Short codes
+            [/^rp2350.?w/,              'rp2350_w'],
+            [/^rp2350/,                 'rp2350'],
+            [/^rp2.?w/,                 'rp2_w'],
+            [/^rp2/,                    'rp2'],
+            [/^esp32/,                  'esp32'],
+            [/^esp8266/,                'esp8266'],
+            [/^samd/,                   'samd'],
+            [/^stm32/,                  'stm32'],
+            [/^mimxrt/,                 'mimxrt'],
+            [/^nrf/,                    'nrf'],
+        ];
+        for (const [re, key] of aliases) {
+            if (re.test(m) && PINOUT_DATA[key]) return key;
+        }
     }
-};
+
+    // 2. Fall back to sys.platform from connected device
+    if (platform && platform !== 'Unknown' && PINOUT_DATA[platform]) return platform;
+
+    // 3. Default to first key in pinouts.json
+    return Object.keys(PINOUT_DATA)[0] || 'rp2';
+}
 
 /**
  * Get Color class for pin based on its name
@@ -280,9 +317,10 @@ function getPinClass(pinName) {
 
 /**
  * Generate HTML for the pinout diagram
+ * @param {string} pinoutKey - resolved key from resolvePinoutKey()
  */
-function createPinoutHtml(platform) {
-    const data = PINOUT_DATA[platform] || PINOUT_DATA['esp32']; // fallback to esp32
+function createPinoutHtml(pinoutKey) {
+    const data = PINOUT_DATA[pinoutKey] || PINOUT_DATA[Object.keys(PINOUT_DATA)[0]];
     
     let leftHtml = '';
     let rightHtml = '';
@@ -916,7 +954,7 @@ function getWebviewContent(metrics) {
 
         <!-- Pinout Diagram Card -->
         <div class="card pinout-card">
-            ${createPinoutHtml(metrics.platform)}
+            ${createPinoutHtml(metrics.pinoutKey || metrics.platform)}
         </div>
 
         <!-- Wi-Fi Manager Card -->
@@ -1287,6 +1325,15 @@ async function openDeviceDashboard(context, outputChannel, currentDevicePort, on
     const updateDashboard = async () => {
         try {
             const metrics = await gatherDeviceMetrics(outputChannel, workspaceRoot, activePort);
+
+            // Read mcu from device.cfg for pinout fallback (used when device not connected)
+            let mcuFromCfg = '';
+            try {
+                const cfgPath = path.join(workspaceRoot, 'device.cfg');
+                mcuFromCfg = (await getConfigValue(cfgPath, 'device', 'mcu')) || '';
+            } catch (_) {}
+
+            metrics.pinoutKey = resolvePinoutKey(metrics.platform, mcuFromCfg);
             panel.webview.html = getWebviewContent(metrics);
         } catch (err) {
             panel.webview.html = `<body style="background:#1a1a24;color:#ef4444;padding:32px"><h2>Error</h2><p>${err.message}</p></body>`;

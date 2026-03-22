@@ -140,8 +140,38 @@ class WebReplClient {
         this.socket.write(Buffer.concat([hdr, masked]));
     }
 
-    send(data) { this._sendFrame(data, 0x82); }         // binary frame
-    sendText(data) { this._sendFrame(data, 0x81); }     // text frame
+    /** Drain-aware version: returns a Promise that resolves once the OS
+     *  TCP send buffer has flushed, preventing backpressure overflows. */
+    _sendFrameAsync(payload, opcode = 0x82) {
+        return new Promise((resolve, reject) => {
+            if (!this.socket || this.socket.destroyed) return reject(new Error('Socket closed'));
+            if (typeof payload === 'string') payload = Buffer.from(payload);
+            const mask = crypto.randomBytes(4);
+            const masked = Buffer.alloc(payload.length);
+            for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ mask[i % 4];
+
+            let hdr;
+            if (payload.length < 126) {
+                hdr = Buffer.from([opcode, 0x80 | payload.length, ...mask]);
+            } else if (payload.length < 65536) {
+                hdr = Buffer.from([opcode, 0x80 | 126,
+                    (payload.length >> 8) & 0xff, payload.length & 0xff, ...mask]);
+            } else {
+                hdr = Buffer.from([opcode, 0x80 | 127,
+                    0, 0, 0, 0,
+                    (payload.length >>> 24) & 0xff, (payload.length >>> 16) & 0xff,
+                    (payload.length >>> 8) & 0xff, payload.length & 0xff,
+                    ...mask]);
+            }
+            const ok = this.socket.write(Buffer.concat([hdr, masked]));
+            if (ok) resolve();
+            else this.socket.once('drain', resolve);
+        });
+    }
+
+    send(data) { this._sendFrame(data, 0x82); }              // binary frame
+    sendText(data) { this._sendFrame(data, 0x81); }          // text frame
+    sendAsync(data) { return this._sendFrameAsync(data, 0x82); } // binary, drain-aware
 
     disconnect() {
         if (this.socket) { this.socket.destroy(); this.socket = null; }
@@ -267,25 +297,6 @@ async function openWebReplTerminal(context, devicePort) {
         return null;
     }
 
-    /** Send the 82-byte WebREPL PUT/GET header record */
-    function sendWaHeader(type, name, fileSize = 0) {
-        const rec = Buffer.alloc(2 + 1 + 1 + 8 + 4 + 2 + 64);
-        rec.write('WA', 0, 'ascii');
-        rec[2] = type;   // 1=PUT, 2=GET
-        rec.writeUInt32LE(fileSize, 12);
-        rec.writeUInt16LE(name.length, 16);
-        Buffer.from(name).copy(rec, 18);
-        client.send(rec);
-    }
-
-    function statusMsg(html) {
-        panel.webview.postMessage({ type: 'fileStatus', html });
-    }
-
-    client.onConnect = () => {
-        panel.webview.postMessage({ type: 'status', state: 'connected', ip });
-    };
-
     async function processIncoming() {
         while (incomingBuf.length > 0) {
             if (binaryState === 0) {
@@ -303,14 +314,22 @@ async function openWebReplTerminal(context, devicePort) {
                 incomingBuf = incomingBuf.slice(resp.len);
 
                 if (resp.code === 0) {
-                    // Send chunks with flow control to avoid ECONNRESET
-                    for (let off = 0; off < putData.length; off += 1024) {
-                        client.send(putData.slice(off, off + 1024));
-                        if (off % 4096 === 0) { // Small pause every 4KB
-                            await new Promise(r => setTimeout(r, 5));
+                    // Send small chunks with drain-aware writes to avoid
+                    // overwhelming the ESP's tiny WebREPL receive buffer.
+                    const CHUNK_SIZE = 256;
+                    try {
+                        for (let off = 0; off < putData.length; off += CHUNK_SIZE) {
+                            const end = Math.min(off + CHUNK_SIZE, putData.length);
+                            await client.sendAsync(putData.slice(off, end));
+                            // Give the device time to process each chunk
+                            await new Promise(r => setTimeout(r, 30));
+                            statusMsg(`Sending <b>${putName}</b>… ${end}/${putData.length} bytes`);
                         }
+                        binaryState = 12;
+                    } catch (err) {
+                        statusMsg(`<span style="color:#f44">Upload error: ${err.message}</span>`);
+                        binaryState = 0;
                     }
-                    binaryState = 12;
                 } else {
                     statusMsg(`<span style="color:#f44">Failed to start sending ${putName}</span>`);
                     binaryState = 0;
