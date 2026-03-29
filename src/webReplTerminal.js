@@ -187,7 +187,7 @@ async function findDeviceCfgPath() {
     let current = folders[0].uri.fsPath;
     while (true) {
         const candidate = path.join(current, 'device.cfg');
-        try { await fs.access(candidate); return candidate; } catch (_) {}
+        try { await fs.access(candidate); return candidate; } catch (_) { }
         const parent = path.dirname(current);
         if (parent === current) return null;
         current = parent;
@@ -201,8 +201,8 @@ async function resolveWebReplCredentials(devicePort) {
     const cfgPath = await findDeviceCfgPath();
     if (!cfgPath) return null;
 
-    const enabled  = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
-    const ip       = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
+    const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
+    const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
     const password = await getConfigValue(cfgPath, 'remote', 'webrepl_password');
 
     if (enabled === 'true' && ip) return { ip, password: password || '' };
@@ -226,8 +226,10 @@ async function openWebReplTerminal(context, devicePort) {
         'webReplTerminal',
         `WebREPL — ${ip}`,
         vscode.ViewColumn.One,
-        { enableScripts: true, retainContextWhenHidden: true,
-          localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, 'resource', 'webrepl'))] }
+        {
+            enableScripts: true, retainContextWhenHidden: true,
+            localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, 'resource', 'webrepl'))]
+        }
     );
 
     const termJsUri = panel.webview.asWebviewUri(
@@ -260,23 +262,29 @@ async function openWebReplTerminal(context, devicePort) {
     //   21 = GET: waiting for first WB OK
     //   22 = GET: receiving data chunks (loop: send ack, receive chunk)
     //   23 = GET: waiting for final WB OK
-    let binaryState  = 0;
-    let putName      = '';
-    let putData      = null;   // Buffer
-    let getName      = '';
-    let getAccum     = [];     // accumulated bytes
+    let binaryState = 0;
+    let putName = '';
+    let putData = null;   // Buffer
+    let getName = '';
+    let getAccum = [];     // accumulated bytes
 
     /** Send the 82-byte WebREPL PUT/GET header record */
     function sendWaHeader(type, name, fileSize = 0) {
         const rec = Buffer.alloc(2 + 1 + 1 + 8 + 4 + 2 + 64);
         rec.write('WA', 0, 'ascii');
-        rec[2] = type;   // 1=PUT, 2=GET
-        rec.writeUInt32LE(fileSize, 12);
+        rec[2] = type;           // 1=PUT, 2=GET
+        rec[3] = 0;              // reserved
+        // File size (64‑bit little‑endian)
+        rec.writeUInt32LE(fileSize & 0xffffffff, 4);
+        rec.writeUInt32LE(Math.floor(fileSize / 0x100000000), 8);
+        // Reserved 4 bytes at offset 12‑15
+        rec.writeUInt32LE(0, 12);
+        // Name length
         rec.writeUInt16LE(name.length, 16);
+        // Name
         Buffer.from(name).copy(rec, 18);
         client.send(rec);
     }
-
     function statusMsg(html) {
         panel.webview.postMessage({ type: 'fileStatus', html });
     }
@@ -308,21 +316,18 @@ async function openWebReplTerminal(context, devicePort) {
 
             // ── File transfer protocol handling ──────────────────────────────
             if (binaryState === 11) {
-                // PUT: board acknowledged header, now send file data
                 const resp = peekResp();
-                if (!resp) return; 
+                if (!resp) return;
                 incomingBuf = incomingBuf.slice(resp.len);
 
                 if (resp.code === 0) {
-                    // Send small chunks with drain-aware writes to avoid
-                    // overwhelming the ESP's tiny WebREPL receive buffer.
-                    const CHUNK_SIZE = 256;
+                    const CHUNK_SIZE = 128;          // smaller chunk
                     try {
                         for (let off = 0; off < putData.length; off += CHUNK_SIZE) {
                             const end = Math.min(off + CHUNK_SIZE, putData.length);
                             await client.sendAsync(putData.slice(off, end));
-                            // Give the device time to process each chunk
-                            await new Promise(r => setTimeout(r, 30));
+                            // Give the device time to process
+                            await new Promise(r => setTimeout(r, 100));
                             statusMsg(`Sending <b>${putName}</b>… ${end}/${putData.length} bytes`);
                         }
                         binaryState = 12;
@@ -366,7 +371,7 @@ async function openWebReplTerminal(context, devicePort) {
                 // GET: receive data chunk [sz_lo, sz_hi, ...data]
                 if (incomingBuf.length < 2) return;
                 const sz = incomingBuf[0] | (incomingBuf[1] << 8);
-                
+
                 if (sz === 0) {
                     incomingBuf = incomingBuf.slice(2);
                     binaryState = 23;
@@ -375,7 +380,7 @@ async function openWebReplTerminal(context, devicePort) {
                     const chunk = incomingBuf.slice(2, 2 + sz);
                     for (let i = 0; i < chunk.length; i++) getAccum.push(chunk[i]);
                     incomingBuf = incomingBuf.slice(2 + sz);
-                    
+
                     statusMsg(`Getting <b>${getName}</b>… ${getAccum.length} bytes`);
                     client.send(Buffer.from([0])); // ack next chunk
                     // Loop to next chunk or final status

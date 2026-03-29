@@ -133,23 +133,21 @@ The extension contributes the following settings:
   - Error messaging for connection issues
   - Workspace loading performance
 
-### 0.6.x (Upcoming)
+### 0.7.0 (Current)
 
-- **New Features**:
-  - Circuitpython -  (partial support)
-  - Bytecode conversion - Done
-  - Multiple device support - Done
-  - WebREPL terminal - (partial support)
-  - File upload and download - Done
-  - Device file explorer - Done
-  - Dashboard - Done
-  - Library Install - Done
-  - Pinout view - Done
-  
+- **Complete Support**:
+  - Full CircuitPython compatibility (USB & Web Workflow)
+  - Enhanced Device Dashboard with live telemetry
+  - Hardware Pinout Diagram (RP2, ESP32, STM32, SAMD, etc.)
+  - High-performance File Upload/Download (Folder support)
+  - Device File Explorer with Overwrite Protection
+  - WebREPL Terminal for wireless debugging
+  - Integrated Package Management (`mip`, `circup`)
+  - Bytecode Compilation (.mpy)
 - **Enhanced**:
-  - File sync performance 
-  - IntelliSense
-  
+  - File sync performance optimization
+  - Improved IntelliSense for MicroPython modules
+  - Unified command palette and status bar integration
 
 ---
 
@@ -192,6 +190,8 @@ MicroPython Studio is open source (MIT License) and builds on the following open
 | [term.js](https://github.com/chjj/term.js) | Christopher Jeffrey | MIT | Terminal emulator in WebREPL panel |
 | [FileSaver.js](https://github.com/eligrey/FileSaver.js) | Eli Grey | MIT | File download in WebREPL panel |
 | [MicroPython WebREPL](https://github.com/micropython/webrepl) | MicroPython project | MIT | WebREPL client (modified for VS Code integration) |
+
+A special thanks to **AI development tools**. This project has been a work in progress for approximately three years, and many complex implementation hurdles seemed insurmountable. AI tools provided the critical support and breakthroughs needed to finally bring these concepts to life and complete the project.
 
 All bundled files retain their original license headers.
 

@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and debug MicroPython on real hardware",
-  "version": "0.6.6",
+  "version": "0.7.0",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {
@@ -72,7 +72,7 @@
     "viewsWelcome": [
       {
         "view": "micropython-ide-launch-view",
-        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package (mip)](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
+        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
         "when": "true"
       }
     ],
@@ -187,7 +187,7 @@
       },
       {
         "command": "micropython-ide.installPackage",
-        "title": "MicroPython: Install Package (mip)",
+        "title": "MicroPython: Install Package",
         "category": "MicroPython Studio",
         "icon": "$(package)"
       },
@@ -305,7 +305,7 @@
         },
         {
           "command": "micropython-ide.runThisScriptOnMcuConsole",
-          "when": "resourceExtname == .py || resourceExtname == .mpy",
+          "when": "(resourceExtname == .py || resourceExtname == .mpy) && micropythonStudio.isCircuitPython",
           "group": "micropython@2"
         },
         {
@@ -363,6 +363,16 @@
           "group": "context"
         }
       ]
+    }
+  },
+  "configuration": {
+    "title": "MicroPython Studio",
+    "properties": {
+      "micropythonStudio.circuitpython.autoSyncAfterInstall": {
+        "type": "boolean",
+        "default": false,
+        "description": "CircuitPython: Automatically sync files from the CIRCUITPY drive to the local main/ folder after installing a package with circup."
+      }
     }
   },
   "scripts": {

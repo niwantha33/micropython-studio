@@ -1,9 +1,14 @@
-const vscode = require('vscode');
-const fs = require('fs');
-const path = require('path');
-const { execFile } = require('child_process');
-const { runMpremote } = require('./runCommand');
-const { updateCfgComponent, getVenvPythonPath, getVenvPythonPathFolder, getConfigValue } = require('./commonFxn');
+const vscode = require("vscode");
+const fs = require("fs");
+const path = require("path");
+const { execFile } = require("child_process");
+const { runMpremote } = require("./runCommand");
+const {
+  updateCfgComponent,
+  getVenvPythonPath,
+  getVenvPythonPathFolder,
+  getConfigValue,
+} = require("./commonFxn");
 
 /**
  * Gathers all metrics from the device and converts them to a structured object.
@@ -12,42 +17,70 @@ const { updateCfgComponent, getVenvPythonPath, getVenvPythonPathFolder, getConfi
  * @param {string} devicePort - The COM port or ws: address of the device
  */
 async function gatherDeviceMetrics(outputChannel, workspaceFolder, devicePort) {
-    const metrics = {
-        firmware: 'Unknown',
-        platform: 'Unknown',
-        version: 'Unknown',
-        cpuFreqHtml: 'Unknown',
-        ramUsed: 0,
-        ramFree: 0,
-        ramTotal: 0,
-        flashUsed: 0,
-        flashFree: 0,
-        flashTotal: 0,
-        wifi: { supported: false, connected: false, ip: '', ssid: '' },
-        bootLog: { hasLog: false, status: 'none', ip: '', detail: '' }
-    };
+  const metrics = {
+    firmware: "Unknown",
+    platform: "Unknown",
+    version: "Unknown",
+    cpuFreqHtml: "Unknown",
+    ramUsed: 0,
+    ramFree: 0,
+    ramTotal: 0,
+    flashUsed: 0,
+    flashFree: 0,
+    flashTotal: 0,
+    wifi: { supported: false, connected: false, ip: "", ssid: "" },
+    bootLog: { hasLog: false, status: "none", ip: "", detail: "" },
+  };
 
-    // The single python script to fetch all metrics at once
-    const pythonScript = `import sys, machine, gc, os
+  // The single python script to fetch all metrics at once
+  const pythonScript = `import sys
+try:
+    import gc
+except ImportError:
+    gc = None
+try:
+    import os
+except ImportError:
+    os = None
 
 # 1. Firmware
 print("---SYS---")
+try:
+    print(sys.version)
+except:
+    print("unknown")
 print(sys.platform)
 print('.'.join(map(str, sys.implementation.version)))
-print(machine.freq() if hasattr(machine, 'freq') else 0)
+try:
+    import machine
+    print(machine.freq() if hasattr(machine, 'freq') else 0)
+except ImportError:
+    try:
+        import microcontroller
+        print(microcontroller.cpu.frequency if hasattr(microcontroller, 'cpu') else 0)
+    except ImportError:
+        print(0)
 
 # 2. RAM
 print("---RAM---")
-gc.collect()
-print(gc.mem_alloc())
-print(gc.mem_free())
+if gc:
+    gc.collect()
+    print(gc.mem_alloc() if hasattr(gc, 'mem_alloc') else 0)
+    print(gc.mem_free() if hasattr(gc, 'mem_free') else 0)
+else:
+    print(0)
+    print(0)
 
 # 3. Flash
 print("---FLASH---")
 try:
-    s=os.statvfs('/')
-    print(s[0]*s[2])
-    print(s[0]*s[3])
+    s=os.statvfs('/') if os else None
+    if s:
+        print(s[0]*s[2])
+        print(s[0]*s[3])
+    else:
+        print(0)
+        print(0)
 except Exception:
     print(0)
     print(0)
@@ -73,8 +106,25 @@ try:
             print("0")
             print("")
             print("")
-except Exception:
-    print("NO_WIFI")
+except ImportError:
+    try:
+        import wifi
+        if hasattr(wifi, 'radio'):
+            if wifi.radio.ipv4_address:
+                print("1")
+                print(wifi.radio.ipv4_address)
+                try:
+                    print(wifi.radio.ap_info.ssid)
+                except:
+                    print("")
+            else:
+                print("0")
+                print("")
+                print("")
+        else:
+            print("NO_WIFI")
+    except ImportError:
+        print("NO_WIFI")
 
 # 5. Boot log (written by safe boot.py on each reboot)
 print("---BOOTLOG---")
@@ -85,147 +135,186 @@ except:
     print("NO_LOG")
 `;
 
-    // Save script locally to a safe temp spot in the workspace
-    const tempScriptPath = path.join(workspaceFolder, '.dashboard_metrics.py');
-    try {
-        fs.writeFileSync(tempScriptPath, pythonScript, 'utf8');
+  // Save script locally to a safe temp spot in the workspace
+  const tempScriptPath = path.join(workspaceFolder, "_dashboard_metrics.py");
+  try {
+    fs.writeFileSync(tempScriptPath, pythonScript, "utf8");
 
-        // Run the script on the device
-        // ws: ports need mpremotesubpro.py (mpremote has no WebSocket transport)
-        let rawOutput;
-        if (devicePort && devicePort.startsWith('ws:')) {
-            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-            const subpro = path.join(__dirname, 'mpremotesubpro.py');
-            rawOutput = await new Promise((resolve) => {
-                execFile(venvPython, [
-                    subpro, '--python', venvPython,
-                    'run_mcu', '--port', devicePort, '--file', tempScriptPath
-                ], { timeout: 30000 }, (_err, stdout) => resolve(stdout || ''));
-            });
-        } else {
-            const mpArgs = devicePort
-                ? ['connect', devicePort, 'run', `"${tempScriptPath}"`]
-                : ['run', `"${tempScriptPath}"`];
-            rawOutput = await runMpremote(outputChannel, mpArgs);
-        }
-
-        // Parse the block output
-        const lines = rawOutput.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-
-        let currentSection = '';
-        let sysLines = [];
-        let ramLines = [];
-        let flashLines = [];
-        let wifiLines = [];
-        let bootLogLines = [];
-
-        for (const line of lines) {
-            if (line === '---SYS---')     { currentSection = 'SYS';     continue; }
-            if (line === '---RAM---')     { currentSection = 'RAM';     continue; }
-            if (line === '---FLASH---')   { currentSection = 'FLASH';   continue; }
-            if (line === '---WIFI---')    { currentSection = 'WIFI';    continue; }
-            if (line === '---BOOTLOG---') { currentSection = 'BOOTLOG'; continue; }
-
-            if (currentSection === 'SYS')         sysLines.push(line);
-            else if (currentSection === 'RAM')     ramLines.push(line);
-            else if (currentSection === 'FLASH')   flashLines.push(line);
-            else if (currentSection === 'WIFI')    wifiLines.push(line);
-            else if (currentSection === 'BOOTLOG') bootLogLines.push(line);
-        }
-
-        // Apply SYS metrics
-        if (sysLines.length >= 3) {
-            metrics.platform = sysLines[0];
-            metrics.firmware = 'MicroPython';
-            metrics.version = sysLines[1];
-            const freqHz = parseInt(sysLines[2], 10);
-            metrics.cpuFreqHtml = freqHz > 0 ? `${(freqHz / 1000000).toFixed(0)} <span class="unit">MHz</span>` : 'Unknown';
-        }
-
-        // Apply RAM metrics
-        if (ramLines.length >= 2) {
-            metrics.ramUsed = parseInt(ramLines[0], 10) || 0;
-            metrics.ramFree = parseInt(ramLines[1], 10) || 0;
-            metrics.ramTotal = metrics.ramUsed + metrics.ramFree;
-        }
-
-        // Apply Flash metrics
-        if (flashLines.length >= 2) {
-            metrics.flashTotal = parseInt(flashLines[0], 10) || 0;
-            metrics.flashFree = parseInt(flashLines[1], 10) || 0;
-            metrics.flashUsed = metrics.flashTotal - metrics.flashFree;
-        }
-
-        // Apply Wi-Fi metrics
-        if (wifiLines.length > 0 && wifiLines[0] !== 'NO_WIFI') {
-            metrics.wifi.supported = true;
-            metrics.wifi.connected = wifiLines[0] === '1';
-            metrics.wifi.ip   = wifiLines[1] || '';
-            metrics.wifi.ssid = wifiLines[2] || '';
-        } else if (wifiLines[0] === 'NO_WIFI') {
-            metrics.wifi.supported = false;
-        }
-
-        // Apply Boot Log — written by safe boot.py on each reboot
-        const rawLog = bootLogLines.join('').trim();
-        if (rawLog && rawLog !== 'NO_LOG') {
-            metrics.bootLog.hasLog = true;
-            if (rawLog.startsWith('OK:')) {
-                metrics.bootLog.status = 'ok';
-                metrics.bootLog.ip = rawLog.slice(3);
-                metrics.bootLog.detail = `Remote access active — ${metrics.bootLog.ip}`;
-            } else if (rawLog.startsWith('WIFI_TIMEOUT:')) {
-                metrics.bootLog.status = 'timeout';
-                metrics.bootLog.detail = 'Wi-Fi not available — USB mode only';
-            } else if (rawLog.startsWith('ERROR:')) {
-                metrics.bootLog.status = 'error';
-                metrics.bootLog.detail = `Boot error: ${rawLog.slice(6)}`;
-            } else {
-                metrics.bootLog.status = 'unknown';
-                metrics.bootLog.detail = rawLog;
-            }
-        }
-
-    } catch (err) {
-        console.error('Failed to gather metrics:', err);
-    } finally {
-        if (fs.existsSync(tempScriptPath)) {
-            fs.unlinkSync(tempScriptPath);
-        }
+    // Run the script on the device
+    // ws: ports need mpremotesubpro.py (mpremote has no WebSocket transport)
+    let rawOutput;
+    if (devicePort && devicePort.startsWith("ws:")) {
+      const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+      const subpro = path.join(__dirname, "mpremotesubpro.py");
+      rawOutput = await new Promise((resolve) => {
+        execFile(
+          venvPython,
+          [
+            subpro,
+            "--python",
+            venvPython,
+            "run_mcu",
+            "--port",
+            devicePort,
+            "--file",
+            tempScriptPath,
+          ],
+          { timeout: 30000 },
+          (_err, stdout) => resolve(stdout || ""),
+        );
+      });
+    } else {
+      const mpArgs = devicePort
+        ? ["connect", devicePort, "run", `"${tempScriptPath}"`]
+        : ["run", `"${tempScriptPath}"`];
+      rawOutput = await runMpremote(outputChannel, mpArgs);
     }
 
-    return metrics;
+    // Parse the block output
+    const lines = rawOutput
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    let currentSection = "";
+    let sysLines = [];
+    let ramLines = [];
+    let flashLines = [];
+    let wifiLines = [];
+    let bootLogLines = [];
+
+    for (const line of lines) {
+      if (line === "---SYS---") {
+        currentSection = "SYS";
+        continue;
+      }
+      if (line === "---RAM---") {
+        currentSection = "RAM";
+        continue;
+      }
+      if (line === "---FLASH---") {
+        currentSection = "FLASH";
+        continue;
+      }
+      if (line === "---WIFI---") {
+        currentSection = "WIFI";
+        continue;
+      }
+      if (line === "---BOOTLOG---") {
+        currentSection = "BOOTLOG";
+        continue;
+      }
+
+      if (currentSection === "SYS") sysLines.push(line);
+      else if (currentSection === "RAM") ramLines.push(line);
+      else if (currentSection === "FLASH") flashLines.push(line);
+      else if (currentSection === "WIFI") wifiLines.push(line);
+      else if (currentSection === "BOOTLOG") bootLogLines.push(line);
+    }
+
+    // Apply SYS metrics
+    if (sysLines.length >= 4) {
+      const rawSysVersion = sysLines[0].toLowerCase();
+      metrics.firmware = rawSysVersion.includes("circuitpython")
+        ? "CircuitPython"
+        : "MicroPython";
+      metrics.platform = sysLines[1];
+      metrics.version = sysLines[2];
+      const freqHz = parseInt(sysLines[3], 10);
+      metrics.cpuFreqHtml =
+        freqHz > 0
+          ? `${(freqHz / 1000000).toFixed(0)} <span class="unit">MHz</span>`
+          : "Unknown";
+    }
+
+    // Apply RAM metrics
+    if (ramLines.length >= 2) {
+      metrics.ramUsed = parseInt(ramLines[0], 10) || 0;
+      metrics.ramFree = parseInt(ramLines[1], 10) || 0;
+      metrics.ramTotal = metrics.ramUsed + metrics.ramFree;
+    }
+
+    // Apply Flash metrics
+    if (flashLines.length >= 2) {
+      metrics.flashTotal = parseInt(flashLines[0], 10) || 0;
+      metrics.flashFree = parseInt(flashLines[1], 10) || 0;
+      metrics.flashUsed = metrics.flashTotal - metrics.flashFree;
+    }
+
+    // Apply Wi-Fi metrics
+    if (wifiLines.length > 0 && wifiLines[0] !== "NO_WIFI") {
+      metrics.wifi.supported = true;
+      metrics.wifi.connected = wifiLines[0] === "1";
+      metrics.wifi.ip = wifiLines[1] || "";
+      metrics.wifi.ssid = wifiLines[2] || "";
+    } else if (wifiLines[0] === "NO_WIFI") {
+      metrics.wifi.supported = false;
+    }
+
+    // Apply Boot Log — written by safe boot.py on each reboot
+    const rawLog = bootLogLines.join("").trim();
+    if (rawLog && rawLog !== "NO_LOG") {
+      metrics.bootLog.hasLog = true;
+      if (rawLog.startsWith("OK:")) {
+        metrics.bootLog.status = "ok";
+        metrics.bootLog.ip = rawLog.slice(3);
+        metrics.bootLog.detail = `Remote access active — ${metrics.bootLog.ip}`;
+      } else if (rawLog.startsWith("WIFI_TIMEOUT:")) {
+        metrics.bootLog.status = "timeout";
+        metrics.bootLog.detail = "Wi-Fi not available — USB mode only";
+      } else if (rawLog.startsWith("ERROR:")) {
+        metrics.bootLog.status = "error";
+        metrics.bootLog.detail = `Boot error: ${rawLog.slice(6)}`;
+      } else {
+        metrics.bootLog.status = "unknown";
+        metrics.bootLog.detail = rawLog;
+      }
+    }
+  } catch (err) {
+    console.error("Failed to gather metrics:", err);
+  } finally {
+    if (fs.existsSync(tempScriptPath)) {
+      fs.unlinkSync(tempScriptPath);
+    }
+  }
+
+  return metrics;
 }
 
 /**
  * Format bytes to readable strings like "145 KB" or "2.1 MB"
  */
 function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' <span class="unit">' + sizes[i] + '</span>';
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return (
+    parseFloat((bytes / Math.pow(k, i)).toFixed(1)) +
+    ' <span class="unit">' +
+    sizes[i] +
+    "</span>"
+  );
 }
 
 /**
  * Creates the sleek SVG Donut Chart HTML
  */
 function createDonutChart(used, total) {
-    if (total === 0) return `<div class="donut-fallback">N/A</div>`;
-    
-    // Calculate SVG Stroke Dash Array for the circle percentage
-    const percentage = Math.round((used / total) * 100);
-    const radius = 50;
-    const circumference = 2 * Math.PI * radius;
-    const strokeDasharray = `${(percentage / 100) * circumference} ${circumference}`;
+  if (total === 0) return `<div class="donut-fallback">N/A</div>`;
 
-    // Color logic (green -> yellow -> red based on usage)
-    let color = '#10b981'; // green
-    if (percentage > 70) color = '#f59e0b'; // yellow
-    if (percentage > 90) color = '#ef4444'; // red
+  // Calculate SVG Stroke Dash Array for the circle percentage
+  const percentage = Math.round((used / total) * 100);
+  const radius = 50;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDasharray = `${(percentage / 100) * circumference} ${circumference}`;
 
-    return `
+  // Color logic (green -> yellow -> red based on usage)
+  let color = "#10b981"; // green
+  if (percentage > 70) color = "#f59e0b"; // yellow
+  if (percentage > 90) color = "#ef4444"; // red
+
+  return `
         <div class="chart-container">
             <svg width="140" height="140" viewBox="0 0 120 120">
                 <circle class="donut-bg" cx="60" cy="60" r="${radius}" fill="none" stroke="#2d2d3d" stroke-width="12"></circle>
@@ -251,10 +340,16 @@ function createDonutChart(used, total) {
  */
 let PINOUT_DATA = {};
 try {
-    const pinoutsPath = path.join(__dirname, '..', 'resource', 'pinouts', 'pinouts.json');
-    PINOUT_DATA = JSON.parse(fs.readFileSync(pinoutsPath, 'utf8'));
+  const pinoutsPath = path.join(
+    __dirname,
+    "..",
+    "resource",
+    "pinouts",
+    "pinouts.json",
+  );
+  PINOUT_DATA = JSON.parse(fs.readFileSync(pinoutsPath, "utf8"));
 } catch (e) {
-    // fallback — empty, pinout section will show nothing
+  // fallback — empty, pinout section will show nothing
 }
 
 /**
@@ -265,54 +360,68 @@ try {
  * @returns {string} key into PINOUT_DATA
  */
 function resolvePinoutKey(platform, mcuFromCfg) {
-    // 1. device.cfg mcu is most specific — sys.platform returns 'rp2' for BOTH RP2040 and RP2350
-    //    so cfg takes priority to get the correct board name
-    if (mcuFromCfg) {
-        const m = mcuFromCfg.toLowerCase().trim();
-        if (PINOUT_DATA[m]) return m;
-        // prefix matches: rp2350w → rp2350_w, rp2w → rp2_w, etc.
-        /** @type {Array<[RegExp, string]>} */
-        const aliases = [
-            // Full human-readable names (from project wizard board picker)
-            [/pico\s*2\s*w/i,           'rp2350_w'],
-            [/pico\s*2/i,               'rp2350'],
-            [/pico\s*w/i,               'rp2_w'],
-            [/pico/i,                   'rp2'],
-            // Short codes
-            [/^rp2350.?w/,              'rp2350_w'],
-            [/^rp2350/,                 'rp2350'],
-            [/^rp2.?w/,                 'rp2_w'],
-            [/^rp2/,                    'rp2'],
-            [/^esp32/,                  'esp32'],
-            [/^esp8266/,                'esp8266'],
-            [/^samd/,                   'samd'],
-            [/^stm32/,                  'stm32'],
-            [/^mimxrt/,                 'mimxrt'],
-            [/^nrf/,                    'nrf'],
-        ];
-        for (const [re, key] of aliases) {
-            if (re.test(m) && PINOUT_DATA[key]) return key;
-        }
+  // 1. device.cfg mcu is most specific — sys.platform returns 'rp2' for BOTH RP2040 and RP2350
+  //    so cfg takes priority to get the correct board name
+  if (mcuFromCfg) {
+    const m = mcuFromCfg.toLowerCase().trim();
+    if (PINOUT_DATA[m]) return m;
+    // prefix matches: rp2350w → rp2350_w, rp2w → rp2_w, etc.
+    /** @type {Array<[RegExp, string]>} */
+    const aliases = [
+      // Full human-readable names (from project wizard board picker)
+      [/pico\s*2\s*w/i, "rp2350_w"],
+      [/pico\s*2/i, "rp2350"],
+      [/pico\s*w/i, "rp2_w"],
+      [/pico/i, "rp2"],
+      // Short codes
+      [/^rp2350.?w/, "rp2350_w"],
+      [/^rp2350/, "rp2350"],
+      [/^rp2.?w/, "rp2_w"],
+      [/^rp2/, "rp2"],
+      [/^esp32/, "esp32"],
+      [/^esp8266/, "esp8266"],
+      [/^samd/, "samd"],
+      [/^stm32/, "stm32"],
+      [/^mimxrt/, "mimxrt"],
+      [/^nrf/, "nrf"],
+    ];
+    for (const [re, key] of aliases) {
+      if (re.test(m) && PINOUT_DATA[key]) return key;
     }
+  }
 
-    // 2. Fall back to sys.platform from connected device
-    if (platform && platform !== 'Unknown' && PINOUT_DATA[platform]) return platform;
+  // 2. Fall back to sys.platform from connected device
+  if (platform && platform !== "Unknown" && PINOUT_DATA[platform])
+    return platform;
 
-    // 3. Default to first key in pinouts.json
-    return Object.keys(PINOUT_DATA)[0] || 'rp2';
+  // 3. Default to first key in pinouts.json
+  return Object.keys(PINOUT_DATA)[0] || "rp2";
 }
 
 /**
  * Get Color class for pin based on its name
  */
 function getPinClass(pinName) {
-    const p = pinName.toUpperCase();
-    if (p.includes('GND')) return 'gnd';
-    if (p.includes('3V3') || p.includes('VBUS') || p.includes('VSYS') || p.includes('VIN') || p.includes('5V')) return 'pwr';
-    if (p.includes('A0') || p.includes('A1') || p.includes('A2') || p.includes('ADC')) return 'adc';
-    if (p.includes('EN') || p.includes('RUN') || p.includes('RST')) return 'ctrl';
-    if (p.includes('TX') || p.includes('RX')) return 'uart';
-    return 'gpio';
+  const p = pinName.toUpperCase();
+  if (p.includes("GND")) return "gnd";
+  if (
+    p.includes("3V3") ||
+    p.includes("VBUS") ||
+    p.includes("VSYS") ||
+    p.includes("VIN") ||
+    p.includes("5V")
+  )
+    return "pwr";
+  if (
+    p.includes("A0") ||
+    p.includes("A1") ||
+    p.includes("A2") ||
+    p.includes("ADC")
+  )
+    return "adc";
+  if (p.includes("EN") || p.includes("RUN") || p.includes("RST")) return "ctrl";
+  if (p.includes("TX") || p.includes("RX")) return "uart";
+  return "gpio";
 }
 
 /**
@@ -320,39 +429,40 @@ function getPinClass(pinName) {
  * @param {string} pinoutKey - resolved key from resolvePinoutKey()
  */
 function createPinoutHtml(pinoutKey) {
-    const data = PINOUT_DATA[pinoutKey] || PINOUT_DATA[Object.keys(PINOUT_DATA)[0]];
-    
-    let leftHtml = '';
-    let rightHtml = '';
-    
-    // Generate Left Pins
-    for (const pin of data.left) {
-        const pClass = getPinClass(pin);
-        leftHtml += `
+  const data =
+    PINOUT_DATA[pinoutKey] || PINOUT_DATA[Object.keys(PINOUT_DATA)[0]];
+
+  let leftHtml = "";
+  let rightHtml = "";
+
+  // Generate Left Pins
+  for (const pin of data.left) {
+    const pClass = getPinClass(pin);
+    leftHtml += `
             <div class="pin-row">
                 <div class="pin left ${pClass}"><span class="pin-label">${pin}</span></div>
             </div>
         `;
-    }
+  }
 
-    // Generate Right Pins
-    for (const pin of data.right) {
-        const pClass = getPinClass(pin);
-        rightHtml += `
+  // Generate Right Pins
+  for (const pin of data.right) {
+    const pClass = getPinClass(pin);
+    rightHtml += `
             <div class="pin-row">
                 <div class="pin right ${pClass}"><span class="pin-label">${pin}</span></div>
             </div>
         `;
-    }
+  }
 
-    return `
+  return `
         <div class="pinout-header">
             <h3>🧷 Hardware Pinout Diagram</h3>
             <span class="badg">${data.name}</span>
         </div>
         <div class="pinout-wrapper">
             <div class="board-chip">
-                <div class="chip-label">${data.name.split(' ')[0]}</div>
+                <div class="chip-label">${data.name.split(" ")[0]}</div>
                 <div class="pins-left">${leftHtml}</div>
                 <div class="pins-right">${rightHtml}</div>
             </div>
@@ -373,7 +483,7 @@ function createPinoutHtml(pinoutKey) {
  * Generates the full HTML for the Webview
  */
 function getWebviewContent(metrics) {
-    return `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -587,156 +697,327 @@ function getWebviewContent(metrics) {
             0% { stroke-dasharray: 0 314; }
         }
 
-        /* Pinout Diagram Styles */
-        .pinout-card {
-            grid-column: 1 / -1;
-            align-items: center;
-        }
-        
-        .pinout-header {
-            width: 100%;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 24px;
-        }
-        
-        .pinout-header h3 {
-            margin: 0;
-            color: var(--text-muted);
-            font-size: 16px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
+    /* --- PINOUT CARD ENHANCEMENTS --- */
+    
 
-        .badg {
-            background-color: rgba(59, 130, 246, 0.2);
-            color: #60a5fa;
-            padding: 4px 12px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 600;
-        }
+.pinout-card {
+    grid-column: 1 / -1;
+    overflow-x: auto;
+}
 
-        .pinout-wrapper {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            width: 100%;
-            position: relative;
-        }
+.pinout-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;   /* reduced */
+    flex-wrap: wrap;
+    gap: 8px;              /* reduced */
+}
 
+.pinout-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-main);
+}
+
+.badge {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+    padding: 3px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    backdrop-filter: blur(2px);
+    border: 1px solid rgba(96, 165, 250, 0.2);
+}
+
+.pinout-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+}
+
+/* CHIP – compact */
+.board-chip {
+    background: linear-gradient(145deg, #1e1e2a 0%, #111115 100%);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 24px;
+    min-width: 220px;
+    width: auto;
+    max-width: 100%;
+    position: relative;
+    display: flex;
+    justify-content: space-between;
+    box-shadow: 0 20px 35px -10px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+    margin: 20px 0 30px 0;
+    padding: 32px 12px;
+}
+
+.board-chip::after {
+    content: '';
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #000;
+    border: 2px solid #2a2a2a;
+    box-shadow: 0 0 6px rgba(0,0,0,0.4);
+}
+
+.chip-label {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-90deg);
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: 4px;
+    color: rgba(148, 163, 184, 0.15);
+    text-transform: uppercase;
+    white-space: nowrap;
+    pointer-events: none;
+    font-family: 'Segoe UI', 'SF Pro Text', system-ui, sans-serif;
+}
+
+/* PIN COLUMNS – tighter spacing */
+.pins-left, .pins-right {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.pin-row {
+    display: flex;
+    align-items: center;
+    height: 28px;
+}
+
+.pin {
+    position: relative;
+    width: 18px;
+    height: 10px;
+    background: #cbd5e1;
+    border-radius: 2px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    transition: all 0.15s ease;
+    cursor: default;
+}
+
+.pin:hover {
+    transform: scaleX(1.1);
+    filter: brightness(1.1);
+}
+
+/* pin labels – adjust positioning for smaller pins */
+.pin-label {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    background: rgba(0,0,0,0.6);
+    padding: 2px 6px;
+    border-radius: 6px;
+    backdrop-filter: blur(4px);
+    opacity: 0.9;
+    pointer-events: none;
+}
+
+.pin.left .pin-label {
+    right: 22px;
+    text-align: right;
+}
+
+.pin.right .pin-label {
+    left: 22px;
+    text-align: left;
+}
+
+/* legend – compact */
+.pin-legend {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;              /* reduced gap */
+    background: rgba(255,255,255,0.03);
+    backdrop-filter: blur(8px);
+    border-radius: 32px;
+    padding: 8px 16px;     /* less padding */
+    margin-top: 12px;      /* reduced */
+    border: 1px solid rgba(255,255,255,0.05);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;              /* smaller gap */
+    background: rgba(0,0,0,0.3);
+    padding: 3px 10px;     /* less padding */
+    border-radius: 24px;
+    font-size: 10px;       /* smaller font */
+    font-weight: 500;
+    color: var(--text-main);
+    transition: all 0.2s;
+    cursor: default;
+    border: 1px solid rgba(255,255,255,0.02);
+}
+
+.legend-item:hover {
+    transform: translateY(-1px);
+    background: rgba(255,255,255,0.1);
+    border-color: rgba(255,255,255,0.2);
+}
+
+.dot {
+    width: 8px;            /* smaller dot */
+    height: 8px;
+    border-radius: 50%;
+    box-shadow: 0 1px 1px rgba(0,0,0,0.2);
+    transition: transform 0.1s;
+}
+
+/* responsive – ensure it still fits */
+@media (max-width: 550px) {
+    .board-chip {
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        padding: 16px 8px;
+    }
+    .pins-left, .pins-right {
+        width: 80%;
+        gap: 6px;
+    }
+    .chip-label {
+        font-size: 14px;
+        letter-spacing: 1px;
+    }
+    .pin-legend {
+        gap: 6px;
+        padding: 6px 12px;
+    }
+    .legend-item {
+        padding: 2px 8px;
+        font-size: 9px;
+    }
+}
+
+    /* PIN COLOR OVERRIDES (keep your existing colors) */
+    .pin.pwr { background: #ef4444; }
+    .pin.pwr .pin-label { color: #ef4444; background: rgba(0,0,0,0.7); }
+
+    .pin.gnd { background: #6b7280; border: none; }
+    .pin.gnd .pin-label { color: #9ca3af; }
+
+    .pin.gpio { background: #10b981; }
+    .pin.gpio .pin-label { color: #10b981; }
+
+    .pin.adc { background: #a855f7; }
+    .pin.adc .pin-label { color: #a855f7; }
+
+    .pin.uart { background: #3b82f6; }
+    .pin.uart .pin-label { color: #3b82f6; }
+
+    .pin.ctrl { background: #f59e0b; }
+    .pin.ctrl .pin-label { color: #f59e0b; }
+
+    /* LEGEND – BEAUTIFIED */
+    .pin-legend {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 12px;
+        background: rgba(255,255,255,0.03);
+        backdrop-filter: blur(8px);
+        border-radius: 48px;
+        padding: 12px 24px;
+        margin-top: 20px;
+        border: 1px solid rgba(255,255,255,0.05);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+
+    .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(0,0,0,0.3);
+        padding: 5px 14px;
+        border-radius: 32px;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text-main);
+        transition: all 0.2s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+        cursor: default;
+        border: 1px solid rgba(255,255,255,0.02);
+    }
+
+    .legend-item:hover {
+        transform: translateY(-2px);
+        background: rgba(255,255,255,0.1);
+        border-color: rgba(255,255,255,0.2);
+    }
+
+    .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+        transition: transform 0.1s;
+    }
+
+    .legend-item:hover .dot {
+        transform: scale(1.2);
+    }
+
+    /* Dot colors – gradients for extra flair */
+    .dot.pwr { background: linear-gradient(135deg, #ef4444, #dc2626); }
+    .dot.gnd { background: linear-gradient(135deg, #6b7280, #4b5563); }
+    .dot.gpio { background: linear-gradient(135deg, #10b981, #059669); }
+    .dot.adc { background: linear-gradient(135deg, #a855f7, #9333ea); }
+    .dot.uart { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+    .dot.ctrl { background: linear-gradient(135deg, #f59e0b, #d97706); }
+
+    /* Responsive adjustments */
+    @media (max-width: 550px) {
         .board-chip {
-            background-color: #111115;
-            border: 2px solid #333;
-            border-radius: 8px;
-            min-height: 400px;
-            width: 140px;
-            position: relative;
-            display: flex;
-            justify-content: space-between;
-            box-shadow: inset 0 0 20px rgba(0,0,0,0.8), 0 10px 30px rgba(0,0,0,0.4);
-            margin: 20px 0 40px 0;
-            padding: 24px 0;
-        }
-
-        .board-chip::after {
-            content: '';
-            position: absolute;
-            top: 10px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #000;
-            border: 2px solid #222;
-        }
-
-        .chip-label {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%) rotate(-90deg);
-            color: #333;
-            font-size: 32px;
-            font-weight: 800;
-            letter-spacing: 8px;
-            pointer-events: none;
-        }
-
-        .pins-left, .pins-right {
-            display: flex;
             flex-direction: column;
-            gap: 12px;
-        }
-
-        .pin-row {
-            height: 8px;
-            display: flex;
             align-items: center;
-        }
-
-        .pin {
-            width: 12px;
-            height: 8px;
-            background: #c0c0c0;
-            position: relative;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.5);
-        }
-
-        .pin.left {
-            border-radius: 0 3px 3px 0;
-            margin-left: -6px;
-        }
-        
-        .pin.right {
-            border-radius: 3px 0 0 3px;
-            margin-right: -6px;
-        }
-
-        .pin-label {
-            position: absolute;
-            top: 50%;
-            transform: translateY(-50%);
-            font-family: "JetBrains Mono", "Fira Code", monospace;
-            font-size: 11px;
-            font-weight: 600;
-            white-space: nowrap;
-        }
-
-        .pin.left .pin-label { right: 20px; text-align: right; }
-        .pin.right .pin-label { left: 20px; text-align: left; }
-
-        /* Pin Colors */
-        .pin.pwr { background: #ef4444; }
-        .pin.pwr .pin-label { color: #ef4444; }
-        
-        .pin.gnd { background: #1a1a24; border: 1px solid #444; }
-        .pin.gnd .pin-label { color: #888; }
-        
-        .pin.gpio { background: #10b981; }
-        .pin.gpio .pin-label { color: #10b981; }
-        
-        .pin.adc { background: #a855f7; }
-        .pin.adc .pin-label { color: #a855f7; }
-        
-        .pin.uart { background: #3b82f6; }
-        .pin.uart .pin-label { color: #3b82f6; }
-        
-        .pin.ctrl { background: #f59e0b; }
-        .pin.ctrl .pin-label { color: #f59e0b; }
-
-        .pin-legend {
-            width: 100%;
-            display: flex;
-            justify-content: center;
-            flex-wrap: wrap;
             gap: 16px;
-            margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid var(--card-border);
+            padding: 24px 12px;
         }
+        .pins-left, .pins-right {
+            width: 80%;
+        }
+        .pin.left, .pin.right {
+            margin: 0 auto;
+        }
+        .chip-label {
+            font-size: 20px;
+            letter-spacing: 2px;
+            white-space: normal;
+            text-align: center;
+            width: 100%;
+        }
+        .pin-legend {
+            padding: 10px 16px;
+            gap: 8px;
+        }
+        .legend-item {
+            padding: 4px 10px;
+            font-size: 11px;
+        }
+    }
 
         .legend-item {
             display: flex;
@@ -958,37 +1239,102 @@ function getWebviewContent(metrics) {
         </div>
 
         <!-- Wi-Fi Manager Card -->
-        ${metrics.wifi.supported ? `
+        ${
+          metrics.wifi.supported
+            ? `
         <div class="card wifi-card" id="wifiCard">
             <h2>📶 Wi-Fi Manager</h2>
 
             <div id="wifiStatusArea">
-                ${metrics.wifi.connected
+                ${
+                  metrics.wifi.connected
                     ? `<div class="wifi-status-badge connected"><span class="wifi-dot"></span> Connected</div>
                        <div class="wifi-info-row">
-                           <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">${metrics.wifi.ssid || '—'}</span></div>
+                           <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">${metrics.wifi.ssid || "—"}</span></div>
                            <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp">${metrics.wifi.ip}</span></div>
                        </div>`
                     : `<div class="wifi-status-badge disconnected"><span class="wifi-dot"></span> Not Connected</div>`
                 }
-                ${metrics.bootLog.hasLog ? `
+                ${
+                  metrics.bootLog.hasLog
+                    ? `
                 <div class="boot-log-row boot-log-${metrics.bootLog.status}" id="bootLogRow">
-                    <span class="boot-log-icon">${metrics.bootLog.status === 'ok' ? '✅' : metrics.bootLog.status === 'timeout' ? '⚠️' : '❌'}</span>
+                    <span class="boot-log-icon">${metrics.bootLog.status === "ok" ? "✅" : metrics.bootLog.status === "timeout" ? "⚠️" : "❌"}</span>
                     <span class="boot-log-text">Last boot: ${metrics.bootLog.detail}</span>
                     <button class="btn btn-danger btn-sm" id="disableRemoteBtn" style="margin-left:auto">🔒 Disable Remote Access</button>
-                </div>` : ''}
+                </div>`
+                    : ""
+                }
             </div>
 
             <div class="wifi-actions" id="wifiActionsBar">
                 <button class="btn btn-primary" id="scanBtn">🔍 Scan Networks</button>
-                ${metrics.wifi.connected
+                ${
+                  metrics.wifi.connected
                     ? `<button class="btn btn-ghost" id="disconnectBtn">Disconnect</button>`
-                    : ''}
+                    : ""
+                }
             </div>
 
             <div class="wifi-scan-area" id="wifiScanArea" style="display:none"></div>
 
-            ${metrics.wifi.connected ? `
+            ${
+              metrics.firmware === "CircuitPython"
+                ? `
+            <div class="webrepl-area" id="webWorkflowArea">
+                <div class="toggle-row">
+                    <div style="flex:1">
+                        <div class="toggle-label">🌐 Web Workflow (CircuitPython Wi-Fi)</div>
+                        <div class="toggle-sub">Configure Wi-Fi + API access via <code>settings.toml</code> on the CIRCUITPY drive</div>
+                    </div>
+                    <button class="btn-sm btn-accent" id="webWorkflowToggleBtn" onclick="toggleWebWorkflowForm()">Configure</button>
+                </div>
+                <div id="webWorkflowForm" style="display:none;margin-top:14px">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+                        <div>
+                            <div class="wlabel" style="margin-bottom:4px">Wi-Fi SSID</div>
+                            <input class="wifi-input" id="cpWifiSsid" type="text" placeholder="YourNetworkName" />
+                        </div>
+                        <div>
+                            <div class="wlabel" style="margin-bottom:4px">Wi-Fi Password</div>
+                            <input class="wifi-input" id="cpWifiPass" type="password" placeholder="Wi-Fi password" />
+                        </div>
+                        <div>
+                            <div class="wlabel" style="margin-bottom:4px">API Password</div>
+                            <input class="wifi-input" id="cpApiPass" type="text" placeholder="webworkflow password" />
+                        </div>
+                        <div>
+                            <div class="wlabel" style="margin-bottom:4px">API Port</div>
+                            <input class="wifi-input" id="cpApiPort" type="number" placeholder="80" value="80" />
+                        </div>
+                    </div>
+                    <div style="font-size:11px;color:#94a3b8;margin-bottom:10px">
+                        ⚠️ CIRCUITPY drive must be mounted (USB). After saving, reset the board to apply.
+                    </div>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn-sm btn-accent" onclick="saveWebWorkflow()">💾 Save to settings.toml</button>
+                        <button class="btn-sm" onclick="detectWebWorkflowIp()" style="margin-left:6px;">🔍 Detect IP</button>
+                        <div style="margin-top:6px;font-size:11px;color:#94a3b8;">⚠️ Stop running code first (press <b>Stop</b> or <b>Ctrl+C</b> in REPL) — CircuitPython locks the drive while code is active.</div>
+                        <div style="font-size:11px;color:#94a3b8;margin-top:2px;">After saving, power-cycle the board, then click <b>Detect IP</b> to read the assigned address.</div>
+                        <button class="btn-sm" onclick="document.getElementById('webWorkflowForm').style.display='none'">Cancel</button>
+                    </div>
+                    <div id="webWorkflowStatus" style="margin-top:8px;font-size:12px"></div>
+                </div>
+                ${
+                  metrics.wifi.connected
+                    ? `
+                <div class="webrepl-ip-box" style="margin-top:12px">
+                    <div style="flex:1">
+                        <div class="webrepl-ip-label">🌐 Web Workflow IP</div>
+                        <div class="webrepl-ip-val">${metrics.wifi.ip}</div>
+                        <div style="font-size:11px;color:#94a3b8;margin-top:4px">Access at http://${metrics.wifi.ip}/edit/</div>
+                    </div>
+                </div>`
+                    : ""
+                }
+            </div>`
+                : metrics.wifi.connected
+                  ? `
             <div class="webrepl-area" id="webReplArea">
                 <div class="toggle-row">
                     <label class="toggle">
@@ -1001,8 +1347,12 @@ function getWebviewContent(metrics) {
                     </div>
                 </div>
                 <div id="webReplInfoBox" style="display:none"></div>
-            </div>` : ''}
-            ${metrics.bootLog.status === 'ok' ? `
+            </div>`
+                  : ""
+            }
+            ${
+              metrics.bootLog.status === "ok"
+                ? `
             <div class="webrepl-ip-box" id="webReplActiveBox">
                 <div style="flex:1">
                     <div class="webrepl-ip-label">⭐ Remote Access Active  ·  Password: micro123</div>
@@ -1013,12 +1363,16 @@ function getWebviewContent(metrics) {
                     <button class="btn btn-warning" id="switchWirelessBtnStatic">⚡ Switch to Wireless</button>
                     <button class="btn btn-danger btn-sm" id="disableRemoteBtnBox">🔒 Disable</button>
                 </div>
-            </div>` : ''}
-        </div>` : `
+            </div>`
+                : ""
+            }
+        </div>`
+            : `
         <div class="card wifi-card">
             <h2>📶 Wi-Fi Manager</h2>
             <div class="wifi-status-badge no-wifi"><span class="wifi-dot"></span> Wi-Fi Not Supported on this board</div>
-        </div>`}
+        </div>`
+        }
 
     </div>
 
@@ -1069,6 +1423,34 @@ function getWebviewContent(metrics) {
                     document.getElementById('webReplInfoBox').style.display = 'none';
                 }
             });
+        }
+
+        // ── CircuitPython Web Workflow ───────────────────────────────────────
+        function toggleWebWorkflowForm() {
+            const form = document.getElementById('webWorkflowForm');
+            if (!form) return;
+            form.style.display = form.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function detectWebWorkflowIp() {
+            const statusEl = document.getElementById('webWorkflowStatus');
+            if (statusEl) statusEl.innerHTML = '<span style="color:#94a3b8">🔍 Detecting IP from boot_out.txt…</span>';
+            vscode.postMessage({ command: 'detectWebWorkflowIp' });
+        }
+
+        function saveWebWorkflow() {
+            const ssid       = document.getElementById('cpWifiSsid')?.value.trim();
+            const wifiPass   = document.getElementById('cpWifiPass')?.value;
+            const apiPass    = document.getElementById('cpApiPass')?.value.trim();
+            const apiPort    = parseInt(document.getElementById('cpApiPort')?.value || '80', 10);
+            const statusEl   = document.getElementById('webWorkflowStatus');
+
+            if (!ssid || !wifiPass || !apiPass) {
+                if (statusEl) statusEl.innerHTML = '<span style="color:#ef4444">⚠️ All fields are required.</span>';
+                return;
+            }
+            if (statusEl) statusEl.innerHTML = '<span style="color:#94a3b8">Saving…</span>';
+            vscode.postMessage({ command: 'saveWebWorkflow', ssid, wifiPassword: wifiPass, apiPassword: apiPass, apiPort });
         }
 
         // ── Message receiver ────────────────────────────────────────────────
@@ -1197,6 +1579,24 @@ function getWebviewContent(metrics) {
                 if (box) box.style.display = 'none';
             }
 
+            if (msg.command === 'webWorkflowIpDetected') {
+                const statusEl = document.getElementById('webWorkflowStatus');
+                if (statusEl) {
+                    const col = msg.ip ? '#10b981' : '#f59e0b';
+                    statusEl.innerHTML = '<span style="color:' + col + '">' + msg.message + '</span>';
+                }
+            }
+
+            if (msg.command === 'webWorkflowSaved') {
+                const statusEl = document.getElementById('webWorkflowStatus');
+                if (statusEl) {
+                    statusEl.innerHTML = msg.success
+                        ? '<span style="color:#10b981">' + msg.message + '</span>'
+                        : '<span style="color:#ef4444">' + msg.message + '</span>' +
+                          (!msg.success ? '<br><span style="color:#94a3b8;font-size:11px;">Tip: Press Stop / Ctrl+C in the REPL to unlock the drive, then try again.</span>' : '');
+                }
+            }
+
             // Refresh the card after disabling remote access
             if (msg.command === 'remoteAccessDisabled') {
                 const bootLogRow = document.getElementById('bootLogRow');
@@ -1246,7 +1646,7 @@ function getWebviewContent(metrics) {
  * Safely escape a string for embedding inside a Python single-quoted string literal.
  */
 function escapePy(s) {
-    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 /**
@@ -1258,30 +1658,47 @@ function escapePy(s) {
  * @param {string} devicePort     - COM port or ws: address
  * @param {vscode.OutputChannel} outputChannel
  */
-async function runDeviceScript(scriptContent, tempName, workspaceRoot, devicePort, outputChannel) {
-    const tempPath = path.join(workspaceRoot, tempName);
-    try {
-        fs.writeFileSync(tempPath, scriptContent, 'utf8');
+async function runDeviceScript(
+  scriptContent,
+  tempName,
+  workspaceRoot,
+  devicePort,
+  outputChannel,
+) {
+  const tempPath = path.join(workspaceRoot, tempName);
+  try {
+    fs.writeFileSync(tempPath, scriptContent, "utf8");
 
-        // ws: ports need mpremotesubpro.py — mpremote has no WebSocket transport
-        if (devicePort && devicePort.startsWith('ws:')) {
-            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-            const subpro = path.join(__dirname, 'mpremotesubpro.py');
-            return await new Promise((resolve) => {
-                execFile(venvPython, [
-                    subpro, '--python', venvPython,
-                    'run_mcu', '--port', devicePort, '--file', tempPath
-                ], { timeout: 30000 }, (_err, stdout) => resolve(stdout || ''));
-            });
-        }
-
-        const args = devicePort
-            ? ['connect', devicePort, 'run', `"${tempPath}"`]
-            : ['run', `"${tempPath}"`];
-        return await runMpremote(outputChannel, args);
-    } finally {
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    // ws: ports need mpremotesubpro.py — mpremote has no WebSocket transport
+    if (devicePort && devicePort.startsWith("ws:")) {
+      const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+      const subpro = path.join(__dirname, "mpremotesubpro.py");
+      return await new Promise((resolve) => {
+        execFile(
+          venvPython,
+          [
+            subpro,
+            "--python",
+            venvPython,
+            "run_mcu",
+            "--port",
+            devicePort,
+            "--file",
+            tempPath,
+          ],
+          { timeout: 30000 },
+          (_err, stdout) => resolve(stdout || ""),
+        );
+      });
     }
+
+    const args = devicePort
+      ? ["connect", devicePort, "run", `"${tempPath}"`]
+      : ["run", `"${tempPath}"`];
+    return await runMpremote(outputChannel, args);
+  } finally {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+  }
 }
 
 /**
@@ -1291,69 +1708,86 @@ async function runDeviceScript(scriptContent, tempName, workspaceRoot, devicePor
  * @param {string} currentDevicePort  - COM port or ws: address
  * @param {function} onPortUpdate     - Optional callback(newPort) when user switches to wireless
  */
-async function openDeviceDashboard(context, outputChannel, currentDevicePort, onPortUpdate) {
-    if (!currentDevicePort) {
-        vscode.window.showWarningMessage('No device connected. Please run "Refresh Device Files" first.');
-        return;
-    }
-
-    // Track active port (may change to ws: during session)
-    let activePort = currentDevicePort;
-
-    const panel = vscode.window.createWebviewPanel(
-        'deviceDashboard',
-        `Device: ${currentDevicePort}`,
-        vscode.ViewColumn.One,
-        { enableScripts: true }
+async function openDeviceDashboard(
+  context,
+  outputChannel,
+  currentDevicePort,
+  onPortUpdate,
+) {
+  if (!currentDevicePort) {
+    vscode.window.showWarningMessage(
+      'No device connected. Please run "Refresh Device Files" first.',
     );
+    return;
+  }
 
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-        vscode.window.showErrorMessage('You must have a project workspace open to use the Dashboard.');
-        panel.dispose();
-        return;
-    }
-    const workspaceRoot = workspaceFolders[0].uri.fsPath;
+  // Track active port (may change to ws: during session)
+  let activePort = currentDevicePort;
 
-    // Loading screen
-    panel.webview.html = `<!DOCTYPE html><html><head><style>
+  const panel = vscode.window.createWebviewPanel(
+    "deviceDashboard",
+    `Device: ${currentDevicePort}`,
+    vscode.ViewColumn.One,
+    { enableScripts: true },
+  );
+
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+  if (!workspaceFolders || workspaceFolders.length === 0) {
+    vscode.window.showErrorMessage(
+      "You must have a project workspace open to use the Dashboard.",
+    );
+    panel.dispose();
+    return;
+  }
+  const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+  // Loading screen
+  panel.webview.html = `<!DOCTYPE html><html><head><style>
         body{background:#1a1a24;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:20px}
         .loader{border:4px solid rgba(255,255,255,0.1);border-top-color:#3b82f6;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite}
         @keyframes spin{to{transform:rotate(360deg)}}
     </style></head><body><div class="loader"></div><div>Fetching telemetry from ${currentDevicePort}…</div></body></html>`;
 
-    const updateDashboard = async () => {
-        try {
-            const metrics = await gatherDeviceMetrics(outputChannel, workspaceRoot, activePort);
+  const updateDashboard = async () => {
+    try {
+      const metrics = await gatherDeviceMetrics(
+        outputChannel,
+        workspaceRoot,
+        activePort,
+      );
 
-            // Read mcu from device.cfg for pinout fallback (used when device not connected)
-            let mcuFromCfg = '';
-            try {
-                const cfgPath = path.join(workspaceRoot, 'device.cfg');
-                mcuFromCfg = (await getConfigValue(cfgPath, 'device', 'mcu')) || '';
-            } catch (_) {}
+      // Read mcu from device.cfg for pinout fallback (used when device not connected)
+      let mcuFromCfg = "";
+      try {
+        const cfgPath = path.join(workspaceRoot, "device.cfg");
+        mcuFromCfg = (await getConfigValue(cfgPath, "device", "mcu")) || "";
+      } catch (_) {}
 
-            metrics.pinoutKey = resolvePinoutKey(metrics.platform, mcuFromCfg);
-            panel.webview.html = getWebviewContent(metrics);
-        } catch (err) {
-            panel.webview.html = `<body style="background:#1a1a24;color:#ef4444;padding:32px"><h2>Error</h2><p>${err.message}</p></body>`;
-        }
-    };
+      metrics.pinoutKey = resolvePinoutKey(metrics.platform, mcuFromCfg);
+      panel.webview.html = getWebviewContent(metrics);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      panel.webview.html =
+        '<body style="background:#1a1a24;color:#ef4444;padding:32px"><h2>Error</h2><p>' +
+        errMsg +
+        "</p></body>";
+    }
+  };
 
-    // ── Message handler ───────────────────────────────────────────────────────
-    panel.webview.onDidReceiveMessage(async message => {
+  // ── Message handler ───────────────────────────────────────────────────────
+  panel.webview.onDidReceiveMessage(
+    async (message) => {
+      if (message.command === "refreshMetrics") {
+        updateDashboard();
+        return;
+      }
 
-        if (message.command === 'refreshMetrics') {
-            updateDashboard();
-            return;
-        }
-
-        // ── Wi-Fi Scan ──────────────────────────────────────────────────────
-        if (message.command === 'scanWifi') {
-            const script = `import network
-sta = network.WLAN(network.STA_IF)
-sta.active(True)
-try:
+      // ── Wi-Fi Scan ──────────────────────────────────────────────────────
+      if (message.command === "scanWifi") {
+        const script = `try:
+    import network
+    sta = network.WLAN(network.STA_IF)
+    sta.active(True)
     nets = sta.scan()
     for n in nets:
         try:
@@ -1363,139 +1797,316 @@ try:
                 print(ssid + '|' + str(rssi))
         except:
             pass
+except ImportError:
+    import wifi
+    for n in wifi.radio.start_scanning_networks():
+        try:
+            if n.ssid:
+                print(str(n.ssid) + '|' + str(n.rssi))
+        except:
+            pass
+    wifi.radio.stop_scanning_networks()
 except Exception as e:
     print('ERROR|' + str(e))
 `;
-            try {
-                const raw = await runDeviceScript(script, '.wifi_scan.py', workspaceRoot, activePort, outputChannel);
-                const networks = raw.split('\n')
-                    .map(l => l.trim()).filter(l => l && !l.startsWith('ERROR'))
-                    .map(l => { const [ssid, rssi] = l.split('|'); return { ssid: ssid || l, rssi: parseInt(rssi) || 0 }; })
-                    .sort((a, b) => b.rssi - a.rssi); // strongest first
-                panel.webview.postMessage({ command: 'wifiResults', networks });
-            } catch (err) {
-                panel.webview.postMessage({ command: 'wifiConnectError', message: `Scan failed: ${err.message}` });
-            }
-            return;
+        try {
+          const raw = await runDeviceScript(
+            script,
+            "_wifi_scan.py",
+            workspaceRoot,
+            activePort,
+            outputChannel,
+          );
+          const networks = raw
+            .split("\n")
+            .map((l) => l.trim())
+            .filter((l) => l && !l.startsWith("ERROR"))
+            .map((l) => {
+              const [ssid, rssi] = l.split("|");
+              return { ssid: ssid || l, rssi: parseInt(rssi) || 0 };
+            })
+            .sort((a, b) => b.rssi - a.rssi); // strongest first
+          panel.webview.postMessage({ command: "wifiResults", networks });
+        } catch (err) {
+          panel.webview.postMessage({
+            command: "wifiConnectError",
+            message: `Scan failed: ${err.message}`,
+          });
         }
+        return;
+      }
 
-        // ── Wi-Fi Connect ───────────────────────────────────────────────────
-        if (message.command === 'connectWifi') {
-            const ssid = escapePy(message.ssid);
-            const pwd  = escapePy(message.password);
-            const script = `import network, time
-sta = network.WLAN(network.STA_IF)
-sta.active(True)
-if sta.isconnected():
-    sta.disconnect()
-    time.sleep(1)
-sta.connect('${ssid}', '${pwd}')
-for i in range(15):
+      // ── Wi-Fi Connect ───────────────────────────────────────────────────
+      if (message.command === "connectWifi") {
+        const ssid = escapePy(message.ssid);
+        const pwd = escapePy(message.password);
+        const script = `try:
+    import network, time
+    sta = network.WLAN(network.STA_IF)
+    sta.active(True)
     if sta.isconnected():
-        cfg = sta.ifconfig()
-        print('OK|' + cfg[0])
-        break
-    time.sleep(1)
-else:
-    print('FAIL|')
+        sta.disconnect()
+        time.sleep(1)
+    sta.connect('${ssid}', '${pwd}')
+    for i in range(15):
+        if sta.isconnected():
+            cfg = sta.ifconfig()
+            print('OK|' + cfg[0])
+            break
+        time.sleep(1)
+    else:
+        print('FAIL|')
+except ImportError:
+    import wifi
+    try:
+        wifi.radio.connect('${ssid}', '${pwd}')
+        print('OK|' + str(wifi.radio.ipv4_address))
+    except Exception as e:
+        print('FAIL|' + str(e))
+except Exception as e:
+    print('FAIL|' + str(e))
 `;
-            try {
-                const raw = await runDeviceScript(script, '.wifi_connect.py', workspaceRoot, activePort, outputChannel);
-                const line = raw.split('\n').find(l => l.startsWith('OK|') || l.startsWith('FAIL|')) || 'FAIL|';
-                const [status, ip] = line.split('|');
-                panel.webview.postMessage({
-                    command: 'wifiConnectDone',
-                    success: status === 'OK',
-                    ip: ip || '',
-                    ssid: message.ssid
-                });
-            } catch (err) {
-                panel.webview.postMessage({ command: 'wifiConnectDone', success: false, ip: '', ssid: message.ssid });
-            }
-            return;
+        try {
+          const raw = await runDeviceScript(
+            script,
+            "_wifi_connect.py",
+            workspaceRoot,
+            activePort,
+            outputChannel,
+          );
+          const line =
+            raw
+              .split("\n")
+              .find((l) => l.startsWith("OK|") || l.startsWith("FAIL|")) ||
+            "FAIL|";
+          const [status, ip] = line.split("|");
+          panel.webview.postMessage({
+            command: "wifiConnectDone",
+            success: status === "OK",
+            ip: ip || "",
+            ssid: message.ssid,
+          });
+        } catch (err) {
+          panel.webview.postMessage({
+            command: "wifiConnectDone",
+            success: false,
+            ip: "",
+            ssid: message.ssid,
+          });
         }
+        return;
+      }
 
-        // ── Wi-Fi Disconnect ────────────────────────────────────────────────
-        if (message.command === 'disconnectWifi') {
-            const script = `import network\nsta = network.WLAN(network.STA_IF)\nsta.disconnect()\nprint('OK')\n`;
-            try {
-                await runDeviceScript(script, '.wifi_disconnect.py', workspaceRoot, activePort, outputChannel);
-            } catch (_) {}
-            updateDashboard();
-            return;
-        }
+      // ── Wi-Fi Disconnect ────────────────────────────────────────────────
+      if (message.command === "disconnectWifi") {
+        const script = `try:
+    import network
+    sta = network.WLAN(network.STA_IF)
+    sta.disconnect()
+except ImportError:
+    pass
+print('OK')
+`;
+        try {
+          await runDeviceScript(
+            script,
+            "_wifi_disconnect.py",
+            workspaceRoot,
+            activePort,
+            outputChannel,
+          );
+        } catch (_) {}
+        updateDashboard();
+        return;
+      }
 
-        // ── Enable WebREPL ──────────────────────────────────────────────────
-        if (message.command === 'enableWebrepl') {
-            let ssid = message.ssid || '';
-            let password = message.password || '';
-
-            // If credentials weren't sent from webview (board was already connected
-            // when dashboard opened), ask the user now
-            if (!ssid) {
-                ssid = await vscode.window.showInputBox({
-                    prompt: 'Enter your Wi-Fi network name (SSID) for auto-connect on boot',
-                    placeHolder: 'e.g. MyHomeNetwork'
-                });
-                if (!ssid) { panel.webview.postMessage({ command: 'webReplCancelled' }); return; }
-                password = await vscode.window.showInputBox({
-                    prompt: `Enter password for "${ssid}"`,
-                    password: true,
-                    placeHolder: 'Wi-Fi password'
-                }) || '';
-            }
-
-            // Warning modal — user must explicitly confirm before boot.py is touched
-            const confirmed = await vscode.window.showWarningMessage(
-                `This will write boot.py on your device.\n\nOn every boot, the board will try to connect to "${ssid}" and start WebREPL.\n\nIf Wi-Fi is unavailable the board still starts normally — USB serial is never affected.\n\nTo undo at any time: Dashboard → Disable Remote Access`,
-                { modal: true },
-                'I understand — Enable Remote Access'
+      // ── Enable WebREPL ──────────────────────────────────────────────────
+      // ── CircuitPython Web Workflow — detect IP from boot_out.txt ─────────
+      if (message.command === "detectWebWorkflowIp") {
+        const {
+          findCircuitPyDrive: findDriveForIp,
+        } = require("./circuitpyDrive");
+        const drive = findDriveForIp();
+        let ip = "";
+        if (drive) {
+          try {
+            const bootOut = require("fs").readFileSync(
+              require("path").join(drive, "boot_out.txt"),
+              "utf8",
             );
-            if (!confirmed) { panel.webview.postMessage({ command: 'webReplCancelled' }); return; }
+            // CircuitPython writes lines like: "IP address: 192.168.1.x"
+            const m = bootOut.match(
+              /(?:IP\s+address|ip)[\s:]+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/i,
+            );
+            if (m) ip = m[1];
+          } catch (_) {}
+        }
+        if (ip) {
+          const cfgPath = path.join(workspaceRoot, "device.cfg");
+          await updateCfgComponent(cfgPath, "remote", "webworkflow_ip", ip);
+        }
+        panel.webview.postMessage({
+          command: "webWorkflowIpDetected",
+          ip,
+          message: ip
+            ? `✅ IP detected: ${ip} — saved to device.cfg.`
+            : `⚠️ IP not found in boot_out.txt. Power-cycle the board and try again.`,
+        });
+        return;
+      }
 
-            // Escape single quotes for embedding in Python string literals
-            const safeSsid     = ssid.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-            const safePassword = password.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      // ── CircuitPython Web Workflow — save settings.toml ─────────────────
+      if (message.command === "saveWebWorkflow") {
+        const { writeSettingsToml } = require("./circuitpyWebWorkflow");
+        const { findCircuitPyDrive } = require("./circuitpyDrive"); // eslint-disable-line no-shadow
 
-            // The safe boot.py template:
-            //  • time.sleep(2) first — USB CDC initialises before any risky code runs
-            //  • Full try/except — any crash is caught, USB serial stays alive
-            //  • Writes mps_boot.log — Dashboard reads this to show last-boot status
-            const bootPyContent = [
-                '# MicroPython Studio - Remote Access Boot',
-                '# To disable: Dashboard > Disable Remote Access',
-                'import time',
-                'time.sleep(2)  # USB CDC must be up before any network code runs',
-                '',
-                'def _log(msg):',
-                '    try:',
-                '        with open(\'mps_boot.log\', \'w\') as f:',
-                '            f.write(msg)',
-                '    except:',
-                '        pass',
-                '    print(\'[MPS]\', msg)',
-                '',
-                'try:',
-                '    import network',
-                '    sta = network.WLAN(network.STA_IF)',
-                '    sta.active(True)',
-                `    sta.connect('${safeSsid}', '${safePassword}')`,
-                '    for _ in range(15):',
-                '        if sta.isconnected():',
-                '            break',
-                '        time.sleep(1)',
-                '    if sta.isconnected():',
-                '        ip = sta.ifconfig()[0]',
-                '        import webrepl',
-                '        webrepl.start()',
-                '        _log(\'OK:\' + ip)',
-                '    else:',
-                '        _log(\'WIFI_TIMEOUT:not available\')',
-                'except Exception as e:',
-                '    _log(\'ERROR:\' + str(e))',
-            ].join('\\n');
+        // Try to find the CIRCUITPY USB drive
+        const drive = findCircuitPyDrive();
+        if (!drive) {
+          panel.webview.postMessage({
+            command: "webWorkflowSaved",
+            success: false,
+            message:
+              "CIRCUITPY drive not found. Make sure the USB cable is connected and the board is not in safe mode.",
+          });
+          return;
+        }
 
-            const script = `import network, sys
+        const result = /** @type {{ok:boolean, error?:string}} */ (
+          /** @type {unknown} */ (
+            writeSettingsToml(drive, {
+              ssid: message.ssid,
+              wifiPassword: message.wifiPassword,
+              apiPassword: message.apiPassword,
+              apiPort: message.apiPort || 80,
+            })
+          )
+        );
+
+        // Also persist Web Workflow credentials into device.cfg [remote] section
+        if (result.ok) {
+          const cfgPath = path.join(workspaceRoot, "device.cfg");
+          await updateCfgComponent(cfgPath, "remote", "webworkflow_ip", "");
+          await updateCfgComponent(
+            cfgPath,
+            "remote",
+            "webworkflow_password",
+            message.apiPassword,
+          );
+          await updateCfgComponent(
+            cfgPath,
+            "remote",
+            "webworkflow_port",
+            String(message.apiPort || 80),
+          );
+        }
+
+        panel.webview.postMessage({
+          command: "webWorkflowSaved",
+          success: result.ok,
+          message: result.ok
+            ? `✅ settings.toml saved to ${drive} — power-cycle the board to connect.`
+            : `❌ ${result.error}`,
+        });
+        return;
+      }
+
+      if (message.command === "enableWebrepl") {
+        // CircuitPython does not support WebREPL — uses Web Workflow via settings.toml instead
+        const cfgPathWr = path.join(workspaceRoot, "device.cfg");
+        const fwType = await getConfigValue(
+          cfgPathWr,
+          "device",
+          "device_firmware",
+        ).catch(() => "");
+        if (fwType === "CircuitPython") {
+          panel.webview.postMessage({
+            command: "wifiConnectError",
+            message:
+              "WebREPL is not supported on CircuitPython. Use Web Workflow via settings.toml instead.",
+          });
+          return;
+        }
+
+        let ssid = message.ssid || "";
+        let password = message.password || "";
+
+        // If credentials weren't sent from webview (board was already connected
+        // when dashboard opened), ask the user now
+        if (!ssid) {
+          ssid = await vscode.window.showInputBox({
+            prompt:
+              "Enter your Wi-Fi network name (SSID) for auto-connect on boot",
+            placeHolder: "e.g. MyHomeNetwork",
+          });
+          if (!ssid) {
+            panel.webview.postMessage({ command: "webReplCancelled" });
+            return;
+          }
+          password =
+            (await vscode.window.showInputBox({
+              prompt: `Enter password for "${ssid}"`,
+              password: true,
+              placeHolder: "Wi-Fi password",
+            })) || "";
+        }
+
+        // Warning modal — user must explicitly confirm before boot.py is touched
+        const confirmed = await vscode.window.showWarningMessage(
+          `This will write boot.py on your device.\n\nOn every boot, the board will try to connect to "${ssid}" and start WebREPL.\n\nIf Wi-Fi is unavailable the board still starts normally — USB serial is never affected.\n\nTo undo at any time: Dashboard → Disable Remote Access`,
+          { modal: true },
+          "I understand — Enable Remote Access",
+        );
+        if (!confirmed) {
+          panel.webview.postMessage({ command: "webReplCancelled" });
+          return;
+        }
+
+        // Escape single quotes for embedding in Python string literals
+        const safeSsid = ssid.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        const safePassword = password
+          .replace(/\\/g, "\\\\")
+          .replace(/'/g, "\\'");
+
+        // The safe boot.py template:
+        //  • time.sleep(2) first — USB CDC initialises before any risky code runs
+        //  • Full try/except — any crash is caught, USB serial stays alive
+        //  • Writes mps_boot.log — Dashboard reads this to show last-boot status
+        const bootPyContent = [
+          "# MicroPython Studio - Remote Access Boot",
+          "# To disable: Dashboard > Disable Remote Access",
+          "import time",
+          "time.sleep(2)  # USB CDC must be up before any network code runs",
+          "",
+          "def _log(msg):",
+          "    try:",
+          "        with open('mps_boot.log', 'w') as f:",
+          "            f.write(msg)",
+          "    except:",
+          "        pass",
+          "    print('[MPS]', msg)",
+          "",
+          "try:",
+          "    import network",
+          "    sta = network.WLAN(network.STA_IF)",
+          "    sta.active(True)",
+          `    sta.connect('${safeSsid}', '${safePassword}')`,
+          "    for _ in range(15):",
+          "        if sta.isconnected():",
+          "            break",
+          "        time.sleep(1)",
+          "    if sta.isconnected():",
+          "        ip = sta.ifconfig()[0]",
+          "        import webrepl",
+          "        webrepl.start()",
+          "        _log('OK:' + ip)",
+          "    else:",
+          "        _log('WIFI_TIMEOUT:not available')",
+          "except Exception as e:",
+          "    _log('ERROR:' + str(e))",
+        ].join("\\n");
+
+        const script = `import network, sys
 sta = network.WLAN(network.STA_IF)
 ip = sta.ifconfig()[0] if sta.isconnected() else ''
 try:
@@ -1515,31 +2126,47 @@ try:
 except Exception as e:
     print('FAIL|' + str(e))
 `;
-            try {
-                const raw = await runDeviceScript(script, '.webrepl_setup.py', workspaceRoot, activePort, outputChannel);
-                const line = raw.split('\n').find(l => l.startsWith('OK|') || l.startsWith('FAIL|')) || 'FAIL|';
-                const [status, ipVal] = line.split('|');
-                if (status === 'OK') {
-                    panel.webview.postMessage({ command: 'webReplEnabled', ip: ipVal });
-                } else {
-                    panel.webview.postMessage({ command: 'wifiConnectError', message: `WebREPL failed: ${ipVal}` });
-                }
-            } catch (err) {
-                panel.webview.postMessage({ command: 'wifiConnectError', message: `WebREPL error: ${err.message}` });
-            }
-            return;
+        try {
+          const raw = await runDeviceScript(
+            script,
+            "_webrepl_setup.py",
+            workspaceRoot,
+            activePort,
+            outputChannel,
+          );
+          const line =
+            raw
+              .split("\n")
+              .find((l) => l.startsWith("OK|") || l.startsWith("FAIL|")) ||
+            "FAIL|";
+          const [status, ipVal] = line.split("|");
+          if (status === "OK") {
+            panel.webview.postMessage({ command: "webReplEnabled", ip: ipVal });
+          } else {
+            panel.webview.postMessage({
+              command: "wifiConnectError",
+              message: `WebREPL failed: ${ipVal}`,
+            });
+          }
+        } catch (err) {
+          panel.webview.postMessage({
+            command: "wifiConnectError",
+            message: `WebREPL error: ${err.message}`,
+          });
         }
+        return;
+      }
 
-        // ── Disable Remote Access — writes a clean boot.py, removes config files ──
-        if (message.command === 'disableRemoteAccess') {
-            const confirmed = await vscode.window.showWarningMessage(
-                'This will overwrite boot.py on your device and disable automatic Wi-Fi / WebREPL on boot.',
-                { modal: true },
-                'Disable Remote Access'
-            );
-            if (!confirmed) return;
+      // ── Disable Remote Access — writes a clean boot.py, removes config files ──
+      if (message.command === "disableRemoteAccess") {
+        const confirmed = await vscode.window.showWarningMessage(
+          "This will overwrite boot.py on your device and disable automatic Wi-Fi / WebREPL on boot.",
+          { modal: true },
+          "Disable Remote Access",
+        );
+        if (!confirmed) return;
 
-            const script = `import os
+        const script = `import os
 try:
     with open('boot.py', 'w') as f:
         f.write('# boot.py\\n# Remote access disabled by MicroPython Studio\\n')
@@ -1552,48 +2179,70 @@ try:
 except Exception as e:
     print('FAIL|' + str(e))
 `;
-            try {
-                const raw = await runDeviceScript(script, '.webrepl_disable.py', workspaceRoot, activePort, outputChannel);
-                if (raw.includes('OK')) {
-                    vscode.window.showInformationMessage('Remote access disabled. The board will no longer auto-connect to Wi-Fi on boot.');
-                    panel.webview.postMessage({ command: 'remoteAccessDisabled' });
-                }
-            } catch (err) {
-                vscode.window.showErrorMessage(`Failed to disable remote access: ${err.message}`);
-            }
-            return;
-        }
-
-        // ── Switch to Wireless ──────────────────────────────────────────────
-        if (message.command === 'switchToWireless') {
-            const wsPort = `ws:${message.ip},micro123`;
-            activePort = wsPort;
-            panel.title = `Device: ${wsPort}`;
-            if (typeof onPortUpdate === 'function') {
-                onPortUpdate(wsPort);
-            }
-
-            // Persist WebREPL details to device.cfg so the extension
-            // can auto-connect wirelessly next time — no USB required
-            try {
-                const cfgPath = path.join(workspaceRoot, 'device.cfg');
-                await updateCfgComponent(cfgPath, 'remote', 'webrepl_enabled', 'true');
-                await updateCfgComponent(cfgPath, 'remote', 'webrepl_ip', message.ip);
-                await updateCfgComponent(cfgPath, 'remote', 'webrepl_password', 'micro123');
-            } catch (e) {
-                console.error('Failed to save WebREPL details to device.cfg:', e);
-            }
-
+        try {
+          const raw = await runDeviceScript(
+            script,
+            "_webrepl_disable.py",
+            workspaceRoot,
+            activePort,
+            outputChannel,
+          );
+          if (raw.includes("OK")) {
             vscode.window.showInformationMessage(
-                `Switched to wireless: ${wsPort}. IP saved — extension will auto-connect next time.`
+              "Remote access disabled. The board will no longer auto-connect to Wi-Fi on boot.",
             );
-            return;
+            panel.webview.postMessage({ command: "remoteAccessDisabled" });
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `Failed to disable remote access: ${err.message}`,
+          );
+        }
+        return;
+      }
+
+      // ── Switch to Wireless ──────────────────────────────────────────────
+      if (message.command === "switchToWireless") {
+        const wsPort = `ws:${message.ip},micro123`;
+        activePort = wsPort;
+        panel.title = `Device: ${wsPort}`;
+        if (typeof onPortUpdate === "function") {
+          onPortUpdate(wsPort);
         }
 
-    }, undefined, context.subscriptions);
+        // Persist WebREPL details to device.cfg so the extension
+        // can auto-connect wirelessly next time — no USB required
+        try {
+          const cfgPath = path.join(workspaceRoot, "device.cfg");
+          await updateCfgComponent(
+            cfgPath,
+            "remote",
+            "webrepl_enabled",
+            "true",
+          );
+          await updateCfgComponent(cfgPath, "remote", "webrepl_ip", message.ip);
+          await updateCfgComponent(
+            cfgPath,
+            "remote",
+            "webrepl_password",
+            "micro123",
+          );
+        } catch (e) {
+          console.error("Failed to save WebREPL details to device.cfg:", e);
+        }
 
-    // Initial fetch
-    updateDashboard();
+        vscode.window.showInformationMessage(
+          `Switched to wireless: ${wsPort}. IP saved — extension will auto-connect next time.`,
+        );
+        return;
+      }
+    },
+    undefined,
+    context.subscriptions,
+  );
+
+  // Initial fetch
+  updateDashboard();
 }
 
 module.exports = { openDeviceDashboard };

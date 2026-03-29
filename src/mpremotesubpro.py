@@ -304,6 +304,10 @@ def run_mpremote(python_exe, args_list, timeout=60):
 
     proc = None
     try:
+        # On Windows, CREATE_NEW_PROCESS_GROUP isolates the child from the
+        # parent's console group so mpremote's internal Ctrl+C (sent via
+        # serial to the device) does not propagate as KeyboardInterrupt here.
+        # creationflags=0 is the default on all platforms so this is safe.
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -312,7 +316,8 @@ def run_mpremote(python_exe, args_list, timeout=60):
             text=True,
             encoding='utf-8',
             errors='replace',
-            bufsize=1
+            bufsize=1,
+            creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0) if sys.platform == 'win32' else 0
         )
 
         # Stream output line by line
@@ -334,7 +339,11 @@ def run_mpremote(python_exe, args_list, timeout=60):
                 elif proc.poll() is not None:  # EOF and process has exited
                     break
             except KeyboardInterrupt:
-                # This catches Ctrl+C while reading output
+                # KeyboardInterrupt can fire when mpremote sends \x03 to the
+                # device on Windows even with CREATE_NEW_PROCESS_GROUP.
+                # If mpremote already exited cleanly, treat this as normal completion.
+                if proc.poll() is not None:
+                    break  # process finished — not a real user Ctrl+C
                 print("\n\n👋 Ctrl+C detected. Stopping...", file=sys.stderr)
                 break
 
