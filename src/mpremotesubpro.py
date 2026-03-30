@@ -21,7 +21,7 @@ class WebReplConnection:
     WebREPL transport using websocket-client for the WS layer.
     Handles authentication, raw-REPL code execution, and file upload.
     """
-    CHUNK = 512  # raw-REPL send/receive chunk size
+    CHUNK = 256  # raw-REPL / file-transfer chunk size (small for ESP buffer safety)
 
     def __init__(self, host: str, password: str, port: int = 8266) -> None:
         self.host = host
@@ -175,43 +175,51 @@ class WebReplConnection:
         return self._ws_put_file(Path(local_path), remote_path)
 
     def _ws_put_file(self, source: Path, remote: str) -> int:
-        """Implementation of the MicroPython WebREPL binary protocol for file upload."""
+        """Upload using the official MicroPython WebREPL binary protocol.
+
+        Header format (82 bytes total):  struct '<2sBBQLH64s'
+          2s  = b'WA'           (magic)
+          B   = 1 (PUT_FILE)    (command)
+          B   = 0               (reserved)
+          Q   = 0               (reserved / unused timestamp)
+          L   = file size       (4 bytes, little-endian)
+          H   = filename length (2 bytes)
+          64s = filename        (padded with NULs)
+        """
         data = source.read_bytes()
         dest = remote.lstrip('/')
-        
-        # Binary protocol header:
-        # 2 bytes 'WA'
-        # 1 byte command (PUT_FILE=1)
-        # 1 byte reserved (0)
-        # 2 bytes password length (0 since we're already authenticated)
-        # 2 bytes filename length
-        # 4 bytes file size (little endian)
-        # 2 bytes total message length (password + filename)
-        
-        # WebREPL is already authenticated at this point in our connection flow,
-        # but the binary protocol handler in webrepl.py still expects the 
-        # password/header if we just send the binary prefix.
-        # However, we can send a dummy or empty password if authenticated.
-        
-        # webrepl.py: PUT_FILE = 1
-        header = b'WA' + struct.pack('<BBHHHI', 1, 0, 0, len(dest), len(data), len(dest))
-        self.ws.send_binary(header + dest.encode())
+        dest_bytes = dest.encode('utf-8')[:64]  # clamp to 64 bytes max
 
-        # Connection should respond with b'WB' + 2 bytes status (0=OK)
-        resp = self._ws_recv_exact(4)
+        # Build the 82-byte header exactly as webrepl_cli.py does
+        header = struct.pack(
+            '<2sBBQLH64s',
+            b'WA',           # magic
+            1,               # PUT_FILE command
+            0,               # reserved
+            0,               # reserved (Q = 8 bytes)
+            len(data),       # file size
+            len(dest_bytes), # filename length
+            dest_bytes,      # filename (zero-padded to 64 bytes)
+        )
+        self.ws.send_binary(header)
+
+        # Device responds with b'WB' + 2-byte status (0 = OK)
+        resp = self._ws_recv_exact(4, timeout=10)
         if not resp.startswith(b'WB') or struct.unpack('<H', resp[2:4])[0] != 0:
-            # Fall back to raw REPL method if binary protocol fails
+            # Fall back to raw-REPL hex method if binary protocol fails
             return _ws_upload_file_legacy(self, source, remote)
 
-        # Send file data in chunks
+        # Send file data in small chunks with inter-chunk delay to avoid
+        # overwhelming the ESP's tiny receive buffer (ECONNRESET / WinError 10054).
         offset = 0
         while offset < len(data):
             chunk = data[offset:offset + self.CHUNK]
             self.ws.send_binary(chunk)
             offset += len(chunk)
+            time.sleep(0.03)  # 30 ms — gives the device time to drain its buffer
 
         # Final response
-        resp = self._ws_recv_exact(4)
+        resp = self._ws_recv_exact(4, timeout=10)
         if resp.startswith(b'WB') and struct.unpack('<H', resp[2:4])[0] == 0:
             return 0
         return 1
@@ -296,6 +304,10 @@ def run_mpremote(python_exe, args_list, timeout=60):
 
     proc = None
     try:
+        # On Windows, CREATE_NEW_PROCESS_GROUP isolates the child from the
+        # parent's console group so mpremote's internal Ctrl+C (sent via
+        # serial to the device) does not propagate as KeyboardInterrupt here.
+        # creationflags=0 is the default on all platforms so this is safe.
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -304,7 +316,8 @@ def run_mpremote(python_exe, args_list, timeout=60):
             text=True,
             encoding='utf-8',
             errors='replace',
-            bufsize=1
+            bufsize=1,
+            creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0) if sys.platform == 'win32' else 0
         )
 
         # Stream output line by line
@@ -326,7 +339,11 @@ def run_mpremote(python_exe, args_list, timeout=60):
                 elif proc.poll() is not None:  # EOF and process has exited
                     break
             except KeyboardInterrupt:
-                # This catches Ctrl+C while reading output
+                # KeyboardInterrupt can fire when mpremote sends \x03 to the
+                # device on Windows even with CREATE_NEW_PROCESS_GROUP.
+                # If mpremote already exited cleanly, treat this as normal completion.
+                if proc.poll() is not None:
+                    break  # process finished — not a real user Ctrl+C
                 print("\n\n👋 Ctrl+C detected. Stopping...", file=sys.stderr)
                 break
 
@@ -540,6 +557,9 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
                     if rc != 0:
                         print(f"❌ Failed: {rel}", file=sys.stderr)
                         break
+                    # Brief pause between files so the device can finish
+                    # writing to flash before the next transfer starts.
+                    time.sleep(0.5)
                 if rc == 0:
                     print(f"\n✅ Upload complete ({len(files)} file(s))", file=sys.stderr)
         except ConnectionError as e:

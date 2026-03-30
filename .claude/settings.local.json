@@ -2,7 +2,20 @@
   "permissions": {
     "allow": [
       "Read(//c/My-Projects/test_development/2026_project_test/001/test001/**)",
-      "Bash(node -e \"console.log\\(require\\(''''./src/mcuOption.js''''\\)\\)\")"
+      "Bash(node -e \"console.log\\(require\\(''''./src/mcuOption.js''''\\)\\)\")",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:learn.adafruit.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.circuitpython.org)",
+      "WebFetch(domain:snyk.io)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m circup --help)",
+      "Bash(CIRCUP_DIR=C:/Users/niwan/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/site-packages/circup python $CIRCUP_DIR/../../../Scripts/circup --help)",
+      "Read(//c/Users/niwan/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/site-packages/circup/**)",
+      "Bash(npx --yes vsce package --no-dependencies)"
     ],
     "additionalDirectories": [
       "c:\\My-Projects\\test_development\\2026_project_test\\001\\test001\\.vscode"

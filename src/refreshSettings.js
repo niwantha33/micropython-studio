@@ -62,7 +62,7 @@ async function findProjectRoot(startDir) {
  * Reads the project's device.cfg and matches against connected devices.
  *
  * @param {vscode.Uri} [resource] - Optional folder URI (from explorer context menu)
- * @returns {Promise<[string|null, string|null]>} [devicePort, deviceCodeDir]
+ * @returns {Promise<[string|null, string|null, string]>} [devicePort, deviceCodeDir, deviceFirmware]
  */
 async function getValidDevicePort(resource) {
     let gRemoteDevicePort = null;
@@ -79,7 +79,7 @@ async function getValidDevicePort(resource) {
             startDir = workspaceFolders[0].uri.fsPath;
         } else {
             vscode.window.showWarningMessage('No workspace folder open. Please open a MicroPython project first.');
-            return [null, null];
+            return [null, null, 'MicroPython'];
         }
     }
 
@@ -89,7 +89,7 @@ async function getValidDevicePort(resource) {
         vscode.window.showWarningMessage(
             'No device.cfg found. Please create a project first or run from the project root folder.'
         );
-        return [null, null];
+        return [null, null, 'MicroPython'];
     }
 
     const configPath = path.join(projectDir, 'device.cfg');
@@ -174,8 +174,9 @@ async function getValidDevicePort(resource) {
     }
 
     deviceCodeDir = await getConfigValue(configPath, 'filePath', 'deviceCodeDir');
+    const deviceFirmware = await getConfigValue(configPath, 'device', 'device_firmware');
 
-    return [gRemoteDevicePort, deviceCodeDir];
+    return [gRemoteDevicePort, deviceCodeDir, deviceFirmware || 'MicroPython'];
 }
 
 module.exports = { getValidDevicePort };

@@ -44,7 +44,8 @@ const CP_BOARD_MAP = {
 /**
  * Get the appropriate pip stub package name for a given MCU target/family.
  */
-function getStubPackageForBoard(mcuTarget, mcuFamily) {
+function getStubPackageForBoard(mcuTarget, mcuFamily, isCircuitPython) {
+    if (isCircuitPython) return 'circuitpython-stubs';
     if (mcuTarget.startsWith('esp32')) return 'micropython-esp32-stubs';
     if (mcuTarget.startsWith('esp8266')) return 'micropython-esp8266-stubs';
     if (mcuTarget.startsWith('rp2') || mcuFamily === 'RP2') return 'micropython-rp2-stubs';
@@ -54,11 +55,30 @@ function getStubPackageForBoard(mcuTarget, mcuFamily) {
 }
 
 /**
+ * Scan removable drives for a CircuitPython device (identified by boot_out.txt in root).
+ * Windows only — returns e.g. 'D:\' or null if not found.
+ * @returns {Promise<string|null>}
+ */
+async function findCircuitPythonDrive() {
+    if (process.platform !== 'win32') return null;
+    for (let c = 68; c <= 90; c++) { // D → Z
+        const drive = String.fromCharCode(c) + ':\\';
+        try {
+            await fs.access(path.join(drive, 'boot_out.txt'));
+            return drive;
+        } catch (_) { }
+    }
+    return null;
+}
+
+/**
  * Build the full project configuration dictionary from user input and folder selection.
  */
 async function buildProjectConfig(configDict, folderUri) {
     configDict.parentPath = folderUri[0].fsPath;
     configDict.projectDir = path.join(configDict.parentPath, configDict.projectName);
+    // CircuitPython: deviceCodeDir is the device drive, resolved later in createNewProject
+    // MicroPython: deviceCodeDir is the local main/ folder
     configDict.deviceCodeDir = path.join(configDict.projectDir, 'main');
     configDict.settingsDir = path.join(configDict.projectDir, '.vscode');
     configDict.projectExists = await fs.access(configDict.projectDir).then(() => true).catch(() => false);
@@ -167,7 +187,7 @@ async function detectAndSelectDevice(config) {
             }
 
             const selected = await vscode.window.showQuickPick(devices, {
-                placeHolder: 'Select your MicroPython device (or press Escape to skip)'
+                placeHolder: 'Select your device (or press Escape to skip)'
             });
 
             if (selected) {
@@ -199,18 +219,39 @@ async function createNewProject(context) {
         const venvFolder = getVenvPythonPathFolder();
         const venvPython = getVenvPythonPath(venvFolder);
 
+        // For CircuitPython: find the device drive (has boot_out.txt in root)
+        // and point deviceCodeDir there instead of creating a local main/ folder
+        let cpDrive = null;
         if (isCircuitPython) {
-            // CircuitPython uses code.py as entry point and a lib/ folder for libraries
-            await fs.mkdir(path.join(config.deviceCodeDir, 'lib'), { recursive: true });
-            await fs.writeFile(
-                path.join(config.deviceCodeDir, 'code.py'),
-                `# CircuitPython Project: ${config.projectName}\n` +
-                `# Target: ${config.selectedMcuTarget}\n\n` +
-                `import board\n\n` +
-                `print("Hello from ${config.projectName}!")\n`
-            );
+            cpDrive = await findCircuitPythonDrive();
+            if (cpDrive) {
+                config.deviceCodeDir = cpDrive;
+                // Write code.py directly to the device drive
+                await fs.writeFile(
+                    path.join(cpDrive, 'code.py'),
+                    `# CircuitPython Project: ${config.projectName}\n` +
+                    `# Target: ${config.selectedMcuTarget}\n\n` +
+                    `import board\n\n` +
+                    `print("Hello from ${config.projectName}!")\n`
+                );
+            } else {
+                // Device not connected — create local folder as fallback
+                await fs.mkdir(config.deviceCodeDir, { recursive: true });
+                await fs.mkdir(path.join(config.deviceCodeDir, 'lib'), { recursive: true });
+                await fs.writeFile(
+                    path.join(config.deviceCodeDir, 'code.py'),
+                    `# CircuitPython Project: ${config.projectName}\n` +
+                    `# Target: ${config.selectedMcuTarget}\n\n` +
+                    `import board\n\n` +
+                    `print("Hello from ${config.projectName}!")\n`
+                );
+                vscode.window.showWarningMessage(
+                    'CircuitPython device not found. Plug in your board and the project folder will point to it automatically on next open.'
+                );
+            }
         } else {
-            // Create main.py template
+            // MicroPython: create local main/ folder as usual
+            await fs.mkdir(config.deviceCodeDir, { recursive: true });
             await fs.writeFile(
                 path.join(config.deviceCodeDir, 'main.py'),
                 `# MicroPython Project: ${config.projectName}\n` +
@@ -280,14 +321,14 @@ async function createNewProject(context) {
             : path.join(venvFolder, 'lib', 'python3', 'site-packages');
 
         // Determine specific stubs for this board
-        const stubPackage = getStubPackageForBoard(config.selectedMcuTarget, config.selectedMcuFamily);
+        const stubPackage = getStubPackageForBoard(config.selectedMcuTarget, config.selectedMcuFamily, isCircuitPython);
         const stubsDir = path.join(getMicropythonStudioPath(), 'stubs', stubPackage);
-        
+
         // Quietly install the stubs in the background if they don't exist
         fs.access(stubsDir).catch(async () => {
             try {
                 // We use a dummy output channel since this is background process
-                const dummyChannel = { appendLine: () => {}, append: () => {} };
+                const dummyChannel = { appendLine: () => { }, append: () => { } };
                 await runCommand(dummyChannel, venvPython, ['-m', 'pip', 'install', '--target', stubsDir, stubPackage], getMicropythonStudioPath());
             } catch (err) {
                 console.error(`Failed to install stubs ${stubPackage}:`, err);
@@ -325,14 +366,15 @@ async function createNewProject(context) {
 
         // Create .code-workspace file
         const workspacePath = path.join(config.parentPath, `${config.projectName}.code-workspace`);
-        const studioLabel = isCircuitPython ? 'CircuitPython Studio' : 'MicroPython Studio';
+        const studioLabel = isCircuitPython ? 'CircuitPython' : 'MicroPython';
+        const workspaceFolders = [
+            {
+                path: config.projectName,
+                name: `📁 ${config.projectName} (${studioLabel})`
+            }
+        ];
         const workspaceContent = {
-            folders: [
-                {
-                    path: config.projectName,
-                    name: `📁 ${config.projectName} (${studioLabel})`
-                }
-            ],
+            folders: workspaceFolders,
             settings: {
                 'micropythonStudio.project': true,
                 'micropythonStudio.targetMCU': config.selectedMcuTarget,

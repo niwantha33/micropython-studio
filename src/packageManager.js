@@ -1,5 +1,6 @@
 const vscode = require('vscode');
 const https = require('https');
+const path = require('path');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 
 /**
@@ -98,4 +99,138 @@ async function openPackageManager(context, currentDevicePort, terminal) {
     }
 }
 
-module.exports = { openPackageManager };
+/**
+ * Fetch the Adafruit CircuitPython bundle package list from circup / PyPI bundle index.
+ * Falls back to a curated list if the network is unavailable.
+ * @returns {Promise<Array<{name:string, description:string}>>}
+ */
+function fetchCircuitPythonPackageIndex() {
+    return new Promise((resolve) => {
+        https.get('https://raw.githubusercontent.com/adafruit/Adafruit_CircuitPython_Bundle/refs/heads/main/circuitpython_library_list.md', (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                // Parse markdown table rows: | adafruit_neopixel | ... |
+                const pkgs = [];
+                for (const line of data.split('\n')) {
+                    const m = line.match(/^\|\s*`?([a-zA-Z0-9_\-]+)`?\s*\|/);
+                    if (m && !m[1].startsWith('Library')) {
+                        pkgs.push({ name: m[1], description: '' });
+                    }
+                }
+                resolve(pkgs.length > 0 ? pkgs : _cpFallbackList());
+            });
+        }).on('error', () => resolve(_cpFallbackList()));
+    });
+}
+
+/** Curated fallback list if GitHub is unreachable */
+function _cpFallbackList() {
+    return [
+        { name: 'adafruit_neopixel',        description: 'NeoPixel LED driver' },
+        { name: 'adafruit_bus_device',       description: 'I2C/SPI bus device helper' },
+        { name: 'adafruit_register',         description: 'Register abstractions' },
+        { name: 'adafruit_dht',              description: 'DHT temperature/humidity sensor' },
+        { name: 'adafruit_ssd1306',          description: 'SSD1306 OLED display' },
+        { name: 'adafruit_bmp280',           description: 'BMP280 pressure/temperature sensor' },
+        { name: 'adafruit_htu21d',           description: 'HTU21D humidity sensor' },
+        { name: 'adafruit_motor',            description: 'DC/stepper motor control' },
+        { name: 'adafruit_servokit',         description: 'PCA9685 servo kit' },
+        { name: 'adafruit_requests',         description: 'HTTP requests for CircuitPython' },
+        { name: 'adafruit_minimqtt',         description: 'MQTT client' },
+        { name: 'adafruit_display_text',     description: 'Text rendering for displays' },
+        { name: 'adafruit_imageload',        description: 'Image loading for displayio' },
+        { name: 'adafruit_esp32spi',         description: 'ESP32 SPI WiFi co-processor' },
+        { name: 'adafruit_pyportal',         description: 'PyPortal helper' },
+    ];
+}
+
+/**
+ * Opens the CircuitPython package manager using circup.
+ * Detects USB drive or Web Workflow and builds the correct circup command.
+ * @param {string|null} deviceCodeDir  Local code dir (used to find device.cfg)
+ * @param {function} runProcess  runPythonProcess-style function(exe, args, onDone)
+ * @param {function} findDrive   findCircuitPyDrive() from circuitpyDrive
+ * @param {function} getConfig   getConfigValue(path, section, key)
+ */
+async function openCircuitPythonPackageManager(deviceCodeDir, runProcess, findDrive, getConfig, onAfterInstall) {
+    // ── Resolve install target ─────────────────────────────────────────────────
+    const drive   = findDrive ? findDrive() : null;
+
+    // Read Web Workflow config from device.cfg
+    let wwIp = '', wwPass = '', wwPort = '80';
+    if (!drive && deviceCodeDir) {
+        const cfgPath = path.join(path.dirname(deviceCodeDir), 'device.cfg');
+        try {
+            wwIp   = await getConfig(cfgPath, 'remote', 'webworkflow_ip')   || '';
+            wwPass = await getConfig(cfgPath, 'remote', 'webworkflow_password') || '';
+            wwPort = await getConfig(cfgPath, 'remote', 'webworkflow_port')  || '80';
+        } catch (_) {}
+    }
+
+    if (!drive && !wwIp) {
+        vscode.window.showErrorMessage(
+            'No CircuitPython device found.\n' +
+            'Connect via USB (CIRCUITPY drive) or configure Wi-Fi in the Dashboard.'
+        );
+        return;
+    }
+
+    const targetLabel = drive
+        ? `USB drive (${drive})`
+        : `Wi-Fi (${wwIp}:${wwPort})`;
+
+    // ── Fetch package list ─────────────────────────────────────────────────────
+    const packages = await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: 'CircuitPython Package Manager',
+        cancellable: false
+    }, async (progress) => {
+        progress.report({ message: 'Fetching Adafruit bundle library list…' });
+        return await fetchCircuitPythonPackageIndex();
+    });
+
+    const items = packages.map(pkg => ({
+        label:    `$(package) ${pkg.name}`,
+        detail:   pkg.description || 'Adafruit CircuitPython library',
+        pkgName:  pkg.name
+    }));
+
+    const selected = await vscode.window.showQuickPick(items, {
+        placeHolder: `Search for a CircuitPython library to install on ${targetLabel}`,
+        matchOnDetail: true
+    });
+    if (!selected) return;
+
+    // ── Build circup command args ──────────────────────────────────────────────
+    const venvFolder = getVenvPythonPathFolder();
+    const isWin  = process.platform === 'win32';
+    const circup = path.join(venvFolder, isWin ? 'Scripts' : 'bin', isWin ? 'circup.exe' : 'circup');
+
+    /** @type {string[]} */
+    const circupArgs = [];
+
+    if (drive) {
+        circupArgs.push('--path', drive);
+    } else {
+        circupArgs.push('--host', wwIp, '--password', wwPass);
+        if (wwPort && wwPort !== '80') circupArgs.push('--port', wwPort);
+    }
+
+    circupArgs.push('install', selected.pkgName);
+
+    const confirmed = await vscode.window.showWarningMessage(
+        `Install "${selected.pkgName}" on ${targetLabel}?\n\n` +
+        `⚠️ Make sure code is NOT running on the device before installing.\n` +
+        `Press the Stop button (or Ctrl+C in the REPL) first — CircuitPython locks the filesystem while code.py is active.`,
+        { modal: true },
+        'Install',
+        'Cancel'
+    );
+    if (confirmed !== 'Install') return;
+
+    runProcess(circup, circupArgs, onAfterInstall || null);
+    vscode.window.showInformationMessage(`Installing ${selected.pkgName}… check the output panel.`);
+}
+
+module.exports = { openPackageManager, openCircuitPythonPackageManager };
