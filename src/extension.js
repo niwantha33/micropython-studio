@@ -35,6 +35,7 @@ let currentTarget = 'Host';
 
 let deviceStatusBarItem = null;
 let deviceFileExplorer = null;
+let deviceFileTreeView = null;
 
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
 
@@ -322,8 +323,9 @@ function activate(context) {
                     updateDeviceStatusBar();
 
                     // Update the device file explorer with the new port
+                    const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
                     if (deviceFileExplorer) {
-                        const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
+                        if (deviceFileTreeView) deviceFileTreeView.message = undefined;
                         deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
                     }
 
@@ -882,7 +884,11 @@ function activate(context) {
                 updateDeviceStatusBar();
                 if (deviceFileExplorer) {
                     const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
-                    deviceFileExplorer.setPort(newPort, gDeviceCodeDir, isCp);
+                    if (isCp && gDeviceCodeDir) {
+                        deviceFileExplorer.setPort(null, null, false);
+                    } else {
+                        deviceFileExplorer.setPort(newPort, gDeviceCodeDir, isCp);
+                    }
                 }
             });
         })
@@ -970,13 +976,13 @@ function activate(context) {
     // ── Device File Explorer ─────────────────────────────────────────────
 
     deviceFileExplorer = new DeviceFileExplorerProvider();
-    const treeView = vscode.window.createTreeView('micropython-ide-device-files', {
+    deviceFileTreeView = vscode.window.createTreeView('micropython-ide-device-files', {
         treeDataProvider: deviceFileExplorer,
         showCollapseAll: true,
         dragAndDropController: deviceFileExplorer
     });
-    deviceFileExplorer.setTreeView(treeView);
-    context.subscriptions.push(treeView);
+    deviceFileExplorer.setTreeView(deviceFileTreeView);
+    context.subscriptions.push(deviceFileTreeView);
 
     // Refresh device files tree
     context.subscriptions.push(

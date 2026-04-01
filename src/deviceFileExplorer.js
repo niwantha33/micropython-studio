@@ -186,7 +186,8 @@ class DeviceFileExplorerProvider {
         }
 
         return new Promise((resolve) => {
-            const cmd = `"${venvPython}" -m mpremote connect ${this._port} fs ls ${dirPath}`;
+            const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
+            const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" ls --port "${this._port}" --path "${dirPath}"`;
 
             exec(cmd, { timeout: 15000 }, (error, stdout) => {
                 if (error) {

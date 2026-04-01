@@ -1,0 +1,3863 @@
+commit c12ed7573d4273fb4d4399971ea840206e4cdb3c
+Author: niwantha33 <niwantha33@gmail.com>
+Date:   Sun Mar 29 21:35:45 2026 +0100
+
+    added ckpython web interface, updated lib install process, improve dashboard, updated readme,
+
+diff --git a/.claude/settings.local.json b/.claude/settings.local.json
+index 692a900..ba6a699 100644
+--- a/.claude/settings.local.json
++++ b/.claude/settings.local.json
+@@ -2,7 +2,20 @@
+   "permissions": {
+     "allow": [
+       "Read(//c/My-Projects/test_development/2026_project_test/001/test001/**)",
+-      "Bash(node -e \"console.log\\(require\\(''''./src/mcuOption.js''''\\)\\)\")"
++      "Bash(node -e \"console.log\\(require\\(''''./src/mcuOption.js''''\\)\\)\")",
++      "WebSearch",
++      "WebFetch(domain:raw.githubusercontent.com)",
++      "WebFetch(domain:www.npmjs.com)",
++      "WebFetch(domain:learn.adafruit.com)",
++      "WebFetch(domain:github.com)",
++      "WebFetch(domain:docs.circuitpython.org)",
++      "WebFetch(domain:snyk.io)",
++      "Bash(pip show:*)",
++      "Bash(pip install:*)",
++      "Bash(python -m circup --help)",
++      "Bash(CIRCUP_DIR=C:/Users/niwan/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/site-packages/circup python $CIRCUP_DIR/../../../Scripts/circup --help)",
++      "Read(//c/Users/niwan/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/site-packages/circup/**)",
++      "Bash(npx --yes vsce package --no-dependencies)"
+     ],
+     "additionalDirectories": [
+       "c:\\My-Projects\\test_development\\2026_project_test\\001\\test001\\.vscode"
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 1a33de1..bda2ecb 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,17 @@ All notable changes to the "micropython-studio" extension will be documented in
+ 
+ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
+ 
+-## [Unreleased]
++## [0.7.0] - 2026-03-29
+ 
+-- Initial release
+\ No newline at end of file
++### Added
++- **CircuitPython Support**: Complete integration for CircuitPython devices, including auto-detection, library management with `circup`, and Web Workflow (wireless) support.
++- **Enhanced Device Dashboard**: A central hub for hardware telemetry (RAM, Flash, CPU), Wi-Fi management, and Pinout diagrams.
++- **Improved WebREPL**: A robust terminal for wireless communication and file transfer with MicroPython devices.
++- **Device File Explorer**: A unified tree view for browsing, reading, and managing files on the device filesystem.
++- **Package Management**: Integrated `mip` (MicroPython) and `circup` (CircuitPython) for easy library installation.
++- **Flash Firmware**: Built-in tools for downloading and flashing firmware directly from VS Code.
++
++### Changed
++- Refactored file upload/download logic for significantly improved speed and reliability.
++- Optimized telemetry polling to reduce impact on serial communication.
++- Enhanced Workspace UI with dedicated "Device Files" and "MicroPython Studio" sidebars.
+\ No newline at end of file
+diff --git a/README.md b/README.md
+index e8c2f81..99acffc 100644
+--- a/README.md
++++ b/README.md
+@@ -133,23 +133,21 @@ The extension contributes the following settings:
+   - Error messaging for connection issues
+   - Workspace loading performance
+ 
+-### 0.6.x (Upcoming)
+-
+-- **New Features**:
+-  - Circuitpython -  (partial support)
+-  - Bytecode conversion - Done
+-  - Multiple device support - Done
+-  - WebREPL terminal - (partial support)
+-  - File upload and download - Done
+-  - Device file explorer - Done
+-  - Dashboard - Done
+-  - Library Install - Done
+-  - Pinout view - Done
+-  
++### 0.7.0 (Current)
++
++- **Complete Support**:
++  - Full CircuitPython compatibility (USB & Web Workflow)
++  - Enhanced Device Dashboard with live telemetry
++  - Hardware Pinout Diagram (RP2, ESP32, STM32, SAMD, etc.)
++  - High-performance File Upload/Download (Folder support)
++  - Device File Explorer with Overwrite Protection
++  - WebREPL Terminal for wireless debugging
++  - Integrated Package Management (`mip`, `circup`)
++  - Bytecode Compilation (.mpy)
+ - **Enhanced**:
+-  - File sync performance 
+-  - IntelliSense
+-  
++  - File sync performance optimization
++  - Improved IntelliSense for MicroPython modules
++  - Unified command palette and status bar integration
+ 
+ ---
+ 
+@@ -193,6 +191,8 @@ MicroPython Studio is open source (MIT License) and builds on the following open
+ | [FileSaver.js](https://github.com/eligrey/FileSaver.js) | Eli Grey | MIT | File download in WebREPL panel |
+ | [MicroPython WebREPL](https://github.com/micropython/webrepl) | MicroPython project | MIT | WebREPL client (modified for VS Code integration) |
+ 
++A special thanks to **AI development tools**. This project has been a work in progress for approximately three years, and many complex implementation hurdles seemed insurmountable. AI tools provided the critical support and breakthroughs needed to finally bring these concepts to life and complete the project.
++
+ All bundled files retain their original license headers.
+ 
+ ---
+diff --git a/package.json b/package.json
+index 4b202fe..41d07a7 100644
+--- a/package.json
++++ b/package.json
+@@ -2,7 +2,7 @@
+   "name": "micropython-studio",
+   "displayName": "MicroPython Studio",
+   "description": "MicroPython Studio for VS Code — write, deploy, and debug MicroPython on real hardware",
+-  "version": "0.6.6",
++  "version": "0.7.0",
+   "publisher": "niwantha33",
+   "license": "MIT",
+   "author": {
+@@ -72,7 +72,7 @@
+     "viewsWelcome": [
+       {
+         "view": "micropython-ide-launch-view",
+-        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package (mip)](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
++        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
+         "when": "true"
+       }
+     ],
+@@ -187,7 +187,7 @@
+       },
+       {
+         "command": "micropython-ide.installPackage",
+-        "title": "MicroPython: Install Package (mip)",
++        "title": "MicroPython: Install Package",
+         "category": "MicroPython Studio",
+         "icon": "$(package)"
+       },
+@@ -305,7 +305,7 @@
+         },
+         {
+           "command": "micropython-ide.runThisScriptOnMcuConsole",
+-          "when": "resourceExtname == .py || resourceExtname == .mpy",
++          "when": "(resourceExtname == .py || resourceExtname == .mpy) && micropythonStudio.isCircuitPython",
+           "group": "micropython@2"
+         },
+         {
+@@ -365,6 +365,16 @@
+       ]
+     }
+   },
++  "configuration": {
++    "title": "MicroPython Studio",
++    "properties": {
++      "micropythonStudio.circuitpython.autoSyncAfterInstall": {
++        "type": "boolean",
++        "default": false,
++        "description": "CircuitPython: Automatically sync files from the CIRCUITPY drive to the local main/ folder after installing a package with circup."
++      }
++    }
++  },
+   "scripts": {
+     "lint": "eslint .",
+     "pretest": "npm run lint",
+diff --git a/resource/MPS_Video watermark-1.PNG b/resource/MPS_Video watermark-1.PNG
+new file mode 100644
+index 0000000..83add62
+Binary files /dev/null and b/resource/MPS_Video watermark-1.PNG differ
+diff --git a/src/circuitpyDrive.js b/src/circuitpyDrive.js
+new file mode 100644
+index 0000000..5c1e5fa
+--- /dev/null
++++ b/src/circuitpyDrive.js
+@@ -0,0 +1,204 @@
++/**
++ * CircuitPython USB drive detection for Windows.
++ *
++ * Strategy (layered):
++ *  1. PowerShell Win32_Volume — find removable drives with label "CIRCUITPY*"
++ *  2. For every removable drive — check boot_out.txt contains "CircuitPython"
++ *  3. Fallback letter scan A–Z — same boot_out.txt check (if PowerShell fails)
++ *
++ * MicroPython projects are never affected — callers must check device_firmware first.
++ */
++
++const { execSync } = require('child_process');
++const fs = require('fs');
++const path = require('path');
++
++/**
++ * Find the CircuitPython USB drive root (e.g. "E:\").
++ * Returns the drive path string, or null if not found.
++ * @returns {string|null}
++ */
++function findCircuitPyDrive() {
++    // ── Layer 1 & 2: PowerShell Win32_Volume ───────────────────────────────
++    try {
++        const ps =
++            'Get-CimInstance Win32_Volume | ' +
++            'Where-Object {$_.DriveType -eq 2 -and $_.DriveLetter -ne $null} | ' +
++            'Select-Object DriveLetter,Label | ConvertTo-Json -Compress';
++
++        const out = execSync(
++            `powershell -NoProfile -NonInteractive -Command "${ps}"`,
++            { encoding: 'utf8', timeout: 5000 }
++        ).trim();
++
++        if (out) {
++            const raw = JSON.parse(out);
++            const volumes = Array.isArray(raw) ? raw : [raw];
++
++            // Pass 1 — exact CIRCUITPY label
++            for (const v of volumes) {
++                if (v.DriveLetter && v.Label === 'CIRCUITPY') {
++                    const p = v.DriveLetter.replace(/[/\\]+$/, '') + '\\';
++                    if (_confirmCircuitPy(p)) return p;
++                }
++            }
++
++            // Pass 2 — label starts with CIRCUITPY (e.g. CIRCUITPY1)
++            for (const v of volumes) {
++                if (v.DriveLetter && v.Label && v.Label.startsWith('CIRCUITPY')) {
++                    const p = v.DriveLetter.replace(/[/\\]+$/, '') + '\\';
++                    if (_confirmCircuitPy(p)) return p;
++                }
++            }
++
++            // Pass 3 — any removable drive whose boot_out.txt says CircuitPython
++            for (const v of volumes) {
++                if (v.DriveLetter) {
++                    const p = v.DriveLetter.replace(/[/\\]+$/, '') + '\\';
++                    if (_confirmCircuitPy(p)) return p;
++                }
++            }
++        }
++    } catch (_) {
++        // PowerShell not available or returned unexpected output — fall through
++    }
++
++    // ── Layer 3: Letter scan fallback ──────────────────────────────────────
++    for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
++        const drivePath = `${letter}:\\`;
++        if (_confirmCircuitPy(drivePath)) return drivePath;
++    }
++
++    return null;
++}
++
++/**
++ * Confirm a drive is CircuitPython by checking boot_out.txt content.
++ * @param {string} drivePath  e.g. "E:\"
++ * @returns {boolean}
++ */
++function _confirmCircuitPy(drivePath) {
++    try {
++        const bootOut = path.join(drivePath, 'boot_out.txt');
++        if (!fs.existsSync(bootOut)) return false;
++        const content = fs.readFileSync(bootOut, 'utf8');
++        return content.includes('CircuitPython');
++    } catch (_) {
++        return false;
++    }
++}
++
++/**
++ * Read board info from boot_out.txt on the CircuitPython drive.
++ * Returns { version, board } or null.
++ * @param {string} drivePath
++ * @returns {{ version: string, board: string }|null}
++ */
++function readCircuitPyBootInfo(drivePath) {
++    try {
++        const bootOut = path.join(drivePath, 'boot_out.txt');
++        const content = fs.readFileSync(bootOut, 'utf8');
++        // e.g. "Adafruit CircuitPython 9.2.4 on 2024-11-22; Raspberry Pi Pico 2 W with rp2350"
++        const match = content.match(/CircuitPython\s+([\d.]+)\s+on\s+[\d-]+;\s+(.+)/);
++        if (match) {
++            return { version: match[1], board: match[2].trim() };
++        }
++        return null;
++    } catch (_) {
++        return null;
++    }
++}
++
++/**
++ * Copy a local file to the CircuitPython drive, preserving relative path.
++ * e.g. copyToCircuitPyDrive("E:\", "C:\project\main\code.py", "C:\project\main")
++ *      → copies to "E:\code.py"
++ *
++ * @param {string} drivePath   Root of the CP drive, e.g. "E:\"
++ * @param {string} localFile   Absolute path to the source file
++ * @param {string} localRoot   The local root to strip when computing relative path
++ */
++function copyToCircuitPyDrive(drivePath, localFile, localRoot) {
++    const rel = path.relative(localRoot, localFile);
++    const dest = path.join(drivePath, rel);
++    const destDir = path.dirname(dest);
++    try {
++        fs.mkdirSync(destDir, { recursive: true });
++    } catch (err) {
++        // Ignore EPERM/EEXIST for root directory creations like "E:\"
++        if (err.code !== 'EPERM' && err.code !== 'EEXIST') {
++            throw err;
++        }
++    }
++    fs.copyFileSync(localFile, dest);
++    return dest;
++}
++
++/**
++ * Files/folders to never copy from the CIRCUITPY drive to local.
++ * Excludes credentials, system files, and auto-generated boot logs.
++ */
++const SYNC_EXCLUDE = new Set([
++    'settings.toml',             // Wi-Fi credentials + API password
++    'boot_out.txt',              // auto-generated on every boot
++    '.Trashes',                  // macOS system
++    '.fseventsd',                // macOS system
++    '.Spotlight-V100',           // macOS system
++    'System Volume Information', // Windows system
++    '$RECYCLE.BIN',              // Windows system
++]);
++
++/**
++ * Sync all files from the CIRCUITPY drive to a local destination folder.
++ * Skips files in SYNC_EXCLUDE. Creates subdirectories as needed.
++ *
++ * @param {string} drivePath   e.g. 'E:\'
++ * @param {string} localDest   Absolute path to local main/ folder
++ * @returns {{ copied: number, skipped: string[], errors: string[] }}
++ */
++function syncFromCircuitPyDrive(drivePath, localDest) {
++    // Guard: if localDest IS the drive itself, there is nothing to sync to locally
++    const normDrive = path.resolve(drivePath).replace(/[/\\]+$/, '');
++    const normDest  = path.resolve(localDest).replace(/[/\\]+$/, '');
++    if (normDrive.toLowerCase() === normDest.toLowerCase()) {
++        return { copied: 0, skipped: [], errors: ['Destination is the same as the source drive — sync skipped.'] };
++    }
++
++    const skipped = [];
++    const errors  = [];
++    let copiedCount = 0;
++
++    /** @param {string} srcDir @param {string} destDir */
++    function walk(srcDir, destDir) {
++        let entries;
++        try { entries = fs.readdirSync(srcDir, { withFileTypes: true }); }
++        catch (_) { return; }
++
++        for (const entry of entries) {
++            if (SYNC_EXCLUDE.has(entry.name) || entry.name.startsWith('.')) {
++                skipped.push(path.join(srcDir, entry.name));
++                continue;
++            }
++            const srcPath  = path.join(srcDir, entry.name);
++            const destPath = path.join(destDir, entry.name);
++
++            if (entry.isDirectory()) {
++                try { fs.mkdirSync(destPath, { recursive: true }); } catch (_) {}
++                walk(srcPath, destPath);
++            } else {
++                try {
++                    fs.mkdirSync(destDir, { recursive: true });
++                    fs.copyFileSync(srcPath, destPath);
++                    copiedCount++;
++                } catch (err) {
++                    errors.push(`${srcPath}: ${err.message}`);
++                }
++            }
++        }
++    }
++
++    walk(drivePath, localDest);
++    return { copied: copiedCount, skipped, errors };
++}
++
++module.exports = { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive };
+diff --git a/src/circuitpyWebWorkflow.js b/src/circuitpyWebWorkflow.js
+new file mode 100644
+index 0000000..53ab175
+--- /dev/null
++++ b/src/circuitpyWebWorkflow.js
+@@ -0,0 +1,286 @@
++/**
++ * CircuitPython Web Workflow API helpers (CircuitPython 8+)
++ *
++ * Device exposes an HTTP server on its Wi-Fi IP.
++ * settings.toml on the CIRCUITPY drive controls Wi-Fi + API password.
++ *
++ * Auth: HTTP Basic Auth with empty username and the API password.
++ *       Header value = "Basic " + base64(":" + password)
++ */
++
++'use strict';
++
++const http  = require('http');
++const https = require('https');
++const fs    = require('fs');
++const path  = require('path');
++
++// ─── Auth helper ─────────────────────────────────────────────────────────────
++
++/**
++ * Build the Basic Auth header value for the Web Workflow API.
++ * CircuitPython uses empty username + colon prefix: base64(":password")
++ * @param {string} password
++ * @returns {string}
++ */
++function buildAuthHeader(password) {
++    return 'Basic ' + Buffer.from(':' + password).toString('base64');
++}
++
++// ─── Low-level request ───────────────────────────────────────────────────────
++
++/**
++ * Make an HTTP request to the CircuitPython Web Workflow API.
++ * @param {object} opts
++ * @param {string}  opts.ip
++ * @param {number}  [opts.port=80]
++ * @param {string}  opts.method  GET | PUT | DELETE | MOVE
++ * @param {string}  opts.urlPath  e.g. /cp/version.json  or /fs/code.py
++ * @param {string}  opts.password
++ * @param {Buffer|string|null} [opts.body]
++ * @param {Record<string,string>} [opts.extraHeaders]
++ * @returns {Promise<{statusCode:number, body:string}>}
++ */
++function apiRequest({ ip, port = 80, method, urlPath, password, body = null, extraHeaders = {} }) {
++    return new Promise((resolve, reject) => {
++        const headers = {
++            'Authorization': buildAuthHeader(password),
++            ...extraHeaders
++        };
++        if (body !== null) {
++            headers['Content-Type']   = 'application/octet-stream';
++            headers['Content-Length'] = Buffer.byteLength(body);
++        }
++
++        const req = http.request({ host: ip, port, method, path: urlPath, headers }, (res) => {
++            const chunks = [];
++            res.on('data', c => chunks.push(c));
++            res.on('end', () => resolve({
++                statusCode: res.statusCode || 0,
++                body: Buffer.concat(chunks).toString('utf8')
++            }));
++        });
++
++        req.on('error', reject);
++        if (body !== null) req.write(body);
++        req.end();
++    });
++}
++
++// ─── Public API ──────────────────────────────────────────────────────────────
++
++/**
++ * Check if a device is reachable and return board info.
++ * @param {string} ip
++ * @param {string} password
++ * @param {number} [port=80]
++ * @returns {Promise<object|null>}  version JSON or null on failure
++ */
++async function getVersion(ip, password, port = 80) {
++    try {
++        const res = await apiRequest({ ip, port, method: 'GET', urlPath: '/cp/version.json', password });
++        if (res.statusCode === 200) return JSON.parse(res.body);
++    } catch (_) {}
++    return null;
++}
++
++/**
++ * List directory contents.
++ * @param {string} ip
++ * @param {string} password
++ * @param {string} [remotePath='/']
++ * @param {number} [port=80]
++ * @returns {Promise<{free:number, total:number, writable:boolean, files:Array}|null>}
++ */
++async function listDir(ip, password, remotePath = '/', port = 80) {
++    const p = remotePath.endsWith('/') ? remotePath : remotePath + '/';
++    try {
++        const res = await apiRequest({
++            ip, port,
++            method: 'GET',
++            urlPath: '/fs' + p,
++            password,
++            extraHeaders: { 'Accept': 'application/json' }
++        });
++        if (res.statusCode === 200) return JSON.parse(res.body);
++    } catch (_) {}
++    return null;
++}
++
++/**
++ * Upload a single file to the device.
++ * @param {string} ip
++ * @param {string} password
++ * @param {string} remotePath  e.g. '/code.py' or '/lib/mylib.py'
++ * @param {Buffer|string} content
++ * @param {number} [port=80]
++ * @returns {Promise<boolean>}
++ */
++async function putFile(ip, password, remotePath, content, port = 80) {
++    try {
++        const body = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
++        const res = await apiRequest({
++            ip, port,
++            method: 'PUT',
++            urlPath: '/fs' + remotePath,
++            password,
++            body,
++            extraHeaders: { 'X-Timestamp': String(Date.now()) }
++        });
++        return res.statusCode === 200 || res.statusCode === 201 || res.statusCode === 204;
++    } catch (_) {
++        return false;
++    }
++}
++
++/**
++ * Create a directory on the device (PUT with trailing slash).
++ * @param {string} ip
++ * @param {string} password
++ * @param {string} remotePath  e.g. '/lib'
++ * @param {number} [port=80]
++ * @returns {Promise<boolean>}
++ */
++async function makeDir(ip, password, remotePath, port = 80) {
++    const p = remotePath.endsWith('/') ? remotePath : remotePath + '/';
++    try {
++        const res = await apiRequest({ ip, port, method: 'PUT', urlPath: '/fs' + p, password });
++        return res.statusCode === 200 || res.statusCode === 201 || res.statusCode === 204;
++    } catch (_) {
++        return false;
++    }
++}
++
++/**
++ * Delete a file or directory.
++ * @param {string} ip
++ * @param {string} password
++ * @param {string} remotePath
++ * @param {number} [port=80]
++ */
++async function deleteFile(ip, password, remotePath, port = 80) {
++    try {
++        await apiRequest({ ip, port, method: 'DELETE', urlPath: '/fs' + remotePath, password });
++    } catch (_) {}
++}
++
++/**
++ * Download a file from the device.
++ * @param {string} ip
++ * @param {string} password
++ * @param {string} remotePath
++ * @param {number} [port=80]
++ * @returns {Promise<string|null>}
++ */
++async function getFile(ip, password, remotePath, port = 80) {
++    try {
++        const res = await apiRequest({ ip, port, method: 'GET', urlPath: '/fs' + remotePath, password });
++        if (res.statusCode === 200) return res.body;
++    } catch (_) {}
++    return null;
++}
++
++/**
++ * Upload an entire local folder recursively to the device.
++ * @param {string} ip
++ * @param {string} password
++ * @param {string} localFolder   Absolute local path
++ * @param {string} remoteBase    e.g. '/' to upload into root
++ * @param {number} [port=80]
++ * @param {(msg:string)=>void} [onProgress]
++ * @returns {Promise<{ok:number, failed:string[]}>}
++ */
++async function uploadFolder(ip, password, localFolder, remoteBase = '/', port = 80, onProgress = null) {
++    const ok = 0, failed = [];
++    const base = remoteBase.endsWith('/') ? remoteBase : remoteBase + '/';
++
++    /** @param {string} localDir @param {string} remoteDir */
++    async function walk(localDir, remoteDir) {
++        // Ensure remote dir exists
++        if (remoteDir !== '/') await makeDir(ip, password, remoteDir, port);
++
++        const entries = fs.readdirSync(localDir, { withFileTypes: true });
++        for (const entry of entries) {
++            if (entry.name.startsWith('.')) continue;  // skip hidden
++            const localPath  = path.join(localDir, entry.name);
++            const remotePath = remoteDir.replace(/\/$/, '') + '/' + entry.name;
++            if (entry.isDirectory()) {
++                await walk(localPath, remotePath);
++            } else {
++                if (onProgress) onProgress(`📤 ${remotePath}`);
++                const content = fs.readFileSync(localPath);
++                const success = await putFile(ip, password, remotePath, content, port);
++                if (success) {
++                    // ok++ — can't mutate const, track in outer scope
++                } else {
++                    failed.push(remotePath);
++                }
++            }
++        }
++    }
++
++    await walk(localFolder, base);
++    return { failed };
++}
++
++/**
++ * Write settings.toml to the CIRCUITPY drive (USB) — preferred method.
++ * Falls back to returning false if the drive path isn't provided.
++ * @param {string} drivePath  e.g. 'D:\'
++ * @param {{ssid:string, wifiPassword:string, apiPassword:string, apiPort?:number}} config
++ * @returns {boolean}
++ */
++function writeSettingsToml(drivePath, config) {
++    try {
++        if (!drivePath) throw new Error('CIRCUITPY drive not found — connect the device via USB.');
++        const content = [
++            `CIRCUITPY_WIFI_SSID = "${config.ssid}"`,
++            `CIRCUITPY_WIFI_PASSWORD = "${config.wifiPassword}"`,
++            `CIRCUITPY_WEB_API_PASSWORD = "${config.apiPassword}"`,
++            `CIRCUITPY_WEB_API_PORT = ${config.apiPort || 80}`,
++        ].join('\n') + '\n';
++        fs.writeFileSync(path.join(drivePath, 'settings.toml'), content, 'utf8');
++        return { ok: true };
++    } catch (err) {
++        let msg = err.message || String(err);
++        if (err.code === 'EPERM' || err.code === 'EACCES' || err.code === 'EROFS') {
++            msg = `Drive is read-only (${drivePath}) — CircuitPython locks the filesystem while code is running. Press Stop / Ctrl+C in the REPL first, then try again.`;
++        }
++        return { ok: false, error: msg };
++    }
++}
++
++/**
++ * Read existing settings.toml from the CIRCUITPY drive.
++ * @param {string} drivePath
++ * @returns {{ssid:string, wifiPassword:string, apiPassword:string, apiPort:number}|null}
++ */
++function readSettingsToml(drivePath) {
++    try {
++        const raw = fs.readFileSync(path.join(drivePath, 'settings.toml'), 'utf8');
++        const get = (key) => {
++            const m = raw.match(new RegExp(`^${key}\\s*=\\s*"?([^"\\n]*)"?`, 'm'));
++            return m ? m[1].trim() : '';
++        };
++        return {
++            ssid:        get('CIRCUITPY_WIFI_SSID'),
++            wifiPassword: get('CIRCUITPY_WIFI_PASSWORD'),
++            apiPassword: get('CIRCUITPY_WEB_API_PASSWORD'),
++            apiPort:     parseInt(get('CIRCUITPY_WEB_API_PORT') || '80', 10),
++        };
++    } catch (_) {
++        return null;
++    }
++}
++
++module.exports = {
++    getVersion,
++    listDir,
++    putFile,
++    makeDir,
++    deleteFile,
++    getFile,
++    uploadFolder,
++    writeSettingsToml,
++    readSettingsToml,
++};
+diff --git a/src/createNewProject.js b/src/createNewProject.js
+index ae307d2..fa12c6e 100644
+--- a/src/createNewProject.js
++++ b/src/createNewProject.js
+@@ -44,7 +44,8 @@ const CP_BOARD_MAP = {
+ /**
+  * Get the appropriate pip stub package name for a given MCU target/family.
+  */
+-function getStubPackageForBoard(mcuTarget, mcuFamily) {
++function getStubPackageForBoard(mcuTarget, mcuFamily, isCircuitPython) {
++    if (isCircuitPython) return 'circuitpython-stubs';
+     if (mcuTarget.startsWith('esp32')) return 'micropython-esp32-stubs';
+     if (mcuTarget.startsWith('esp8266')) return 'micropython-esp8266-stubs';
+     if (mcuTarget.startsWith('rp2') || mcuFamily === 'RP2') return 'micropython-rp2-stubs';
+@@ -53,12 +54,31 @@ function getStubPackageForBoard(mcuTarget, mcuFamily) {
+     return 'micropython-stubber'; // Generic fallback
+ }
+ 
++/**
++ * Scan removable drives for a CircuitPython device (identified by boot_out.txt in root).
++ * Windows only — returns e.g. 'D:\' or null if not found.
++ * @returns {Promise<string|null>}
++ */
++async function findCircuitPythonDrive() {
++    if (process.platform !== 'win32') return null;
++    for (let c = 68; c <= 90; c++) { // D → Z
++        const drive = String.fromCharCode(c) + ':\\';
++        try {
++            await fs.access(path.join(drive, 'boot_out.txt'));
++            return drive;
++        } catch (_) { }
++    }
++    return null;
++}
++
+ /**
+  * Build the full project configuration dictionary from user input and folder selection.
+  */
+ async function buildProjectConfig(configDict, folderUri) {
+     configDict.parentPath = folderUri[0].fsPath;
+     configDict.projectDir = path.join(configDict.parentPath, configDict.projectName);
++    // CircuitPython: deviceCodeDir is the device drive, resolved later in createNewProject
++    // MicroPython: deviceCodeDir is the local main/ folder
+     configDict.deviceCodeDir = path.join(configDict.projectDir, 'main');
+     configDict.settingsDir = path.join(configDict.projectDir, '.vscode');
+     configDict.projectExists = await fs.access(configDict.projectDir).then(() => true).catch(() => false);
+@@ -167,7 +187,7 @@ async function detectAndSelectDevice(config) {
+             }
+ 
+             const selected = await vscode.window.showQuickPick(devices, {
+-                placeHolder: 'Select your MicroPython device (or press Escape to skip)'
++                placeHolder: 'Select your device (or press Escape to skip)'
+             });
+ 
+             if (selected) {
+@@ -199,18 +219,39 @@ async function createNewProject(context) {
+         const venvFolder = getVenvPythonPathFolder();
+         const venvPython = getVenvPythonPath(venvFolder);
+ 
++        // For CircuitPython: find the device drive (has boot_out.txt in root)
++        // and point deviceCodeDir there instead of creating a local main/ folder
++        let cpDrive = null;
+         if (isCircuitPython) {
+-            // CircuitPython uses code.py as entry point and a lib/ folder for libraries
+-            await fs.mkdir(path.join(config.deviceCodeDir, 'lib'), { recursive: true });
+-            await fs.writeFile(
+-                path.join(config.deviceCodeDir, 'code.py'),
+-                `# CircuitPython Project: ${config.projectName}\n` +
+-                `# Target: ${config.selectedMcuTarget}\n\n` +
+-                `import board\n\n` +
+-                `print("Hello from ${config.projectName}!")\n`
+-            );
++            cpDrive = await findCircuitPythonDrive();
++            if (cpDrive) {
++                config.deviceCodeDir = cpDrive;
++                // Write code.py directly to the device drive
++                await fs.writeFile(
++                    path.join(cpDrive, 'code.py'),
++                    `# CircuitPython Project: ${config.projectName}\n` +
++                    `# Target: ${config.selectedMcuTarget}\n\n` +
++                    `import board\n\n` +
++                    `print("Hello from ${config.projectName}!")\n`
++                );
++            } else {
++                // Device not connected — create local folder as fallback
++                await fs.mkdir(config.deviceCodeDir, { recursive: true });
++                await fs.mkdir(path.join(config.deviceCodeDir, 'lib'), { recursive: true });
++                await fs.writeFile(
++                    path.join(config.deviceCodeDir, 'code.py'),
++                    `# CircuitPython Project: ${config.projectName}\n` +
++                    `# Target: ${config.selectedMcuTarget}\n\n` +
++                    `import board\n\n` +
++                    `print("Hello from ${config.projectName}!")\n`
++                );
++                vscode.window.showWarningMessage(
++                    'CircuitPython device not found. Plug in your board and the project folder will point to it automatically on next open.'
++                );
++            }
+         } else {
+-            // Create main.py template
++            // MicroPython: create local main/ folder as usual
++            await fs.mkdir(config.deviceCodeDir, { recursive: true });
+             await fs.writeFile(
+                 path.join(config.deviceCodeDir, 'main.py'),
+                 `# MicroPython Project: ${config.projectName}\n` +
+@@ -280,14 +321,14 @@ async function createNewProject(context) {
+             : path.join(venvFolder, 'lib', 'python3', 'site-packages');
+ 
+         // Determine specific stubs for this board
+-        const stubPackage = getStubPackageForBoard(config.selectedMcuTarget, config.selectedMcuFamily);
++        const stubPackage = getStubPackageForBoard(config.selectedMcuTarget, config.selectedMcuFamily, isCircuitPython);
+         const stubsDir = path.join(getMicropythonStudioPath(), 'stubs', stubPackage);
+-        
++
+         // Quietly install the stubs in the background if they don't exist
+         fs.access(stubsDir).catch(async () => {
+             try {
+                 // We use a dummy output channel since this is background process
+-                const dummyChannel = { appendLine: () => {}, append: () => {} };
++                const dummyChannel = { appendLine: () => { }, append: () => { } };
+                 await runCommand(dummyChannel, venvPython, ['-m', 'pip', 'install', '--target', stubsDir, stubPackage], getMicropythonStudioPath());
+             } catch (err) {
+                 console.error(`Failed to install stubs ${stubPackage}:`, err);
+@@ -325,14 +366,15 @@ async function createNewProject(context) {
+ 
+         // Create .code-workspace file
+         const workspacePath = path.join(config.parentPath, `${config.projectName}.code-workspace`);
+-        const studioLabel = isCircuitPython ? 'CircuitPython Studio' : 'MicroPython Studio';
++        const studioLabel = isCircuitPython ? 'CircuitPython' : 'MicroPython';
++        const workspaceFolders = [
++            {
++                path: config.projectName,
++                name: `📁 ${config.projectName} (${studioLabel})`
++            }
++        ];
+         const workspaceContent = {
+-            folders: [
+-                {
+-                    path: config.projectName,
+-                    name: `📁 ${config.projectName} (${studioLabel})`
+-                }
+-            ],
++            folders: workspaceFolders,
+             settings: {
+                 'micropythonStudio.project': true,
+                 'micropythonStudio.targetMCU': config.selectedMcuTarget,
+diff --git a/src/deviceDashboard.js b/src/deviceDashboard.js
+index 192d9c8..0f0ee48 100644
+--- a/src/deviceDashboard.js
++++ b/src/deviceDashboard.js
+@@ -1,9 +1,14 @@
+-const vscode = require('vscode');
+-const fs = require('fs');
+-const path = require('path');
+-const { execFile } = require('child_process');
+-const { runMpremote } = require('./runCommand');
+-const { updateCfgComponent, getVenvPythonPath, getVenvPythonPathFolder, getConfigValue } = require('./commonFxn');
++const vscode = require("vscode");
++const fs = require("fs");
++const path = require("path");
++const { execFile } = require("child_process");
++const { runMpremote } = require("./runCommand");
++const {
++  updateCfgComponent,
++  getVenvPythonPath,
++  getVenvPythonPathFolder,
++  getConfigValue,
++} = require("./commonFxn");
+ 
+ /**
+  * Gathers all metrics from the device and converts them to a structured object.
+@@ -12,42 +17,70 @@ const { updateCfgComponent, getVenvPythonPath, getVenvPythonPathFolder, getConfi
+  * @param {string} devicePort - The COM port or ws: address of the device
+  */
+ async function gatherDeviceMetrics(outputChannel, workspaceFolder, devicePort) {
+-    const metrics = {
+-        firmware: 'Unknown',
+-        platform: 'Unknown',
+-        version: 'Unknown',
+-        cpuFreqHtml: 'Unknown',
+-        ramUsed: 0,
+-        ramFree: 0,
+-        ramTotal: 0,
+-        flashUsed: 0,
+-        flashFree: 0,
+-        flashTotal: 0,
+-        wifi: { supported: false, connected: false, ip: '', ssid: '' },
+-        bootLog: { hasLog: false, status: 'none', ip: '', detail: '' }
+-    };
+-
+-    // The single python script to fetch all metrics at once
+-    const pythonScript = `import sys, machine, gc, os
++  const metrics = {
++    firmware: "Unknown",
++    platform: "Unknown",
++    version: "Unknown",
++    cpuFreqHtml: "Unknown",
++    ramUsed: 0,
++    ramFree: 0,
++    ramTotal: 0,
++    flashUsed: 0,
++    flashFree: 0,
++    flashTotal: 0,
++    wifi: { supported: false, connected: false, ip: "", ssid: "" },
++    bootLog: { hasLog: false, status: "none", ip: "", detail: "" },
++  };
++
++  // The single python script to fetch all metrics at once
++  const pythonScript = `import sys
++try:
++    import gc
++except ImportError:
++    gc = None
++try:
++    import os
++except ImportError:
++    os = None
+ 
+ # 1. Firmware
+ print("---SYS---")
++try:
++    print(sys.version)
++except:
++    print("unknown")
+ print(sys.platform)
+ print('.'.join(map(str, sys.implementation.version)))
+-print(machine.freq() if hasattr(machine, 'freq') else 0)
++try:
++    import machine
++    print(machine.freq() if hasattr(machine, 'freq') else 0)
++except ImportError:
++    try:
++        import microcontroller
++        print(microcontroller.cpu.frequency if hasattr(microcontroller, 'cpu') else 0)
++    except ImportError:
++        print(0)
+ 
+ # 2. RAM
+ print("---RAM---")
+-gc.collect()
+-print(gc.mem_alloc())
+-print(gc.mem_free())
++if gc:
++    gc.collect()
++    print(gc.mem_alloc() if hasattr(gc, 'mem_alloc') else 0)
++    print(gc.mem_free() if hasattr(gc, 'mem_free') else 0)
++else:
++    print(0)
++    print(0)
+ 
+ # 3. Flash
+ print("---FLASH---")
+ try:
+-    s=os.statvfs('/')
+-    print(s[0]*s[2])
+-    print(s[0]*s[3])
++    s=os.statvfs('/') if os else None
++    if s:
++        print(s[0]*s[2])
++        print(s[0]*s[3])
++    else:
++        print(0)
++        print(0)
+ except Exception:
+     print(0)
+     print(0)
+@@ -73,8 +106,25 @@ try:
+             print("0")
+             print("")
+             print("")
+-except Exception:
+-    print("NO_WIFI")
++except ImportError:
++    try:
++        import wifi
++        if hasattr(wifi, 'radio'):
++            if wifi.radio.ipv4_address:
++                print("1")
++                print(wifi.radio.ipv4_address)
++                try:
++                    print(wifi.radio.ap_info.ssid)
++                except:
++                    print("")
++            else:
++                print("0")
++                print("")
++                print("")
++        else:
++            print("NO_WIFI")
++    except ImportError:
++        print("NO_WIFI")
+ 
+ # 5. Boot log (written by safe boot.py on each reboot)
+ print("---BOOTLOG---")
+@@ -85,147 +135,186 @@ except:
+     print("NO_LOG")
+ `;
+ 
+-    // Save script locally to a safe temp spot in the workspace
+-    const tempScriptPath = path.join(workspaceFolder, '.dashboard_metrics.py');
+-    try {
+-        fs.writeFileSync(tempScriptPath, pythonScript, 'utf8');
+-
+-        // Run the script on the device
+-        // ws: ports need mpremotesubpro.py (mpremote has no WebSocket transport)
+-        let rawOutput;
+-        if (devicePort && devicePort.startsWith('ws:')) {
+-            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+-            const subpro = path.join(__dirname, 'mpremotesubpro.py');
+-            rawOutput = await new Promise((resolve) => {
+-                execFile(venvPython, [
+-                    subpro, '--python', venvPython,
+-                    'run_mcu', '--port', devicePort, '--file', tempScriptPath
+-                ], { timeout: 30000 }, (_err, stdout) => resolve(stdout || ''));
+-            });
+-        } else {
+-            const mpArgs = devicePort
+-                ? ['connect', devicePort, 'run', `"${tempScriptPath}"`]
+-                : ['run', `"${tempScriptPath}"`];
+-            rawOutput = await runMpremote(outputChannel, mpArgs);
+-        }
+-
+-        // Parse the block output
+-        const lines = rawOutput.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+-
+-        let currentSection = '';
+-        let sysLines = [];
+-        let ramLines = [];
+-        let flashLines = [];
+-        let wifiLines = [];
+-        let bootLogLines = [];
+-
+-        for (const line of lines) {
+-            if (line === '---SYS---')     { currentSection = 'SYS';     continue; }
+-            if (line === '---RAM---')     { currentSection = 'RAM';     continue; }
+-            if (line === '---FLASH---')   { currentSection = 'FLASH';   continue; }
+-            if (line === '---WIFI---')    { currentSection = 'WIFI';    continue; }
+-            if (line === '---BOOTLOG---') { currentSection = 'BOOTLOG'; continue; }
+-
+-            if (currentSection === 'SYS')         sysLines.push(line);
+-            else if (currentSection === 'RAM')     ramLines.push(line);
+-            else if (currentSection === 'FLASH')   flashLines.push(line);
+-            else if (currentSection === 'WIFI')    wifiLines.push(line);
+-            else if (currentSection === 'BOOTLOG') bootLogLines.push(line);
+-        }
+-
+-        // Apply SYS metrics
+-        if (sysLines.length >= 3) {
+-            metrics.platform = sysLines[0];
+-            metrics.firmware = 'MicroPython';
+-            metrics.version = sysLines[1];
+-            const freqHz = parseInt(sysLines[2], 10);
+-            metrics.cpuFreqHtml = freqHz > 0 ? `${(freqHz / 1000000).toFixed(0)} <span class="unit">MHz</span>` : 'Unknown';
+-        }
+-
+-        // Apply RAM metrics
+-        if (ramLines.length >= 2) {
+-            metrics.ramUsed = parseInt(ramLines[0], 10) || 0;
+-            metrics.ramFree = parseInt(ramLines[1], 10) || 0;
+-            metrics.ramTotal = metrics.ramUsed + metrics.ramFree;
+-        }
+-
+-        // Apply Flash metrics
+-        if (flashLines.length >= 2) {
+-            metrics.flashTotal = parseInt(flashLines[0], 10) || 0;
+-            metrics.flashFree = parseInt(flashLines[1], 10) || 0;
+-            metrics.flashUsed = metrics.flashTotal - metrics.flashFree;
+-        }
+-
+-        // Apply Wi-Fi metrics
+-        if (wifiLines.length > 0 && wifiLines[0] !== 'NO_WIFI') {
+-            metrics.wifi.supported = true;
+-            metrics.wifi.connected = wifiLines[0] === '1';
+-            metrics.wifi.ip   = wifiLines[1] || '';
+-            metrics.wifi.ssid = wifiLines[2] || '';
+-        } else if (wifiLines[0] === 'NO_WIFI') {
+-            metrics.wifi.supported = false;
+-        }
+-
+-        // Apply Boot Log — written by safe boot.py on each reboot
+-        const rawLog = bootLogLines.join('').trim();
+-        if (rawLog && rawLog !== 'NO_LOG') {
+-            metrics.bootLog.hasLog = true;
+-            if (rawLog.startsWith('OK:')) {
+-                metrics.bootLog.status = 'ok';
+-                metrics.bootLog.ip = rawLog.slice(3);
+-                metrics.bootLog.detail = `Remote access active — ${metrics.bootLog.ip}`;
+-            } else if (rawLog.startsWith('WIFI_TIMEOUT:')) {
+-                metrics.bootLog.status = 'timeout';
+-                metrics.bootLog.detail = 'Wi-Fi not available — USB mode only';
+-            } else if (rawLog.startsWith('ERROR:')) {
+-                metrics.bootLog.status = 'error';
+-                metrics.bootLog.detail = `Boot error: ${rawLog.slice(6)}`;
+-            } else {
+-                metrics.bootLog.status = 'unknown';
+-                metrics.bootLog.detail = rawLog;
+-            }
+-        }
++  // Save script locally to a safe temp spot in the workspace
++  const tempScriptPath = path.join(workspaceFolder, "_dashboard_metrics.py");
++  try {
++    fs.writeFileSync(tempScriptPath, pythonScript, "utf8");
++
++    // Run the script on the device
++    // ws: ports need mpremotesubpro.py (mpremote has no WebSocket transport)
++    let rawOutput;
++    if (devicePort && devicePort.startsWith("ws:")) {
++      const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
++      const subpro = path.join(__dirname, "mpremotesubpro.py");
++      rawOutput = await new Promise((resolve) => {
++        execFile(
++          venvPython,
++          [
++            subpro,
++            "--python",
++            venvPython,
++            "run_mcu",
++            "--port",
++            devicePort,
++            "--file",
++            tempScriptPath,
++          ],
++          { timeout: 30000 },
++          (_err, stdout) => resolve(stdout || ""),
++        );
++      });
++    } else {
++      const mpArgs = devicePort
++        ? ["connect", devicePort, "run", `"${tempScriptPath}"`]
++        : ["run", `"${tempScriptPath}"`];
++      rawOutput = await runMpremote(outputChannel, mpArgs);
++    }
+ 
+-    } catch (err) {
+-        console.error('Failed to gather metrics:', err);
+-    } finally {
+-        if (fs.existsSync(tempScriptPath)) {
+-            fs.unlinkSync(tempScriptPath);
+-        }
++    // Parse the block output
++    const lines = rawOutput
++      .split("\n")
++      .map((l) => l.trim())
++      .filter((l) => l.length > 0);
++
++    let currentSection = "";
++    let sysLines = [];
++    let ramLines = [];
++    let flashLines = [];
++    let wifiLines = [];
++    let bootLogLines = [];
++
++    for (const line of lines) {
++      if (line === "---SYS---") {
++        currentSection = "SYS";
++        continue;
++      }
++      if (line === "---RAM---") {
++        currentSection = "RAM";
++        continue;
++      }
++      if (line === "---FLASH---") {
++        currentSection = "FLASH";
++        continue;
++      }
++      if (line === "---WIFI---") {
++        currentSection = "WIFI";
++        continue;
++      }
++      if (line === "---BOOTLOG---") {
++        currentSection = "BOOTLOG";
++        continue;
++      }
++
++      if (currentSection === "SYS") sysLines.push(line);
++      else if (currentSection === "RAM") ramLines.push(line);
++      else if (currentSection === "FLASH") flashLines.push(line);
++      else if (currentSection === "WIFI") wifiLines.push(line);
++      else if (currentSection === "BOOTLOG") bootLogLines.push(line);
++    }
++
++    // Apply SYS metrics
++    if (sysLines.length >= 4) {
++      const rawSysVersion = sysLines[0].toLowerCase();
++      metrics.firmware = rawSysVersion.includes("circuitpython")
++        ? "CircuitPython"
++        : "MicroPython";
++      metrics.platform = sysLines[1];
++      metrics.version = sysLines[2];
++      const freqHz = parseInt(sysLines[3], 10);
++      metrics.cpuFreqHtml =
++        freqHz > 0
++          ? `${(freqHz / 1000000).toFixed(0)} <span class="unit">MHz</span>`
++          : "Unknown";
++    }
++
++    // Apply RAM metrics
++    if (ramLines.length >= 2) {
++      metrics.ramUsed = parseInt(ramLines[0], 10) || 0;
++      metrics.ramFree = parseInt(ramLines[1], 10) || 0;
++      metrics.ramTotal = metrics.ramUsed + metrics.ramFree;
++    }
++
++    // Apply Flash metrics
++    if (flashLines.length >= 2) {
++      metrics.flashTotal = parseInt(flashLines[0], 10) || 0;
++      metrics.flashFree = parseInt(flashLines[1], 10) || 0;
++      metrics.flashUsed = metrics.flashTotal - metrics.flashFree;
++    }
++
++    // Apply Wi-Fi metrics
++    if (wifiLines.length > 0 && wifiLines[0] !== "NO_WIFI") {
++      metrics.wifi.supported = true;
++      metrics.wifi.connected = wifiLines[0] === "1";
++      metrics.wifi.ip = wifiLines[1] || "";
++      metrics.wifi.ssid = wifiLines[2] || "";
++    } else if (wifiLines[0] === "NO_WIFI") {
++      metrics.wifi.supported = false;
+     }
+ 
+-    return metrics;
++    // Apply Boot Log — written by safe boot.py on each reboot
++    const rawLog = bootLogLines.join("").trim();
++    if (rawLog && rawLog !== "NO_LOG") {
++      metrics.bootLog.hasLog = true;
++      if (rawLog.startsWith("OK:")) {
++        metrics.bootLog.status = "ok";
++        metrics.bootLog.ip = rawLog.slice(3);
++        metrics.bootLog.detail = `Remote access active — ${metrics.bootLog.ip}`;
++      } else if (rawLog.startsWith("WIFI_TIMEOUT:")) {
++        metrics.bootLog.status = "timeout";
++        metrics.bootLog.detail = "Wi-Fi not available — USB mode only";
++      } else if (rawLog.startsWith("ERROR:")) {
++        metrics.bootLog.status = "error";
++        metrics.bootLog.detail = `Boot error: ${rawLog.slice(6)}`;
++      } else {
++        metrics.bootLog.status = "unknown";
++        metrics.bootLog.detail = rawLog;
++      }
++    }
++  } catch (err) {
++    console.error("Failed to gather metrics:", err);
++  } finally {
++    if (fs.existsSync(tempScriptPath)) {
++      fs.unlinkSync(tempScriptPath);
++    }
++  }
++
++  return metrics;
+ }
+ 
+ /**
+  * Format bytes to readable strings like "145 KB" or "2.1 MB"
+  */
+ function formatBytes(bytes) {
+-    if (bytes === 0) return '0 B';
+-    const k = 1024;
+-    const sizes = ['B', 'KB', 'MB', 'GB'];
+-    const i = Math.floor(Math.log(bytes) / Math.log(k));
+-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' <span class="unit">' + sizes[i] + '</span>';
++  if (bytes === 0) return "0 B";
++  const k = 1024;
++  const sizes = ["B", "KB", "MB", "GB"];
++  const i = Math.floor(Math.log(bytes) / Math.log(k));
++  return (
++    parseFloat((bytes / Math.pow(k, i)).toFixed(1)) +
++    ' <span class="unit">' +
++    sizes[i] +
++    "</span>"
++  );
+ }
+ 
+ /**
+  * Creates the sleek SVG Donut Chart HTML
+  */
+ function createDonutChart(used, total) {
+-    if (total === 0) return `<div class="donut-fallback">N/A</div>`;
+-    
+-    // Calculate SVG Stroke Dash Array for the circle percentage
+-    const percentage = Math.round((used / total) * 100);
+-    const radius = 50;
+-    const circumference = 2 * Math.PI * radius;
+-    const strokeDasharray = `${(percentage / 100) * circumference} ${circumference}`;
+-
+-    // Color logic (green -> yellow -> red based on usage)
+-    let color = '#10b981'; // green
+-    if (percentage > 70) color = '#f59e0b'; // yellow
+-    if (percentage > 90) color = '#ef4444'; // red
+-
+-    return `
++  if (total === 0) return `<div class="donut-fallback">N/A</div>`;
++
++  // Calculate SVG Stroke Dash Array for the circle percentage
++  const percentage = Math.round((used / total) * 100);
++  const radius = 50;
++  const circumference = 2 * Math.PI * radius;
++  const strokeDasharray = `${(percentage / 100) * circumference} ${circumference}`;
++
++  // Color logic (green -> yellow -> red based on usage)
++  let color = "#10b981"; // green
++  if (percentage > 70) color = "#f59e0b"; // yellow
++  if (percentage > 90) color = "#ef4444"; // red
++
++  return `
+         <div class="chart-container">
+             <svg width="140" height="140" viewBox="0 0 120 120">
+                 <circle class="donut-bg" cx="60" cy="60" r="${radius}" fill="none" stroke="#2d2d3d" stroke-width="12"></circle>
+@@ -251,10 +340,16 @@ function createDonutChart(used, total) {
+  */
+ let PINOUT_DATA = {};
+ try {
+-    const pinoutsPath = path.join(__dirname, '..', 'resource', 'pinouts', 'pinouts.json');
+-    PINOUT_DATA = JSON.parse(fs.readFileSync(pinoutsPath, 'utf8'));
++  const pinoutsPath = path.join(
++    __dirname,
++    "..",
++    "resource",
++    "pinouts",
++    "pinouts.json",
++  );
++  PINOUT_DATA = JSON.parse(fs.readFileSync(pinoutsPath, "utf8"));
+ } catch (e) {
+-    // fallback — empty, pinout section will show nothing
++  // fallback — empty, pinout section will show nothing
+ }
+ 
+ /**
+@@ -265,54 +360,68 @@ try {
+  * @returns {string} key into PINOUT_DATA
+  */
+ function resolvePinoutKey(platform, mcuFromCfg) {
+-    // 1. device.cfg mcu is most specific — sys.platform returns 'rp2' for BOTH RP2040 and RP2350
+-    //    so cfg takes priority to get the correct board name
+-    if (mcuFromCfg) {
+-        const m = mcuFromCfg.toLowerCase().trim();
+-        if (PINOUT_DATA[m]) return m;
+-        // prefix matches: rp2350w → rp2350_w, rp2w → rp2_w, etc.
+-        /** @type {Array<[RegExp, string]>} */
+-        const aliases = [
+-            // Full human-readable names (from project wizard board picker)
+-            [/pico\s*2\s*w/i,           'rp2350_w'],
+-            [/pico\s*2/i,               'rp2350'],
+-            [/pico\s*w/i,               'rp2_w'],
+-            [/pico/i,                   'rp2'],
+-            // Short codes
+-            [/^rp2350.?w/,              'rp2350_w'],
+-            [/^rp2350/,                 'rp2350'],
+-            [/^rp2.?w/,                 'rp2_w'],
+-            [/^rp2/,                    'rp2'],
+-            [/^esp32/,                  'esp32'],
+-            [/^esp8266/,                'esp8266'],
+-            [/^samd/,                   'samd'],
+-            [/^stm32/,                  'stm32'],
+-            [/^mimxrt/,                 'mimxrt'],
+-            [/^nrf/,                    'nrf'],
+-        ];
+-        for (const [re, key] of aliases) {
+-            if (re.test(m) && PINOUT_DATA[key]) return key;
+-        }
++  // 1. device.cfg mcu is most specific — sys.platform returns 'rp2' for BOTH RP2040 and RP2350
++  //    so cfg takes priority to get the correct board name
++  if (mcuFromCfg) {
++    const m = mcuFromCfg.toLowerCase().trim();
++    if (PINOUT_DATA[m]) return m;
++    // prefix matches: rp2350w → rp2350_w, rp2w → rp2_w, etc.
++    /** @type {Array<[RegExp, string]>} */
++    const aliases = [
++      // Full human-readable names (from project wizard board picker)
++      [/pico\s*2\s*w/i, "rp2350_w"],
++      [/pico\s*2/i, "rp2350"],
++      [/pico\s*w/i, "rp2_w"],
++      [/pico/i, "rp2"],
++      // Short codes
++      [/^rp2350.?w/, "rp2350_w"],
++      [/^rp2350/, "rp2350"],
++      [/^rp2.?w/, "rp2_w"],
++      [/^rp2/, "rp2"],
++      [/^esp32/, "esp32"],
++      [/^esp8266/, "esp8266"],
++      [/^samd/, "samd"],
++      [/^stm32/, "stm32"],
++      [/^mimxrt/, "mimxrt"],
++      [/^nrf/, "nrf"],
++    ];
++    for (const [re, key] of aliases) {
++      if (re.test(m) && PINOUT_DATA[key]) return key;
+     }
++  }
+ 
+-    // 2. Fall back to sys.platform from connected device
+-    if (platform && platform !== 'Unknown' && PINOUT_DATA[platform]) return platform;
++  // 2. Fall back to sys.platform from connected device
++  if (platform && platform !== "Unknown" && PINOUT_DATA[platform])
++    return platform;
+ 
+-    // 3. Default to first key in pinouts.json
+-    return Object.keys(PINOUT_DATA)[0] || 'rp2';
++  // 3. Default to first key in pinouts.json
++  return Object.keys(PINOUT_DATA)[0] || "rp2";
+ }
+ 
+ /**
+  * Get Color class for pin based on its name
+  */
+ function getPinClass(pinName) {
+-    const p = pinName.toUpperCase();
+-    if (p.includes('GND')) return 'gnd';
+-    if (p.includes('3V3') || p.includes('VBUS') || p.includes('VSYS') || p.includes('VIN') || p.includes('5V')) return 'pwr';
+-    if (p.includes('A0') || p.includes('A1') || p.includes('A2') || p.includes('ADC')) return 'adc';
+-    if (p.includes('EN') || p.includes('RUN') || p.includes('RST')) return 'ctrl';
+-    if (p.includes('TX') || p.includes('RX')) return 'uart';
+-    return 'gpio';
++  const p = pinName.toUpperCase();
++  if (p.includes("GND")) return "gnd";
++  if (
++    p.includes("3V3") ||
++    p.includes("VBUS") ||
++    p.includes("VSYS") ||
++    p.includes("VIN") ||
++    p.includes("5V")
++  )
++    return "pwr";
++  if (
++    p.includes("A0") ||
++    p.includes("A1") ||
++    p.includes("A2") ||
++    p.includes("ADC")
++  )
++    return "adc";
++  if (p.includes("EN") || p.includes("RUN") || p.includes("RST")) return "ctrl";
++  if (p.includes("TX") || p.includes("RX")) return "uart";
++  return "gpio";
+ }
+ 
+ /**
+@@ -320,39 +429,40 @@ function getPinClass(pinName) {
+  * @param {string} pinoutKey - resolved key from resolvePinoutKey()
+  */
+ function createPinoutHtml(pinoutKey) {
+-    const data = PINOUT_DATA[pinoutKey] || PINOUT_DATA[Object.keys(PINOUT_DATA)[0]];
+-    
+-    let leftHtml = '';
+-    let rightHtml = '';
+-    
+-    // Generate Left Pins
+-    for (const pin of data.left) {
+-        const pClass = getPinClass(pin);
+-        leftHtml += `
++  const data =
++    PINOUT_DATA[pinoutKey] || PINOUT_DATA[Object.keys(PINOUT_DATA)[0]];
++
++  let leftHtml = "";
++  let rightHtml = "";
++
++  // Generate Left Pins
++  for (const pin of data.left) {
++    const pClass = getPinClass(pin);
++    leftHtml += `
+             <div class="pin-row">
+                 <div class="pin left ${pClass}"><span class="pin-label">${pin}</span></div>
+             </div>
+         `;
+-    }
++  }
+ 
+-    // Generate Right Pins
+-    for (const pin of data.right) {
+-        const pClass = getPinClass(pin);
+-        rightHtml += `
++  // Generate Right Pins
++  for (const pin of data.right) {
++    const pClass = getPinClass(pin);
++    rightHtml += `
+             <div class="pin-row">
+                 <div class="pin right ${pClass}"><span class="pin-label">${pin}</span></div>
+             </div>
+         `;
+-    }
++  }
+ 
+-    return `
++  return `
+         <div class="pinout-header">
+             <h3>🧷 Hardware Pinout Diagram</h3>
+             <span class="badg">${data.name}</span>
+         </div>
+         <div class="pinout-wrapper">
+             <div class="board-chip">
+-                <div class="chip-label">${data.name.split(' ')[0]}</div>
++                <div class="chip-label">${data.name.split(" ")[0]}</div>
+                 <div class="pins-left">${leftHtml}</div>
+                 <div class="pins-right">${rightHtml}</div>
+             </div>
+@@ -373,7 +483,7 @@ function createPinoutHtml(pinoutKey) {
+  * Generates the full HTML for the Webview
+  */
+ function getWebviewContent(metrics) {
+-    return `<!DOCTYPE html>
++  return `<!DOCTYPE html>
+ <html lang="en">
+ <head>
+     <meta charset="UTF-8">
+@@ -587,156 +697,327 @@ function getWebviewContent(metrics) {
+             0% { stroke-dasharray: 0 314; }
+         }
+ 
+-        /* Pinout Diagram Styles */
+-        .pinout-card {
+-            grid-column: 1 / -1;
+-            align-items: center;
+-        }
+-        
+-        .pinout-header {
+-            width: 100%;
+-            display: flex;
+-            justify-content: space-between;
+-            align-items: center;
+-            margin-bottom: 24px;
+-        }
+-        
+-        .pinout-header h3 {
+-            margin: 0;
+-            color: var(--text-muted);
+-            font-size: 16px;
+-            text-transform: uppercase;
+-            letter-spacing: 1px;
+-        }
++    /* --- PINOUT CARD ENHANCEMENTS --- */
++    
+ 
+-        .badg {
+-            background-color: rgba(59, 130, 246, 0.2);
+-            color: #60a5fa;
+-            padding: 4px 12px;
+-            border-radius: 999px;
+-            font-size: 12px;
+-            font-weight: 600;
+-        }
++.pinout-card {
++    grid-column: 1 / -1;
++    overflow-x: auto;
++}
+ 
+-        .pinout-wrapper {
+-            display: flex;
+-            flex-direction: column;
+-            align-items: center;
+-            width: 100%;
+-            position: relative;
+-        }
++.pinout-header {
++    display: flex;
++    justify-content: space-between;
++    align-items: center;
++    margin-bottom: 12px;   /* reduced */
++    flex-wrap: wrap;
++    gap: 8px;              /* reduced */
++}
+ 
+-        .board-chip {
+-            background-color: #111115;
+-            border: 2px solid #333;
+-            border-radius: 8px;
+-            min-height: 400px;
+-            width: 140px;
+-            position: relative;
+-            display: flex;
+-            justify-content: space-between;
+-            box-shadow: inset 0 0 20px rgba(0,0,0,0.8), 0 10px 30px rgba(0,0,0,0.4);
+-            margin: 20px 0 40px 0;
+-            padding: 24px 0;
+-        }
++.pinout-header h3 {
++    margin: 0;
++    font-size: 16px;
++    font-weight: 600;
++    display: flex;
++    align-items: center;
++    gap: 8px;
++    color: var(--text-main);
++}
+ 
+-        .board-chip::after {
+-            content: '';
+-            position: absolute;
+-            top: 10px;
+-            left: 50%;
+-            transform: translateX(-50%);
+-            width: 16px;
+-            height: 16px;
+-            border-radius: 50%;
+-            background: #000;
+-            border: 2px solid #222;
+-        }
++.badge {
++    background: rgba(59, 130, 246, 0.15);
++    color: #60a5fa;
++    padding: 3px 12px;
++    border-radius: 20px;
++    font-size: 11px;
++    font-weight: 600;
++    backdrop-filter: blur(2px);
++    border: 1px solid rgba(96, 165, 250, 0.2);
++}
+ 
+-        .chip-label {
+-            position: absolute;
+-            top: 50%;
+-            left: 50%;
+-            transform: translate(-50%, -50%) rotate(-90deg);
+-            color: #333;
+-            font-size: 32px;
+-            font-weight: 800;
+-            letter-spacing: 8px;
+-            pointer-events: none;
+-        }
++.pinout-wrapper {
++    display: flex;
++    flex-direction: column;
++    align-items: center;
++    width: 100%;
++}
+ 
+-        .pins-left, .pins-right {
+-            display: flex;
+-            flex-direction: column;
+-            gap: 12px;
+-        }
++/* CHIP – compact */
++.board-chip {
++    background: linear-gradient(145deg, #1e1e2a 0%, #111115 100%);
++    border: 1px solid rgba(255,255,255,0.08);
++    border-radius: 24px;
++    min-width: 220px;
++    width: auto;
++    max-width: 100%;
++    position: relative;
++    display: flex;
++    justify-content: space-between;
++    box-shadow: 0 20px 35px -10px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
++    margin: 20px 0 30px 0;
++    padding: 32px 12px;
++}
+ 
+-        .pin-row {
+-            height: 8px;
+-            display: flex;
+-            align-items: center;
+-        }
++.board-chip::after {
++    content: '';
++    position: absolute;
++    top: 12px;
++    left: 50%;
++    transform: translateX(-50%);
++    width: 20px;
++    height: 20px;
++    border-radius: 50%;
++    background: #000;
++    border: 2px solid #2a2a2a;
++    box-shadow: 0 0 6px rgba(0,0,0,0.4);
++}
+ 
+-        .pin {
+-            width: 12px;
+-            height: 8px;
+-            background: #c0c0c0;
+-            position: relative;
+-            box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+-        }
++.chip-label {
++    position: absolute;
++    top: 50%;
++    left: 50%;
++    transform: translate(-50%, -50%) rotate(-90deg);
++    font-size: 24px;
++    font-weight: 800;
++    letter-spacing: 4px;
++    color: rgba(148, 163, 184, 0.15);
++    text-transform: uppercase;
++    white-space: nowrap;
++    pointer-events: none;
++    font-family: 'Segoe UI', 'SF Pro Text', system-ui, sans-serif;
++}
+ 
+-        .pin.left {
+-            border-radius: 0 3px 3px 0;
+-            margin-left: -6px;
+-        }
+-        
+-        .pin.right {
+-            border-radius: 3px 0 0 3px;
+-            margin-right: -6px;
+-        }
++/* PIN COLUMNS – tighter spacing */
++.pins-left, .pins-right {
++    display: flex;
++    flex-direction: column;
++    gap: 14px;
++}
+ 
+-        .pin-label {
+-            position: absolute;
+-            top: 50%;
+-            transform: translateY(-50%);
+-            font-family: "JetBrains Mono", "Fira Code", monospace;
+-            font-size: 11px;
+-            font-weight: 600;
+-            white-space: nowrap;
+-        }
++.pin-row {
++    display: flex;
++    align-items: center;
++    height: 28px;
++}
+ 
+-        .pin.left .pin-label { right: 20px; text-align: right; }
+-        .pin.right .pin-label { left: 20px; text-align: left; }
++.pin {
++    position: relative;
++    width: 18px;
++    height: 10px;
++    background: #cbd5e1;
++    border-radius: 2px;
++    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
++    transition: all 0.15s ease;
++    cursor: default;
++}
+ 
+-        /* Pin Colors */
+-        .pin.pwr { background: #ef4444; }
+-        .pin.pwr .pin-label { color: #ef4444; }
+-        
+-        .pin.gnd { background: #1a1a24; border: 1px solid #444; }
+-        .pin.gnd .pin-label { color: #888; }
+-        
+-        .pin.gpio { background: #10b981; }
+-        .pin.gpio .pin-label { color: #10b981; }
+-        
+-        .pin.adc { background: #a855f7; }
+-        .pin.adc .pin-label { color: #a855f7; }
+-        
+-        .pin.uart { background: #3b82f6; }
+-        .pin.uart .pin-label { color: #3b82f6; }
+-        
+-        .pin.ctrl { background: #f59e0b; }
+-        .pin.ctrl .pin-label { color: #f59e0b; }
++.pin:hover {
++    transform: scaleX(1.1);
++    filter: brightness(1.1);
++}
+ 
+-        .pin-legend {
+-            width: 100%;
+-            display: flex;
+-            justify-content: center;
+-            flex-wrap: wrap;
++/* pin labels – adjust positioning for smaller pins */
++.pin-label {
++    position: absolute;
++    top: 50%;
++    transform: translateY(-50%);
++    font-family: 'JetBrains Mono', monospace;
++    font-size: 11px;
++    font-weight: 500;
++    white-space: nowrap;
++    background: rgba(0,0,0,0.6);
++    padding: 2px 6px;
++    border-radius: 6px;
++    backdrop-filter: blur(4px);
++    opacity: 0.9;
++    pointer-events: none;
++}
++
++.pin.left .pin-label {
++    right: 22px;
++    text-align: right;
++}
++
++.pin.right .pin-label {
++    left: 22px;
++    text-align: left;
++}
++
++/* legend – compact */
++.pin-legend {
++    display: flex;
++    flex-wrap: wrap;
++    justify-content: center;
++    gap: 8px;              /* reduced gap */
++    background: rgba(255,255,255,0.03);
++    backdrop-filter: blur(8px);
++    border-radius: 32px;
++    padding: 8px 16px;     /* less padding */
++    margin-top: 12px;      /* reduced */
++    border: 1px solid rgba(255,255,255,0.05);
++    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
++}
++
++.legend-item {
++    display: inline-flex;
++    align-items: center;
++    gap: 6px;              /* smaller gap */
++    background: rgba(0,0,0,0.3);
++    padding: 3px 10px;     /* less padding */
++    border-radius: 24px;
++    font-size: 10px;       /* smaller font */
++    font-weight: 500;
++    color: var(--text-main);
++    transition: all 0.2s;
++    cursor: default;
++    border: 1px solid rgba(255,255,255,0.02);
++}
++
++.legend-item:hover {
++    transform: translateY(-1px);
++    background: rgba(255,255,255,0.1);
++    border-color: rgba(255,255,255,0.2);
++}
++
++.dot {
++    width: 8px;            /* smaller dot */
++    height: 8px;
++    border-radius: 50%;
++    box-shadow: 0 1px 1px rgba(0,0,0,0.2);
++    transition: transform 0.1s;
++}
++
++/* responsive – ensure it still fits */
++@media (max-width: 550px) {
++    .board-chip {
++        flex-direction: column;
++        align-items: center;
++        gap: 12px;
++        padding: 16px 8px;
++    }
++    .pins-left, .pins-right {
++        width: 80%;
++        gap: 6px;
++    }
++    .chip-label {
++        font-size: 14px;
++        letter-spacing: 1px;
++    }
++    .pin-legend {
++        gap: 6px;
++        padding: 6px 12px;
++    }
++    .legend-item {
++        padding: 2px 8px;
++        font-size: 9px;
++    }
++}
++
++    /* PIN COLOR OVERRIDES (keep your existing colors) */
++    .pin.pwr { background: #ef4444; }
++    .pin.pwr .pin-label { color: #ef4444; background: rgba(0,0,0,0.7); }
++
++    .pin.gnd { background: #6b7280; border: none; }
++    .pin.gnd .pin-label { color: #9ca3af; }
++
++    .pin.gpio { background: #10b981; }
++    .pin.gpio .pin-label { color: #10b981; }
++
++    .pin.adc { background: #a855f7; }
++    .pin.adc .pin-label { color: #a855f7; }
++
++    .pin.uart { background: #3b82f6; }
++    .pin.uart .pin-label { color: #3b82f6; }
++
++    .pin.ctrl { background: #f59e0b; }
++    .pin.ctrl .pin-label { color: #f59e0b; }
++
++    /* LEGEND – BEAUTIFIED */
++    .pin-legend {
++        display: flex;
++        flex-wrap: wrap;
++        justify-content: center;
++        gap: 12px;
++        background: rgba(255,255,255,0.03);
++        backdrop-filter: blur(8px);
++        border-radius: 48px;
++        padding: 12px 24px;
++        margin-top: 20px;
++        border: 1px solid rgba(255,255,255,0.05);
++        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
++    }
++
++    .legend-item {
++        display: inline-flex;
++        align-items: center;
++        gap: 8px;
++        background: rgba(0,0,0,0.3);
++        padding: 5px 14px;
++        border-radius: 32px;
++        font-size: 12px;
++        font-weight: 500;
++        color: var(--text-main);
++        transition: all 0.2s cubic-bezier(0.2, 0.9, 0.4, 1.1);
++        cursor: default;
++        border: 1px solid rgba(255,255,255,0.02);
++    }
++
++    .legend-item:hover {
++        transform: translateY(-2px);
++        background: rgba(255,255,255,0.1);
++        border-color: rgba(255,255,255,0.2);
++    }
++
++    .dot {
++        width: 12px;
++        height: 12px;
++        border-radius: 50%;
++        box-shadow: 0 1px 2px rgba(0,0,0,0.2);
++        transition: transform 0.1s;
++    }
++
++    .legend-item:hover .dot {
++        transform: scale(1.2);
++    }
++
++    /* Dot colors – gradients for extra flair */
++    .dot.pwr { background: linear-gradient(135deg, #ef4444, #dc2626); }
++    .dot.gnd { background: linear-gradient(135deg, #6b7280, #4b5563); }
++    .dot.gpio { background: linear-gradient(135deg, #10b981, #059669); }
++    .dot.adc { background: linear-gradient(135deg, #a855f7, #9333ea); }
++    .dot.uart { background: linear-gradient(135deg, #3b82f6, #2563eb); }
++    .dot.ctrl { background: linear-gradient(135deg, #f59e0b, #d97706); }
++
++    /* Responsive adjustments */
++    @media (max-width: 550px) {
++        .board-chip {
++            flex-direction: column;
++            align-items: center;
+             gap: 16px;
+-            margin-top: 20px;
+-            padding-top: 20px;
+-            border-top: 1px solid var(--card-border);
++            padding: 24px 12px;
++        }
++        .pins-left, .pins-right {
++            width: 80%;
++        }
++        .pin.left, .pin.right {
++            margin: 0 auto;
++        }
++        .chip-label {
++            font-size: 20px;
++            letter-spacing: 2px;
++            white-space: normal;
++            text-align: center;
++            width: 100%;
++        }
++        .pin-legend {
++            padding: 10px 16px;
++            gap: 8px;
++        }
++        .legend-item {
++            padding: 4px 10px;
++            font-size: 11px;
+         }
++    }
+ 
+         .legend-item {
+             display: flex;
+@@ -958,37 +1239,102 @@ function getWebviewContent(metrics) {
+         </div>
+ 
+         <!-- Wi-Fi Manager Card -->
+-        ${metrics.wifi.supported ? `
++        ${
++          metrics.wifi.supported
++            ? `
+         <div class="card wifi-card" id="wifiCard">
+             <h2>📶 Wi-Fi Manager</h2>
+ 
+             <div id="wifiStatusArea">
+-                ${metrics.wifi.connected
++                ${
++                  metrics.wifi.connected
+                     ? `<div class="wifi-status-badge connected"><span class="wifi-dot"></span> Connected</div>
+                        <div class="wifi-info-row">
+-                           <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">${metrics.wifi.ssid || '—'}</span></div>
++                           <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">${metrics.wifi.ssid || "—"}</span></div>
+                            <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp">${metrics.wifi.ip}</span></div>
+                        </div>`
+                     : `<div class="wifi-status-badge disconnected"><span class="wifi-dot"></span> Not Connected</div>`
+                 }
+-                ${metrics.bootLog.hasLog ? `
++                ${
++                  metrics.bootLog.hasLog
++                    ? `
+                 <div class="boot-log-row boot-log-${metrics.bootLog.status}" id="bootLogRow">
+-                    <span class="boot-log-icon">${metrics.bootLog.status === 'ok' ? '✅' : metrics.bootLog.status === 'timeout' ? '⚠️' : '❌'}</span>
++                    <span class="boot-log-icon">${metrics.bootLog.status === "ok" ? "✅" : metrics.bootLog.status === "timeout" ? "⚠️" : "❌"}</span>
+                     <span class="boot-log-text">Last boot: ${metrics.bootLog.detail}</span>
+                     <button class="btn btn-danger btn-sm" id="disableRemoteBtn" style="margin-left:auto">🔒 Disable Remote Access</button>
+-                </div>` : ''}
++                </div>`
++                    : ""
++                }
+             </div>
+ 
+             <div class="wifi-actions" id="wifiActionsBar">
+                 <button class="btn btn-primary" id="scanBtn">🔍 Scan Networks</button>
+-                ${metrics.wifi.connected
++                ${
++                  metrics.wifi.connected
+                     ? `<button class="btn btn-ghost" id="disconnectBtn">Disconnect</button>`
+-                    : ''}
++                    : ""
++                }
+             </div>
+ 
+             <div class="wifi-scan-area" id="wifiScanArea" style="display:none"></div>
+ 
+-            ${metrics.wifi.connected ? `
++            ${
++              metrics.firmware === "CircuitPython"
++                ? `
++            <div class="webrepl-area" id="webWorkflowArea">
++                <div class="toggle-row">
++                    <div style="flex:1">
++                        <div class="toggle-label">🌐 Web Workflow (CircuitPython Wi-Fi)</div>
++                        <div class="toggle-sub">Configure Wi-Fi + API access via <code>settings.toml</code> on the CIRCUITPY drive</div>
++                    </div>
++                    <button class="btn-sm btn-accent" id="webWorkflowToggleBtn" onclick="toggleWebWorkflowForm()">Configure</button>
++                </div>
++                <div id="webWorkflowForm" style="display:none;margin-top:14px">
++                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
++                        <div>
++                            <div class="wlabel" style="margin-bottom:4px">Wi-Fi SSID</div>
++                            <input class="wifi-input" id="cpWifiSsid" type="text" placeholder="YourNetworkName" />
++                        </div>
++                        <div>
++                            <div class="wlabel" style="margin-bottom:4px">Wi-Fi Password</div>
++                            <input class="wifi-input" id="cpWifiPass" type="password" placeholder="Wi-Fi password" />
++                        </div>
++                        <div>
++                            <div class="wlabel" style="margin-bottom:4px">API Password</div>
++                            <input class="wifi-input" id="cpApiPass" type="text" placeholder="webworkflow password" />
++                        </div>
++                        <div>
++                            <div class="wlabel" style="margin-bottom:4px">API Port</div>
++                            <input class="wifi-input" id="cpApiPort" type="number" placeholder="80" value="80" />
++                        </div>
++                    </div>
++                    <div style="font-size:11px;color:#94a3b8;margin-bottom:10px">
++                        ⚠️ CIRCUITPY drive must be mounted (USB). After saving, reset the board to apply.
++                    </div>
++                    <div style="display:flex;gap:8px">
++                        <button class="btn-sm btn-accent" onclick="saveWebWorkflow()">💾 Save to settings.toml</button>
++                        <button class="btn-sm" onclick="detectWebWorkflowIp()" style="margin-left:6px;">🔍 Detect IP</button>
++                        <div style="margin-top:6px;font-size:11px;color:#94a3b8;">⚠️ Stop running code first (press <b>Stop</b> or <b>Ctrl+C</b> in REPL) — CircuitPython locks the drive while code is active.</div>
++                        <div style="font-size:11px;color:#94a3b8;margin-top:2px;">After saving, power-cycle the board, then click <b>Detect IP</b> to read the assigned address.</div>
++                        <button class="btn-sm" onclick="document.getElementById('webWorkflowForm').style.display='none'">Cancel</button>
++                    </div>
++                    <div id="webWorkflowStatus" style="margin-top:8px;font-size:12px"></div>
++                </div>
++                ${
++                  metrics.wifi.connected
++                    ? `
++                <div class="webrepl-ip-box" style="margin-top:12px">
++                    <div style="flex:1">
++                        <div class="webrepl-ip-label">🌐 Web Workflow IP</div>
++                        <div class="webrepl-ip-val">${metrics.wifi.ip}</div>
++                        <div style="font-size:11px;color:#94a3b8;margin-top:4px">Access at http://${metrics.wifi.ip}/edit/</div>
++                    </div>
++                </div>`
++                    : ""
++                }
++            </div>`
++                : metrics.wifi.connected
++                  ? `
+             <div class="webrepl-area" id="webReplArea">
+                 <div class="toggle-row">
+                     <label class="toggle">
+@@ -1001,8 +1347,12 @@ function getWebviewContent(metrics) {
+                     </div>
+                 </div>
+                 <div id="webReplInfoBox" style="display:none"></div>
+-            </div>` : ''}
+-            ${metrics.bootLog.status === 'ok' ? `
++            </div>`
++                  : ""
++            }
++            ${
++              metrics.bootLog.status === "ok"
++                ? `
+             <div class="webrepl-ip-box" id="webReplActiveBox">
+                 <div style="flex:1">
+                     <div class="webrepl-ip-label">⭐ Remote Access Active  ·  Password: micro123</div>
+@@ -1013,12 +1363,16 @@ function getWebviewContent(metrics) {
+                     <button class="btn btn-warning" id="switchWirelessBtnStatic">⚡ Switch to Wireless</button>
+                     <button class="btn btn-danger btn-sm" id="disableRemoteBtnBox">🔒 Disable</button>
+                 </div>
+-            </div>` : ''}
+-        </div>` : `
++            </div>`
++                : ""
++            }
++        </div>`
++            : `
+         <div class="card wifi-card">
+             <h2>📶 Wi-Fi Manager</h2>
+             <div class="wifi-status-badge no-wifi"><span class="wifi-dot"></span> Wi-Fi Not Supported on this board</div>
+-        </div>`}
++        </div>`
++        }
+ 
+     </div>
+ 
+@@ -1071,6 +1425,34 @@ function getWebviewContent(metrics) {
+             });
+         }
+ 
++        // ── CircuitPython Web Workflow ───────────────────────────────────────
++        function toggleWebWorkflowForm() {
++            const form = document.getElementById('webWorkflowForm');
++            if (!form) return;
++            form.style.display = form.style.display === 'none' ? 'block' : 'none';
++        }
++
++        function detectWebWorkflowIp() {
++            const statusEl = document.getElementById('webWorkflowStatus');
++            if (statusEl) statusEl.innerHTML = '<span style="color:#94a3b8">🔍 Detecting IP from boot_out.txt…</span>';
++            vscode.postMessage({ command: 'detectWebWorkflowIp' });
++        }
++
++        function saveWebWorkflow() {
++            const ssid       = document.getElementById('cpWifiSsid')?.value.trim();
++            const wifiPass   = document.getElementById('cpWifiPass')?.value;
++            const apiPass    = document.getElementById('cpApiPass')?.value.trim();
++            const apiPort    = parseInt(document.getElementById('cpApiPort')?.value || '80', 10);
++            const statusEl   = document.getElementById('webWorkflowStatus');
++
++            if (!ssid || !wifiPass || !apiPass) {
++                if (statusEl) statusEl.innerHTML = '<span style="color:#ef4444">⚠️ All fields are required.</span>';
++                return;
++            }
++            if (statusEl) statusEl.innerHTML = '<span style="color:#94a3b8">Saving…</span>';
++            vscode.postMessage({ command: 'saveWebWorkflow', ssid, wifiPassword: wifiPass, apiPassword: apiPass, apiPort });
++        }
++
+         // ── Message receiver ────────────────────────────────────────────────
+         window.addEventListener('message', event => {
+             const msg = event.data;
+@@ -1197,6 +1579,24 @@ function getWebviewContent(metrics) {
+                 if (box) box.style.display = 'none';
+             }
+ 
++            if (msg.command === 'webWorkflowIpDetected') {
++                const statusEl = document.getElementById('webWorkflowStatus');
++                if (statusEl) {
++                    const col = msg.ip ? '#10b981' : '#f59e0b';
++                    statusEl.innerHTML = '<span style="color:' + col + '">' + msg.message + '</span>';
++                }
++            }
++
++            if (msg.command === 'webWorkflowSaved') {
++                const statusEl = document.getElementById('webWorkflowStatus');
++                if (statusEl) {
++                    statusEl.innerHTML = msg.success
++                        ? '<span style="color:#10b981">' + msg.message + '</span>'
++                        : '<span style="color:#ef4444">' + msg.message + '</span>' +
++                          (!msg.success ? '<br><span style="color:#94a3b8;font-size:11px;">Tip: Press Stop / Ctrl+C in the REPL to unlock the drive, then try again.</span>' : '');
++                }
++            }
++
+             // Refresh the card after disabling remote access
+             if (msg.command === 'remoteAccessDisabled') {
+                 const bootLogRow = document.getElementById('bootLogRow');
+@@ -1246,7 +1646,7 @@ function getWebviewContent(metrics) {
+  * Safely escape a string for embedding inside a Python single-quoted string literal.
+  */
+ function escapePy(s) {
+-    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
++  return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+ }
+ 
+ /**
+@@ -1258,30 +1658,47 @@ function escapePy(s) {
+  * @param {string} devicePort     - COM port or ws: address
+  * @param {vscode.OutputChannel} outputChannel
+  */
+-async function runDeviceScript(scriptContent, tempName, workspaceRoot, devicePort, outputChannel) {
+-    const tempPath = path.join(workspaceRoot, tempName);
+-    try {
+-        fs.writeFileSync(tempPath, scriptContent, 'utf8');
+-
+-        // ws: ports need mpremotesubpro.py — mpremote has no WebSocket transport
+-        if (devicePort && devicePort.startsWith('ws:')) {
+-            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+-            const subpro = path.join(__dirname, 'mpremotesubpro.py');
+-            return await new Promise((resolve) => {
+-                execFile(venvPython, [
+-                    subpro, '--python', venvPython,
+-                    'run_mcu', '--port', devicePort, '--file', tempPath
+-                ], { timeout: 30000 }, (_err, stdout) => resolve(stdout || ''));
+-            });
+-        }
+-
+-        const args = devicePort
+-            ? ['connect', devicePort, 'run', `"${tempPath}"`]
+-            : ['run', `"${tempPath}"`];
+-        return await runMpremote(outputChannel, args);
+-    } finally {
+-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
++async function runDeviceScript(
++  scriptContent,
++  tempName,
++  workspaceRoot,
++  devicePort,
++  outputChannel,
++) {
++  const tempPath = path.join(workspaceRoot, tempName);
++  try {
++    fs.writeFileSync(tempPath, scriptContent, "utf8");
++
++    // ws: ports need mpremotesubpro.py — mpremote has no WebSocket transport
++    if (devicePort && devicePort.startsWith("ws:")) {
++      const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
++      const subpro = path.join(__dirname, "mpremotesubpro.py");
++      return await new Promise((resolve) => {
++        execFile(
++          venvPython,
++          [
++            subpro,
++            "--python",
++            venvPython,
++            "run_mcu",
++            "--port",
++            devicePort,
++            "--file",
++            tempPath,
++          ],
++          { timeout: 30000 },
++          (_err, stdout) => resolve(stdout || ""),
++        );
++      });
+     }
++
++    const args = devicePort
++      ? ["connect", devicePort, "run", `"${tempPath}"`]
++      : ["run", `"${tempPath}"`];
++    return await runMpremote(outputChannel, args);
++  } finally {
++    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
++  }
+ }
+ 
+ /**
+@@ -1291,69 +1708,86 @@ async function runDeviceScript(scriptContent, tempName, workspaceRoot, devicePor
+  * @param {string} currentDevicePort  - COM port or ws: address
+  * @param {function} onPortUpdate     - Optional callback(newPort) when user switches to wireless
+  */
+-async function openDeviceDashboard(context, outputChannel, currentDevicePort, onPortUpdate) {
+-    if (!currentDevicePort) {
+-        vscode.window.showWarningMessage('No device connected. Please run "Refresh Device Files" first.');
+-        return;
+-    }
+-
+-    // Track active port (may change to ws: during session)
+-    let activePort = currentDevicePort;
+-
+-    const panel = vscode.window.createWebviewPanel(
+-        'deviceDashboard',
+-        `Device: ${currentDevicePort}`,
+-        vscode.ViewColumn.One,
+-        { enableScripts: true }
++async function openDeviceDashboard(
++  context,
++  outputChannel,
++  currentDevicePort,
++  onPortUpdate,
++) {
++  if (!currentDevicePort) {
++    vscode.window.showWarningMessage(
++      'No device connected. Please run "Refresh Device Files" first.',
+     );
++    return;
++  }
++
++  // Track active port (may change to ws: during session)
++  let activePort = currentDevicePort;
++
++  const panel = vscode.window.createWebviewPanel(
++    "deviceDashboard",
++    `Device: ${currentDevicePort}`,
++    vscode.ViewColumn.One,
++    { enableScripts: true },
++  );
++
++  const workspaceFolders = vscode.workspace.workspaceFolders;
++  if (!workspaceFolders || workspaceFolders.length === 0) {
++    vscode.window.showErrorMessage(
++      "You must have a project workspace open to use the Dashboard.",
++    );
++    panel.dispose();
++    return;
++  }
++  const workspaceRoot = workspaceFolders[0].uri.fsPath;
+ 
+-    const workspaceFolders = vscode.workspace.workspaceFolders;
+-    if (!workspaceFolders || workspaceFolders.length === 0) {
+-        vscode.window.showErrorMessage('You must have a project workspace open to use the Dashboard.');
+-        panel.dispose();
+-        return;
+-    }
+-    const workspaceRoot = workspaceFolders[0].uri.fsPath;
+-
+-    // Loading screen
+-    panel.webview.html = `<!DOCTYPE html><html><head><style>
++  // Loading screen
++  panel.webview.html = `<!DOCTYPE html><html><head><style>
+         body{background:#1a1a24;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:20px}
+         .loader{border:4px solid rgba(255,255,255,0.1);border-top-color:#3b82f6;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite}
+         @keyframes spin{to{transform:rotate(360deg)}}
+     </style></head><body><div class="loader"></div><div>Fetching telemetry from ${currentDevicePort}…</div></body></html>`;
+ 
+-    const updateDashboard = async () => {
+-        try {
+-            const metrics = await gatherDeviceMetrics(outputChannel, workspaceRoot, activePort);
+-
+-            // Read mcu from device.cfg for pinout fallback (used when device not connected)
+-            let mcuFromCfg = '';
+-            try {
+-                const cfgPath = path.join(workspaceRoot, 'device.cfg');
+-                mcuFromCfg = (await getConfigValue(cfgPath, 'device', 'mcu')) || '';
+-            } catch (_) {}
+-
+-            metrics.pinoutKey = resolvePinoutKey(metrics.platform, mcuFromCfg);
+-            panel.webview.html = getWebviewContent(metrics);
+-        } catch (err) {
+-            panel.webview.html = `<body style="background:#1a1a24;color:#ef4444;padding:32px"><h2>Error</h2><p>${err.message}</p></body>`;
+-        }
+-    };
+-
+-    // ── Message handler ───────────────────────────────────────────────────────
+-    panel.webview.onDidReceiveMessage(async message => {
++  const updateDashboard = async () => {
++    try {
++      const metrics = await gatherDeviceMetrics(
++        outputChannel,
++        workspaceRoot,
++        activePort,
++      );
++
++      // Read mcu from device.cfg for pinout fallback (used when device not connected)
++      let mcuFromCfg = "";
++      try {
++        const cfgPath = path.join(workspaceRoot, "device.cfg");
++        mcuFromCfg = (await getConfigValue(cfgPath, "device", "mcu")) || "";
++      } catch (_) {}
++
++      metrics.pinoutKey = resolvePinoutKey(metrics.platform, mcuFromCfg);
++      panel.webview.html = getWebviewContent(metrics);
++    } catch (err) {
++      const errMsg = err instanceof Error ? err.message : String(err);
++      panel.webview.html =
++        '<body style="background:#1a1a24;color:#ef4444;padding:32px"><h2>Error</h2><p>' +
++        errMsg +
++        "</p></body>";
++    }
++  };
+ 
+-        if (message.command === 'refreshMetrics') {
+-            updateDashboard();
+-            return;
+-        }
++  // ── Message handler ───────────────────────────────────────────────────────
++  panel.webview.onDidReceiveMessage(
++    async (message) => {
++      if (message.command === "refreshMetrics") {
++        updateDashboard();
++        return;
++      }
+ 
+-        // ── Wi-Fi Scan ──────────────────────────────────────────────────────
+-        if (message.command === 'scanWifi') {
+-            const script = `import network
+-sta = network.WLAN(network.STA_IF)
+-sta.active(True)
+-try:
++      // ── Wi-Fi Scan ──────────────────────────────────────────────────────
++      if (message.command === "scanWifi") {
++        const script = `try:
++    import network
++    sta = network.WLAN(network.STA_IF)
++    sta.active(True)
+     nets = sta.scan()
+     for n in nets:
+         try:
+@@ -1363,139 +1797,316 @@ try:
+                 print(ssid + '|' + str(rssi))
+         except:
+             pass
++except ImportError:
++    import wifi
++    for n in wifi.radio.start_scanning_networks():
++        try:
++            if n.ssid:
++                print(str(n.ssid) + '|' + str(n.rssi))
++        except:
++            pass
++    wifi.radio.stop_scanning_networks()
+ except Exception as e:
+     print('ERROR|' + str(e))
+ `;
+-            try {
+-                const raw = await runDeviceScript(script, '.wifi_scan.py', workspaceRoot, activePort, outputChannel);
+-                const networks = raw.split('\n')
+-                    .map(l => l.trim()).filter(l => l && !l.startsWith('ERROR'))
+-                    .map(l => { const [ssid, rssi] = l.split('|'); return { ssid: ssid || l, rssi: parseInt(rssi) || 0 }; })
+-                    .sort((a, b) => b.rssi - a.rssi); // strongest first
+-                panel.webview.postMessage({ command: 'wifiResults', networks });
+-            } catch (err) {
+-                panel.webview.postMessage({ command: 'wifiConnectError', message: `Scan failed: ${err.message}` });
+-            }
+-            return;
++        try {
++          const raw = await runDeviceScript(
++            script,
++            "_wifi_scan.py",
++            workspaceRoot,
++            activePort,
++            outputChannel,
++          );
++          const networks = raw
++            .split("\n")
++            .map((l) => l.trim())
++            .filter((l) => l && !l.startsWith("ERROR"))
++            .map((l) => {
++              const [ssid, rssi] = l.split("|");
++              return { ssid: ssid || l, rssi: parseInt(rssi) || 0 };
++            })
++            .sort((a, b) => b.rssi - a.rssi); // strongest first
++          panel.webview.postMessage({ command: "wifiResults", networks });
++        } catch (err) {
++          panel.webview.postMessage({
++            command: "wifiConnectError",
++            message: `Scan failed: ${err.message}`,
++          });
+         }
+-
+-        // ── Wi-Fi Connect ───────────────────────────────────────────────────
+-        if (message.command === 'connectWifi') {
+-            const ssid = escapePy(message.ssid);
+-            const pwd  = escapePy(message.password);
+-            const script = `import network, time
+-sta = network.WLAN(network.STA_IF)
+-sta.active(True)
+-if sta.isconnected():
+-    sta.disconnect()
+-    time.sleep(1)
+-sta.connect('${ssid}', '${pwd}')
+-for i in range(15):
++        return;
++      }
++
++      // ── Wi-Fi Connect ───────────────────────────────────────────────────
++      if (message.command === "connectWifi") {
++        const ssid = escapePy(message.ssid);
++        const pwd = escapePy(message.password);
++        const script = `try:
++    import network, time
++    sta = network.WLAN(network.STA_IF)
++    sta.active(True)
+     if sta.isconnected():
+-        cfg = sta.ifconfig()
+-        print('OK|' + cfg[0])
+-        break
+-    time.sleep(1)
+-else:
+-    print('FAIL|')
++        sta.disconnect()
++        time.sleep(1)
++    sta.connect('${ssid}', '${pwd}')
++    for i in range(15):
++        if sta.isconnected():
++            cfg = sta.ifconfig()
++            print('OK|' + cfg[0])
++            break
++        time.sleep(1)
++    else:
++        print('FAIL|')
++except ImportError:
++    import wifi
++    try:
++        wifi.radio.connect('${ssid}', '${pwd}')
++        print('OK|' + str(wifi.radio.ipv4_address))
++    except Exception as e:
++        print('FAIL|' + str(e))
++except Exception as e:
++    print('FAIL|' + str(e))
+ `;
+-            try {
+-                const raw = await runDeviceScript(script, '.wifi_connect.py', workspaceRoot, activePort, outputChannel);
+-                const line = raw.split('\n').find(l => l.startsWith('OK|') || l.startsWith('FAIL|')) || 'FAIL|';
+-                const [status, ip] = line.split('|');
+-                panel.webview.postMessage({
+-                    command: 'wifiConnectDone',
+-                    success: status === 'OK',
+-                    ip: ip || '',
+-                    ssid: message.ssid
+-                });
+-            } catch (err) {
+-                panel.webview.postMessage({ command: 'wifiConnectDone', success: false, ip: '', ssid: message.ssid });
+-            }
+-            return;
+-        }
+-
+-        // ── Wi-Fi Disconnect ────────────────────────────────────────────────
+-        if (message.command === 'disconnectWifi') {
+-            const script = `import network\nsta = network.WLAN(network.STA_IF)\nsta.disconnect()\nprint('OK')\n`;
+-            try {
+-                await runDeviceScript(script, '.wifi_disconnect.py', workspaceRoot, activePort, outputChannel);
+-            } catch (_) {}
+-            updateDashboard();
+-            return;
++        try {
++          const raw = await runDeviceScript(
++            script,
++            "_wifi_connect.py",
++            workspaceRoot,
++            activePort,
++            outputChannel,
++          );
++          const line =
++            raw
++              .split("\n")
++              .find((l) => l.startsWith("OK|") || l.startsWith("FAIL|")) ||
++            "FAIL|";
++          const [status, ip] = line.split("|");
++          panel.webview.postMessage({
++            command: "wifiConnectDone",
++            success: status === "OK",
++            ip: ip || "",
++            ssid: message.ssid,
++          });
++        } catch (err) {
++          panel.webview.postMessage({
++            command: "wifiConnectDone",
++            success: false,
++            ip: "",
++            ssid: message.ssid,
++          });
+         }
++        return;
++      }
+ 
+-        // ── Enable WebREPL ──────────────────────────────────────────────────
+-        if (message.command === 'enableWebrepl') {
+-            let ssid = message.ssid || '';
+-            let password = message.password || '';
+-
+-            // If credentials weren't sent from webview (board was already connected
+-            // when dashboard opened), ask the user now
+-            if (!ssid) {
+-                ssid = await vscode.window.showInputBox({
+-                    prompt: 'Enter your Wi-Fi network name (SSID) for auto-connect on boot',
+-                    placeHolder: 'e.g. MyHomeNetwork'
+-                });
+-                if (!ssid) { panel.webview.postMessage({ command: 'webReplCancelled' }); return; }
+-                password = await vscode.window.showInputBox({
+-                    prompt: `Enter password for "${ssid}"`,
+-                    password: true,
+-                    placeHolder: 'Wi-Fi password'
+-                }) || '';
+-            }
+-
+-            // Warning modal — user must explicitly confirm before boot.py is touched
+-            const confirmed = await vscode.window.showWarningMessage(
+-                `This will write boot.py on your device.\n\nOn every boot, the board will try to connect to "${ssid}" and start WebREPL.\n\nIf Wi-Fi is unavailable the board still starts normally — USB serial is never affected.\n\nTo undo at any time: Dashboard → Disable Remote Access`,
+-                { modal: true },
+-                'I understand — Enable Remote Access'
++      // ── Wi-Fi Disconnect ────────────────────────────────────────────────
++      if (message.command === "disconnectWifi") {
++        const script = `try:
++    import network
++    sta = network.WLAN(network.STA_IF)
++    sta.disconnect()
++except ImportError:
++    pass
++print('OK')
++`;
++        try {
++          await runDeviceScript(
++            script,
++            "_wifi_disconnect.py",
++            workspaceRoot,
++            activePort,
++            outputChannel,
++          );
++        } catch (_) {}
++        updateDashboard();
++        return;
++      }
++
++      // ── Enable WebREPL ──────────────────────────────────────────────────
++      // ── CircuitPython Web Workflow — detect IP from boot_out.txt ─────────
++      if (message.command === "detectWebWorkflowIp") {
++        const {
++          findCircuitPyDrive: findDriveForIp,
++        } = require("./circuitpyDrive");
++        const drive = findDriveForIp();
++        let ip = "";
++        if (drive) {
++          try {
++            const bootOut = require("fs").readFileSync(
++              require("path").join(drive, "boot_out.txt"),
++              "utf8",
++            );
++            // CircuitPython writes lines like: "IP address: 192.168.1.x"
++            const m = bootOut.match(
++              /(?:IP\s+address|ip)[\s:]+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/i,
+             );
+-            if (!confirmed) { panel.webview.postMessage({ command: 'webReplCancelled' }); return; }
+-
+-            // Escape single quotes for embedding in Python string literals
+-            const safeSsid     = ssid.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+-            const safePassword = password.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+-
+-            // The safe boot.py template:
+-            //  • time.sleep(2) first — USB CDC initialises before any risky code runs
+-            //  • Full try/except — any crash is caught, USB serial stays alive
+-            //  • Writes mps_boot.log — Dashboard reads this to show last-boot status
+-            const bootPyContent = [
+-                '# MicroPython Studio - Remote Access Boot',
+-                '# To disable: Dashboard > Disable Remote Access',
+-                'import time',
+-                'time.sleep(2)  # USB CDC must be up before any network code runs',
+-                '',
+-                'def _log(msg):',
+-                '    try:',
+-                '        with open(\'mps_boot.log\', \'w\') as f:',
+-                '            f.write(msg)',
+-                '    except:',
+-                '        pass',
+-                '    print(\'[MPS]\', msg)',
+-                '',
+-                'try:',
+-                '    import network',
+-                '    sta = network.WLAN(network.STA_IF)',
+-                '    sta.active(True)',
+-                `    sta.connect('${safeSsid}', '${safePassword}')`,
+-                '    for _ in range(15):',
+-                '        if sta.isconnected():',
+-                '            break',
+-                '        time.sleep(1)',
+-                '    if sta.isconnected():',
+-                '        ip = sta.ifconfig()[0]',
+-                '        import webrepl',
+-                '        webrepl.start()',
+-                '        _log(\'OK:\' + ip)',
+-                '    else:',
+-                '        _log(\'WIFI_TIMEOUT:not available\')',
+-                'except Exception as e:',
+-                '    _log(\'ERROR:\' + str(e))',
+-            ].join('\\n');
+-
+-            const script = `import network, sys
++            if (m) ip = m[1];
++          } catch (_) {}
++        }
++        if (ip) {
++          const cfgPath = path.join(workspaceRoot, "device.cfg");
++          await updateCfgComponent(cfgPath, "remote", "webworkflow_ip", ip);
++        }
++        panel.webview.postMessage({
++          command: "webWorkflowIpDetected",
++          ip,
++          message: ip
++            ? `✅ IP detected: ${ip} — saved to device.cfg.`
++            : `⚠️ IP not found in boot_out.txt. Power-cycle the board and try again.`,
++        });
++        return;
++      }
++
++      // ── CircuitPython Web Workflow — save settings.toml ─────────────────
++      if (message.command === "saveWebWorkflow") {
++        const { writeSettingsToml } = require("./circuitpyWebWorkflow");
++        const { findCircuitPyDrive } = require("./circuitpyDrive"); // eslint-disable-line no-shadow
++
++        // Try to find the CIRCUITPY USB drive
++        const drive = findCircuitPyDrive();
++        if (!drive) {
++          panel.webview.postMessage({
++            command: "webWorkflowSaved",
++            success: false,
++            message:
++              "CIRCUITPY drive not found. Make sure the USB cable is connected and the board is not in safe mode.",
++          });
++          return;
++        }
++
++        const result = /** @type {{ok:boolean, error?:string}} */ (
++          /** @type {unknown} */ (
++            writeSettingsToml(drive, {
++              ssid: message.ssid,
++              wifiPassword: message.wifiPassword,
++              apiPassword: message.apiPassword,
++              apiPort: message.apiPort || 80,
++            })
++          )
++        );
++
++        // Also persist Web Workflow credentials into device.cfg [remote] section
++        if (result.ok) {
++          const cfgPath = path.join(workspaceRoot, "device.cfg");
++          await updateCfgComponent(cfgPath, "remote", "webworkflow_ip", "");
++          await updateCfgComponent(
++            cfgPath,
++            "remote",
++            "webworkflow_password",
++            message.apiPassword,
++          );
++          await updateCfgComponent(
++            cfgPath,
++            "remote",
++            "webworkflow_port",
++            String(message.apiPort || 80),
++          );
++        }
++
++        panel.webview.postMessage({
++          command: "webWorkflowSaved",
++          success: result.ok,
++          message: result.ok
++            ? `✅ settings.toml saved to ${drive} — power-cycle the board to connect.`
++            : `❌ ${result.error}`,
++        });
++        return;
++      }
++
++      if (message.command === "enableWebrepl") {
++        // CircuitPython does not support WebREPL — uses Web Workflow via settings.toml instead
++        const cfgPathWr = path.join(workspaceRoot, "device.cfg");
++        const fwType = await getConfigValue(
++          cfgPathWr,
++          "device",
++          "device_firmware",
++        ).catch(() => "");
++        if (fwType === "CircuitPython") {
++          panel.webview.postMessage({
++            command: "wifiConnectError",
++            message:
++              "WebREPL is not supported on CircuitPython. Use Web Workflow via settings.toml instead.",
++          });
++          return;
++        }
++
++        let ssid = message.ssid || "";
++        let password = message.password || "";
++
++        // If credentials weren't sent from webview (board was already connected
++        // when dashboard opened), ask the user now
++        if (!ssid) {
++          ssid = await vscode.window.showInputBox({
++            prompt:
++              "Enter your Wi-Fi network name (SSID) for auto-connect on boot",
++            placeHolder: "e.g. MyHomeNetwork",
++          });
++          if (!ssid) {
++            panel.webview.postMessage({ command: "webReplCancelled" });
++            return;
++          }
++          password =
++            (await vscode.window.showInputBox({
++              prompt: `Enter password for "${ssid}"`,
++              password: true,
++              placeHolder: "Wi-Fi password",
++            })) || "";
++        }
++
++        // Warning modal — user must explicitly confirm before boot.py is touched
++        const confirmed = await vscode.window.showWarningMessage(
++          `This will write boot.py on your device.\n\nOn every boot, the board will try to connect to "${ssid}" and start WebREPL.\n\nIf Wi-Fi is unavailable the board still starts normally — USB serial is never affected.\n\nTo undo at any time: Dashboard → Disable Remote Access`,
++          { modal: true },
++          "I understand — Enable Remote Access",
++        );
++        if (!confirmed) {
++          panel.webview.postMessage({ command: "webReplCancelled" });
++          return;
++        }
++
++        // Escape single quotes for embedding in Python string literals
++        const safeSsid = ssid.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
++        const safePassword = password
++          .replace(/\\/g, "\\\\")
++          .replace(/'/g, "\\'");
++
++        // The safe boot.py template:
++        //  • time.sleep(2) first — USB CDC initialises before any risky code runs
++        //  • Full try/except — any crash is caught, USB serial stays alive
++        //  • Writes mps_boot.log — Dashboard reads this to show last-boot status
++        const bootPyContent = [
++          "# MicroPython Studio - Remote Access Boot",
++          "# To disable: Dashboard > Disable Remote Access",
++          "import time",
++          "time.sleep(2)  # USB CDC must be up before any network code runs",
++          "",
++          "def _log(msg):",
++          "    try:",
++          "        with open('mps_boot.log', 'w') as f:",
++          "            f.write(msg)",
++          "    except:",
++          "        pass",
++          "    print('[MPS]', msg)",
++          "",
++          "try:",
++          "    import network",
++          "    sta = network.WLAN(network.STA_IF)",
++          "    sta.active(True)",
++          `    sta.connect('${safeSsid}', '${safePassword}')`,
++          "    for _ in range(15):",
++          "        if sta.isconnected():",
++          "            break",
++          "        time.sleep(1)",
++          "    if sta.isconnected():",
++          "        ip = sta.ifconfig()[0]",
++          "        import webrepl",
++          "        webrepl.start()",
++          "        _log('OK:' + ip)",
++          "    else:",
++          "        _log('WIFI_TIMEOUT:not available')",
++          "except Exception as e:",
++          "    _log('ERROR:' + str(e))",
++        ].join("\\n");
++
++        const script = `import network, sys
+ sta = network.WLAN(network.STA_IF)
+ ip = sta.ifconfig()[0] if sta.isconnected() else ''
+ try:
+@@ -1515,31 +2126,47 @@ try:
+ except Exception as e:
+     print('FAIL|' + str(e))
+ `;
+-            try {
+-                const raw = await runDeviceScript(script, '.webrepl_setup.py', workspaceRoot, activePort, outputChannel);
+-                const line = raw.split('\n').find(l => l.startsWith('OK|') || l.startsWith('FAIL|')) || 'FAIL|';
+-                const [status, ipVal] = line.split('|');
+-                if (status === 'OK') {
+-                    panel.webview.postMessage({ command: 'webReplEnabled', ip: ipVal });
+-                } else {
+-                    panel.webview.postMessage({ command: 'wifiConnectError', message: `WebREPL failed: ${ipVal}` });
+-                }
+-            } catch (err) {
+-                panel.webview.postMessage({ command: 'wifiConnectError', message: `WebREPL error: ${err.message}` });
+-            }
+-            return;
++        try {
++          const raw = await runDeviceScript(
++            script,
++            "_webrepl_setup.py",
++            workspaceRoot,
++            activePort,
++            outputChannel,
++          );
++          const line =
++            raw
++              .split("\n")
++              .find((l) => l.startsWith("OK|") || l.startsWith("FAIL|")) ||
++            "FAIL|";
++          const [status, ipVal] = line.split("|");
++          if (status === "OK") {
++            panel.webview.postMessage({ command: "webReplEnabled", ip: ipVal });
++          } else {
++            panel.webview.postMessage({
++              command: "wifiConnectError",
++              message: `WebREPL failed: ${ipVal}`,
++            });
++          }
++        } catch (err) {
++          panel.webview.postMessage({
++            command: "wifiConnectError",
++            message: `WebREPL error: ${err.message}`,
++          });
+         }
+-
+-        // ── Disable Remote Access — writes a clean boot.py, removes config files ──
+-        if (message.command === 'disableRemoteAccess') {
+-            const confirmed = await vscode.window.showWarningMessage(
+-                'This will overwrite boot.py on your device and disable automatic Wi-Fi / WebREPL on boot.',
+-                { modal: true },
+-                'Disable Remote Access'
+-            );
+-            if (!confirmed) return;
+-
+-            const script = `import os
++        return;
++      }
++
++      // ── Disable Remote Access — writes a clean boot.py, removes config files ──
++      if (message.command === "disableRemoteAccess") {
++        const confirmed = await vscode.window.showWarningMessage(
++          "This will overwrite boot.py on your device and disable automatic Wi-Fi / WebREPL on boot.",
++          { modal: true },
++          "Disable Remote Access",
++        );
++        if (!confirmed) return;
++
++        const script = `import os
+ try:
+     with open('boot.py', 'w') as f:
+         f.write('# boot.py\\n# Remote access disabled by MicroPython Studio\\n')
+@@ -1552,48 +2179,70 @@ try:
+ except Exception as e:
+     print('FAIL|' + str(e))
+ `;
+-            try {
+-                const raw = await runDeviceScript(script, '.webrepl_disable.py', workspaceRoot, activePort, outputChannel);
+-                if (raw.includes('OK')) {
+-                    vscode.window.showInformationMessage('Remote access disabled. The board will no longer auto-connect to Wi-Fi on boot.');
+-                    panel.webview.postMessage({ command: 'remoteAccessDisabled' });
+-                }
+-            } catch (err) {
+-                vscode.window.showErrorMessage(`Failed to disable remote access: ${err.message}`);
+-            }
+-            return;
+-        }
+-
+-        // ── Switch to Wireless ──────────────────────────────────────────────
+-        if (message.command === 'switchToWireless') {
+-            const wsPort = `ws:${message.ip},micro123`;
+-            activePort = wsPort;
+-            panel.title = `Device: ${wsPort}`;
+-            if (typeof onPortUpdate === 'function') {
+-                onPortUpdate(wsPort);
+-            }
+-
+-            // Persist WebREPL details to device.cfg so the extension
+-            // can auto-connect wirelessly next time — no USB required
+-            try {
+-                const cfgPath = path.join(workspaceRoot, 'device.cfg');
+-                await updateCfgComponent(cfgPath, 'remote', 'webrepl_enabled', 'true');
+-                await updateCfgComponent(cfgPath, 'remote', 'webrepl_ip', message.ip);
+-                await updateCfgComponent(cfgPath, 'remote', 'webrepl_password', 'micro123');
+-            } catch (e) {
+-                console.error('Failed to save WebREPL details to device.cfg:', e);
+-            }
+-
++        try {
++          const raw = await runDeviceScript(
++            script,
++            "_webrepl_disable.py",
++            workspaceRoot,
++            activePort,
++            outputChannel,
++          );
++          if (raw.includes("OK")) {
+             vscode.window.showInformationMessage(
+-                `Switched to wireless: ${wsPort}. IP saved — extension will auto-connect next time.`
++              "Remote access disabled. The board will no longer auto-connect to Wi-Fi on boot.",
+             );
+-            return;
++            panel.webview.postMessage({ command: "remoteAccessDisabled" });
++          }
++        } catch (err) {
++          vscode.window.showErrorMessage(
++            `Failed to disable remote access: ${err.message}`,
++          );
+         }
++        return;
++      }
+ 
+-    }, undefined, context.subscriptions);
++      // ── Switch to Wireless ──────────────────────────────────────────────
++      if (message.command === "switchToWireless") {
++        const wsPort = `ws:${message.ip},micro123`;
++        activePort = wsPort;
++        panel.title = `Device: ${wsPort}`;
++        if (typeof onPortUpdate === "function") {
++          onPortUpdate(wsPort);
++        }
+ 
+-    // Initial fetch
+-    updateDashboard();
++        // Persist WebREPL details to device.cfg so the extension
++        // can auto-connect wirelessly next time — no USB required
++        try {
++          const cfgPath = path.join(workspaceRoot, "device.cfg");
++          await updateCfgComponent(
++            cfgPath,
++            "remote",
++            "webrepl_enabled",
++            "true",
++          );
++          await updateCfgComponent(cfgPath, "remote", "webrepl_ip", message.ip);
++          await updateCfgComponent(
++            cfgPath,
++            "remote",
++            "webrepl_password",
++            "micro123",
++          );
++        } catch (e) {
++          console.error("Failed to save WebREPL details to device.cfg:", e);
++        }
++
++        vscode.window.showInformationMessage(
++          `Switched to wireless: ${wsPort}. IP saved — extension will auto-connect next time.`,
++        );
++        return;
++      }
++    },
++    undefined,
++    context.subscriptions,
++  );
++
++  // Initial fetch
++  updateDashboard();
+ }
+ 
+ module.exports = { openDeviceDashboard };
+diff --git a/src/deviceFileExplorer.js b/src/deviceFileExplorer.js
+index e3b95a1..51ae205 100644
+--- a/src/deviceFileExplorer.js
++++ b/src/deviceFileExplorer.js
+@@ -79,13 +79,28 @@ class DeviceFileExplorerProvider {
+         this._cache = new Map(); // cache directory listings
+     }
+ 
++    /**
++     * Set the TreeView instance so we can update its title dynamically.
++     * @param {vscode.TreeView<vscode.TreeItem>} treeView
++     */
++    setTreeView(treeView) {
++        this._treeView = treeView;
++    }
++
+     /**
+      * Update the device port and refresh the tree.
+      * @param {string|null} port
++     * @param {string|null} deviceCodeDir
++     * @param {boolean} isCircuitPython
+      */
+-    setPort(port) {
++    setPort(port, deviceCodeDir = null, isCircuitPython = false) {
+         this._port = port;
++        this._deviceCodeDir = deviceCodeDir;
++        this._isCircuitPython = isCircuitPython;
+         this._cache.clear();
++        if (this._treeView) {
++            this._treeView.title = isCircuitPython ? 'Device Files (CircuitPython)' : 'Device Files (MicroPython)';
++        }
+         this._onDidChangeTreeData.fire();
+     }
+ 
+@@ -129,6 +144,47 @@ class DeviceFileExplorerProvider {
+         const venvFolder = getVenvPythonPathFolder();
+         const venvPython = getVenvPythonPath(venvFolder);
+ 
++        // If it's a CircuitPython project and we have a local drive path (e.g. E:\),
++        // we can read it directly from the OS much faster and without mpremote errors!
++        if (this._isCircuitPython && this._deviceCodeDir) {
++            return new Promise((resolve) => {
++                try {
++                    // Map device path (e.g. '/lib') to the local drive path (e.g. 'E:\lib')
++                    const localPath = dirPath === '/' 
++                        ? this._deviceCodeDir 
++                        : pathMod.join(this._deviceCodeDir, dirPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++                    
++                    const items = [];
++                    const entries = fs.readdirSync(localPath, { withFileTypes: true });
++
++                    for (const entry of entries) {
++                        // Skip hidden system files that CircuitPython auto-creates or Windows adds
++                        if (entry.name === 'System Volume Information' || entry.name.startsWith('._')) continue;
++
++                        const isDir = entry.isDirectory();
++                        const stat = fs.statSync(pathMod.join(localPath, entry.name));
++                        const size = stat.size;
++                        const fullPath = dirPath === '/' ? `/${entry.name}` : `${dirPath}/${entry.name}`;
++                        
++                        items.push(new DeviceFileItem(entry.name, isDir ? null : size, isDir, fullPath));
++                    }
++
++                    items.sort((a, b) => {
++                        if (a.isDirectory && !b.isDirectory) return -1;
++                        if (!a.isDirectory && b.isDirectory) return 1;
++                        return String(a.label).localeCompare(String(b.label));
++                    });
++
++                    this._cache.set(dirPath, items);
++                    resolve(items);
++                } catch (error) {
++                    console.error(`Local fs direct read error for CP: ${error.message}`);
++                    const errItem = new vscode.TreeItem('$(warning) File system unavailable', vscode.TreeItemCollapsibleState.None);
++                    resolve([/** @type {any} */ (errItem)]);
++                }
++            });
++        }
++
+         return new Promise((resolve) => {
+             const cmd = `"${venvPython}" -m mpremote connect ${this._port} fs ls ${dirPath}`;
+ 
+@@ -136,11 +192,11 @@ class DeviceFileExplorerProvider {
+                 if (error) {
+                     console.error(`Device ls error: ${error.message}`);
+                     const errItem = new vscode.TreeItem(
+-                        '$(warning) Failed to read device',
++                        '$(warning) Failed to read device files',
+                         vscode.TreeItemCollapsibleState.None
+                     );
+                     errItem.tooltip = error.message;
+-                    resolve([errItem]);
++                    resolve([/** @type {any} */ (errItem)]);
+                     return;
+                 }
+ 
+@@ -264,7 +320,13 @@ class DeviceFileExplorerProvider {
+             if (srcPath === destPath) continue;   // already in that location
+ 
+             try {
+-                await this._moveFileOnDevice(srcPath, destPath);
++                if (this._isCircuitPython && this._deviceCodeDir) {
++                    const localSrc = pathMod.join(this._deviceCodeDir, srcPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++                    const localDest = pathMod.join(this._deviceCodeDir, destPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++                    fs.renameSync(localSrc, localDest);
++                } else {
++                    await this._moveFileOnDevice(srcPath, destPath);
++                }
+                 moved++;
+             } catch (err) {
+                 vscode.window.showErrorMessage(
+@@ -364,6 +426,18 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
+ 
+     if (confirm !== 'Delete') return;
+ 
++    if (provider._isCircuitPython && provider._deviceCodeDir) {
++        try {
++            const localPath = pathMod.join(provider._deviceCodeDir, deviceFilePath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++            fs.unlinkSync(localPath);
++            vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
++            provider.refresh();
++        } catch (error) {
++            vscode.window.showErrorMessage(`Failed to delete ${deviceFilePath}: ${error.message}`);
++        }
++        return;
++    }
++
+     const venvFolder = getVenvPythonPathFolder();
+     const venvPython = getVenvPythonPath(venvFolder);
+     const cmd = `"${venvPython}" -m mpremote connect ${port} fs rm :${deviceFilePath}`;
+@@ -398,6 +472,18 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
+     );
+     if (confirm !== 'Delete') return;
+ 
++    if (provider._isCircuitPython && provider._deviceCodeDir) {
++        try {
++            const localPath = pathMod.join(provider._deviceCodeDir, deviceFolderPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++            fs.rmSync(localPath, { recursive: true, force: true });
++            vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
++            provider.refresh();
++        } catch (error) {
++            vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${error.message}`);
++        }
++        return;
++    }
++
+     const venvFolder = getVenvPythonPathFolder();
+     const venvPython = getVenvPythonPath(venvFolder);
+ 
+diff --git a/src/extension.js b/src/extension.js
+index 60b7681..79eba66 100644
+--- a/src/extension.js
++++ b/src/extension.js
+@@ -14,11 +14,12 @@ const { createNewProject } = require('./createNewProject');
+ const { getValidDevicePort } = require('./refreshSettings');
+ const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue } = require('./commonFxn');
+ const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder } = require('./deviceFileExplorer');
+-const { openPackageManager } = require('./packageManager');
++const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
+ const { flashFirmware, downloadFirmware } = require('./flashFirmware');
+ const { updateCfgComponent } = require('./commonFxn');
+ const { openDeviceDashboard } = require('./deviceDashboard');
+ const { openWebReplTerminal } = require('./webReplTerminal');
++const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive } = require('./circuitpyDrive');
+ 
+ // ─── Global State ────────────────────────────────────────────────────────────
+ 
+@@ -27,6 +28,7 @@ const outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
+ let gMpremoteTerminal = null;
+ let gRemoteDevicePort = null;
+ let gDeviceCodeDir = null;
++let gDeviceFirmware = 'MicroPython'; // 'MicroPython' | 'CircuitPython'
+ let currentTarget = 'Host';
+ 
+ // ─── Status Bar Items (stored for cleanup) ───────────────────────────────────
+@@ -310,14 +312,22 @@ function activate(context) {
+                     const comValues = await getValidDevicePort(resource);
+                     gRemoteDevicePort = comValues[0];
+                     gDeviceCodeDir = comValues[1];
++                    gDeviceFirmware = comValues[2];
++
++                    // Set context key so package.json `when` clauses can react
++                    vscode.commands.executeCommand('setContext',
++                        'micropythonStudio.isCircuitPython',
++                        gDeviceFirmware === 'CircuitPython');
++
+                     updateDeviceStatusBar();
+ 
+                     // Update the device file explorer with the new port
+                     if (deviceFileExplorer) {
+-                        deviceFileExplorer.setPort(gRemoteDevicePort);
++                        const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
++                        deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
+                     }
+ 
+-                    console.log('Device port:', gRemoteDevicePort, 'Code dir:', gDeviceCodeDir);
++                    console.log('Device port:', gRemoteDevicePort, 'Code dir:', gDeviceCodeDir, 'Firmware:', gDeviceFirmware);
+                 }
+             );
+         })
+@@ -366,6 +376,25 @@ function activate(context) {
+             const runPort = gRemoteDevicePort;
+             if (!runPort) return;
+ 
++            // ── CircuitPython: mpremote mount not supported — use mpremote run ──────
++            // mpremote run uses raw REPL (identical protocol in CP and MP), so it
++            // works on CircuitPython without any special handling.
++            const isCpDrive = gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\');
++            const isCircuitPython = gDeviceFirmware === 'CircuitPython' || isCpDrive;
++            if (isCircuitPython) {
++                const scriptPath2 = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
++                const cpCmd = [
++                    `"${venvPython}"`, `"${scriptPath2}"`,
++                    `--python "${venvPython}"`,
++                    `run_mcu`,
++                    `--port "${runPort}"`,
++                    `--file "${filePath}"`
++                ].join(' ');
++                terminal.show();
++                terminal.sendText(cpCmd);
++                return;
++            }
++
+             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+             const isMpy = filePath.endsWith('.mpy');
+             const isWireless = runPort.startsWith('ws:');
+@@ -425,6 +454,83 @@ function activate(context) {
+         })
+     );
+ 
++    /**
++     * Upload one or more local files to the CircuitPython USB drive.
++     * @param {string[]} localFiles   Absolute paths of files to copy
++     * @param {string}   localRoot    Strip this prefix when computing dest relative path
++     */
++    async function cpUploadFiles(localFiles, localRoot) {
++        // ── Path 1: USB drive ─────────────────────────────────────────────────
++        const drive = findCircuitPyDrive();
++        if (drive) {
++            const info = readCircuitPyBootInfo(drive);
++            const boardLabel = info ? info.board : drive;
++            let copied = 0;
++            for (const f of localFiles) {
++                try {
++                    const dest = copyToCircuitPyDrive(drive, f, localRoot);
++                    outputChannel.appendLine(`📤 ${path.relative(localRoot, f)} → ${dest}`);
++                    copied++;
++                } catch (err) {
++                    outputChannel.appendLine(`❌ Failed to copy ${f}: ${err.message}`);
++                }
++            }
++            outputChannel.show(true);
++            outputChannel.appendLine(`✅ Copied ${copied} file(s) to ${boardLabel} (${drive})`);
++            return;
++        }
++
++        // ── Path 2: Web Workflow (HTTP) ───────────────────────────────────────
++        const cfgPath = path.join(path.dirname(localRoot), 'device.cfg');
++        const wwIp  = await getConfigValue(cfgPath, 'remote', 'webworkflow_ip').catch(() => '');
++        const wwPass = await getConfigValue(cfgPath, 'remote', 'webworkflow_password').catch(() => '');
++        const wwPort = parseInt(await getConfigValue(cfgPath, 'remote', 'webworkflow_port').catch(() => '80') || '80', 10);
++
++        if (wwIp && wwPass) {
++            const { putFile, makeDir } = require('./circuitpyWebWorkflow');
++            const fsSync = require('fs');
++            outputChannel.show(true);
++            outputChannel.appendLine(`🌐 USB drive not found — uploading via Web Workflow to ${wwIp}:${wwPort}`);
++            let ok = 0;
++            for (const f of localFiles) {
++                const rel = path.relative(localRoot, f).replace(/\\/g, '/');
++                const remotePath = '/' + rel;
++                // Ensure parent directory exists
++                const remoteDir = remotePath.substring(0, remotePath.lastIndexOf('/'));
++                if (remoteDir && remoteDir !== '/') await makeDir(wwIp, wwPass, remoteDir, wwPort);
++                const content = fsSync.readFileSync(f);
++                const success = await putFile(wwIp, wwPass, remotePath, content, wwPort);
++                outputChannel.appendLine(success ? `📤 ${remotePath}` : `❌ Failed: ${remotePath}`);
++                if (success) ok++;
++            }
++            outputChannel.appendLine(`✅ Web Workflow upload: ${ok}/${localFiles.length} file(s)`);
++            return;
++        }
++
++        // ── No path available ─────────────────────────────────────────────────
++        vscode.window.showErrorMessage(
++            'CircuitPython drive (CIRCUITPY) not found and no Web Workflow configured. ' +
++            'Connect via USB or configure Wi-Fi in the Dashboard.'
++        );
++    }
++
++    /**
++     * Determine the correct local root folder for stripping paths during CircuitPython uploads.
++     */
++    function getLocalCodeRootCpy(targetPath) {
++        const wsFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(targetPath));
++        if (wsFolder) {
++            const wsPath = wsFolder.uri.fsPath;
++            // Many projects use a 'main' subfolder. If the target is in 'main', use 'main' as root.
++            const mainPath = path.join(wsPath, 'main');
++            if (targetPath === mainPath || targetPath.startsWith(mainPath + path.sep)) {
++                return mainPath;
++            }
++            return wsPath;
++        }
++        return path.dirname(targetPath);
++    }
++
+     // Upload current file to device root
+     context.subscriptions.push(
+         vscode.commands.registerCommand('micropython-ide.uploadFileToDevice', async (uri) => {
+@@ -433,6 +539,14 @@ function activate(context) {
+                 vscode.window.showWarningMessage('No file selected to upload.');
+                 return;
+             }
++
++            // CircuitPython — copy directly to USB drive, no COM port needed
++            if (gDeviceFirmware === 'CircuitPython') {
++                const localRoot = getLocalCodeRootCpy(filePath);
++                await cpUploadFiles([filePath], localRoot);
++                return;
++            }
++
+             if (!gRemoteDevicePort) {
+                 vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
+                 return;
+@@ -457,6 +571,25 @@ function activate(context) {
+                 vscode.window.showWarningMessage('No folder selected.');
+                 return;
+             }
++
++            // CircuitPython — copy all files to USB drive directly
++            if (gDeviceFirmware === 'CircuitPython') {
++                const fsSync = require('fs');
++                const allFiles = [];
++                /** @param {string} dir */
++                const walk = (dir) => {
++                    for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
++                        const full = path.join(dir, e.name);
++                        if (e.isDirectory()) walk(full);
++                        else allFiles.push(full);
++                    }
++                };
++                walk(folderPath);
++                const localRoot = getLocalCodeRootCpy(folderPath);
++                await cpUploadFiles(allFiles, localRoot);
++                return;
++            }
++
+             if (!gRemoteDevicePort) {
+                 vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
+                 return;
+@@ -482,15 +615,50 @@ function activate(context) {
+     // Upload entire project code folder to device
+     context.subscriptions.push(
+         vscode.commands.registerCommand('micropython-ide.uploadProjectToDevice', async () => {
+-            if (!gRemoteDevicePort) {
+-                vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
+-                return;
+-            }
+             if (!gDeviceCodeDir) {
+                 vscode.window.showWarningMessage('No project detected. Run "Refresh Device Files" first.');
+                 return;
+             }
+ 
++            // CircuitPython — copy all files to USB drive directly
++            if (gDeviceFirmware === 'CircuitPython') {
++                const fsSync = require('fs');
++                let localTarget = gDeviceCodeDir;
++                // If gDeviceCodeDir is the USB drive itself (e.g. E:\), fallback to workspace folder
++                if (localTarget && /^[A-Za-z]:[/\\]?$/.test(localTarget.replace(/[/\\]+$/, '') + '\\')) {
++                    const wsFolders = vscode.workspace.workspaceFolders;
++                    if (wsFolders && wsFolders.length > 0) {
++                        localTarget = wsFolders[0].uri.fsPath;
++                        const mainPath = path.join(localTarget, 'main');
++                        if (fsSync.existsSync(mainPath)) {
++                            localTarget = mainPath;
++                        }
++                    } else {
++                        vscode.window.showWarningMessage('No local project folder to upload.');
++                        return;
++                    }
++                }
++                
++                const allFiles = [];
++                /** @param {string} dir */
++                const walk = (dir) => {
++                    if (!fsSync.existsSync(dir)) return;
++                    for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
++                        const full = path.join(dir, e.name);
++                        if (e.isDirectory()) walk(full);
++                        else allFiles.push(full);
++                    }
++                };
++                walk(localTarget);
++                await cpUploadFiles(allFiles, localTarget);
++                return;
++            }
++
++            if (!gRemoteDevicePort) {
++                vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
++                return;
++            }
++
+             const venvFolder = getVenvPythonPathFolder();
+             const venvPython = getVenvPythonPath(venvFolder);
+             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+@@ -548,7 +716,10 @@ function activate(context) {
+             if (!pick) return;
+             gRemoteDevicePort = /** @type {any} */ (pick).port;
+             updateDeviceStatusBar();
+-            if (deviceFileExplorer) deviceFileExplorer.setPort(gRemoteDevicePort);
++            if (deviceFileExplorer) {
++                const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
++                deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
++            }
+         })
+     );
+ 
+@@ -614,10 +785,65 @@ function activate(context) {
+     // Install package from micropython-lib via mip
+     context.subscriptions.push(
+         vscode.commands.registerCommand('micropython-ide.installPackage', async () => {
+-            const terminal = getMpremoteTerminal();
+-            await openPackageManager(context, gRemoteDevicePort, terminal);
+-            
+-            // Auto refresh the tree view after 5 seconds to show the newly installed /lib folder
++            if (gDeviceFirmware === 'CircuitPython') {
++                // Resolve a real local destination — never the drive itself
++                let localDest = gDeviceCodeDir;
++                if (localDest && /^[A-Za-z]:[/\\]?$/.test(localDest.replace(/[/\\]+$/, '') + '\\')) {
++                    const wsFolders = vscode.workspace.workspaceFolders;
++                    const wsPath    = wsFolders && wsFolders.length > 0 ? wsFolders[0].uri.fsPath : null;
++                    const mainPath  = wsPath ? path.join(wsPath, 'main') : null;
++                    localDest = (mainPath && require('fs').existsSync(mainPath)) ? mainPath : wsPath;
++                }
++
++                const autoSync  = vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
++                                        .get('autoSyncAfterInstall', false);
++
++                /** Called when circup process exits */
++                const afterInstall = async () => {
++                    if (deviceFileExplorer) deviceFileExplorer.refresh();
++
++                    const drive = findCircuitPyDrive();
++                    if (!drive || !localDest) return;
++
++                    if (autoSync) {
++                        // Auto-sync enabled — do it silently
++                        const result = syncFromCircuitPyDrive(drive, localDest);
++                        outputChannel.appendLine(`🔄 Auto-sync: ${result.copied} file(s) copied from ${drive} to local.`);
++                        outputChannel.show(true);
++                    } else {
++                        // Offer sync via notification
++                        const choice = await vscode.window.showInformationMessage(
++                            `Package installed. Sync files from ${drive} to local main/ folder? (settings.toml excluded)`,
++                            'Sync Now',
++                            'Enable Auto-Sync',
++                            'Skip'
++                        );
++                        if (choice === 'Sync Now') {
++                            const result = syncFromCircuitPyDrive(drive, localDest);
++                            outputChannel.appendLine(`🔄 Sync: ${result.copied} file(s) copied from ${drive} to local.`);
++                            if (result.errors.length) result.errors.forEach(e => outputChannel.appendLine(`❌ ${e}`));
++                            outputChannel.show(true);
++                        } else if (choice === 'Enable Auto-Sync') {
++                            await vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
++                                .update('autoSyncAfterInstall', true, vscode.ConfigurationTarget.Global);
++                            const result = syncFromCircuitPyDrive(drive, localDest);
++                            outputChannel.appendLine(`🔄 Sync: ${result.copied} file(s) copied. Auto-sync enabled for future installs.`);
++                            outputChannel.show(true);
++                        }
++                    }
++                };
++
++                await openCircuitPythonPackageManager(
++                    gDeviceCodeDir,
++                    runPythonProcess,
++                    findCircuitPyDrive,
++                    getConfigValue,
++                    afterInstall
++                );
++            } else {
++                const terminal = getMpremoteTerminal();
++                await openPackageManager(context, gRemoteDevicePort, terminal);
++            }
+             setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 5000);
+         })
+     );
+@@ -654,7 +880,10 @@ function activate(context) {
+             await openDeviceDashboard(context, outputChannel, gRemoteDevicePort, (newPort) => {
+                 gRemoteDevicePort = newPort;
+                 updateDeviceStatusBar();
+-                if (deviceFileExplorer) deviceFileExplorer.setPort(newPort);
++                if (deviceFileExplorer) {
++                    const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
++                    deviceFileExplorer.setPort(newPort, gDeviceCodeDir, isCp);
++                }
+             });
+         })
+     );
+@@ -683,6 +912,17 @@ function activate(context) {
+     // Open WebREPL Terminal (browser-based terminal for ws: connections)
+     context.subscriptions.push(
+         vscode.commands.registerCommand('micropython-ide.openWebReplTerminal', async () => {
++            if (gDeviceFirmware === 'CircuitPython') {
++                vscode.window.showInformationMessage(
++                    'WebREPL is not available on CircuitPython. Use Web Workflow instead — configure Wi-Fi in Device Dashboard → Wi-Fi Manager.',
++                    'Open Dashboard'
++                ).then(choice => {
++                    if (choice === 'Open Dashboard') {
++                        vscode.commands.executeCommand('micropython-ide.openDeviceDashboard');
++                    }
++                });
++                return;
++            }
+             await openWebReplTerminal(context, gRemoteDevicePort);
+         })
+     );
+@@ -735,6 +975,7 @@ function activate(context) {
+         showCollapseAll: true,
+         dragAndDropController: deviceFileExplorer
+     });
++    deviceFileExplorer.setTreeView(treeView);
+     context.subscriptions.push(treeView);
+ 
+     // Refresh device files tree
+diff --git a/src/mpremotesubpro.py b/src/mpremotesubpro.py
+index 1a6633c..754ebff 100644
+--- a/src/mpremotesubpro.py
++++ b/src/mpremotesubpro.py
+@@ -304,6 +304,10 @@ def run_mpremote(python_exe, args_list, timeout=60):
+ 
+     proc = None
+     try:
++        # On Windows, CREATE_NEW_PROCESS_GROUP isolates the child from the
++        # parent's console group so mpremote's internal Ctrl+C (sent via
++        # serial to the device) does not propagate as KeyboardInterrupt here.
++        # creationflags=0 is the default on all platforms so this is safe.
+         proc = subprocess.Popen(
+             cmd,
+             stdout=subprocess.PIPE,
+@@ -312,7 +316,8 @@ def run_mpremote(python_exe, args_list, timeout=60):
+             text=True,
+             encoding='utf-8',
+             errors='replace',
+-            bufsize=1
++            bufsize=1,
++            creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0) if sys.platform == 'win32' else 0
+         )
+ 
+         # Stream output line by line
+@@ -334,7 +339,11 @@ def run_mpremote(python_exe, args_list, timeout=60):
+                 elif proc.poll() is not None:  # EOF and process has exited
+                     break
+             except KeyboardInterrupt:
+-                # This catches Ctrl+C while reading output
++                # KeyboardInterrupt can fire when mpremote sends \x03 to the
++                # device on Windows even with CREATE_NEW_PROCESS_GROUP.
++                # If mpremote already exited cleanly, treat this as normal completion.
++                if proc.poll() is not None:
++                    break  # process finished — not a real user Ctrl+C
+                 print("\n\n👋 Ctrl+C detected. Stopping...", file=sys.stderr)
+                 break
+ 
+diff --git a/src/packageManager.js b/src/packageManager.js
+index e6a473d..c7fa754 100644
+--- a/src/packageManager.js
++++ b/src/packageManager.js
+@@ -1,5 +1,6 @@
+ const vscode = require('vscode');
+ const https = require('https');
++const path = require('path');
+ const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+ 
+ /**
+@@ -98,4 +99,138 @@ async function openPackageManager(context, currentDevicePort, terminal) {
+     }
+ }
+ 
+-module.exports = { openPackageManager };
++/**
++ * Fetch the Adafruit CircuitPython bundle package list from circup / PyPI bundle index.
++ * Falls back to a curated list if the network is unavailable.
++ * @returns {Promise<Array<{name:string, description:string}>>}
++ */
++function fetchCircuitPythonPackageIndex() {
++    return new Promise((resolve) => {
++        https.get('https://raw.githubusercontent.com/adafruit/Adafruit_CircuitPython_Bundle/refs/heads/main/circuitpython_library_list.md', (res) => {
++            let data = '';
++            res.on('data', chunk => data += chunk);
++            res.on('end', () => {
++                // Parse markdown table rows: | adafruit_neopixel | ... |
++                const pkgs = [];
++                for (const line of data.split('\n')) {
++                    const m = line.match(/^\|\s*`?([a-zA-Z0-9_\-]+)`?\s*\|/);
++                    if (m && !m[1].startsWith('Library')) {
++                        pkgs.push({ name: m[1], description: '' });
++                    }
++                }
++                resolve(pkgs.length > 0 ? pkgs : _cpFallbackList());
++            });
++        }).on('error', () => resolve(_cpFallbackList()));
++    });
++}
++
++/** Curated fallback list if GitHub is unreachable */
++function _cpFallbackList() {
++    return [
++        { name: 'adafruit_neopixel',        description: 'NeoPixel LED driver' },
++        { name: 'adafruit_bus_device',       description: 'I2C/SPI bus device helper' },
++        { name: 'adafruit_register',         description: 'Register abstractions' },
++        { name: 'adafruit_dht',              description: 'DHT temperature/humidity sensor' },
++        { name: 'adafruit_ssd1306',          description: 'SSD1306 OLED display' },
++        { name: 'adafruit_bmp280',           description: 'BMP280 pressure/temperature sensor' },
++        { name: 'adafruit_htu21d',           description: 'HTU21D humidity sensor' },
++        { name: 'adafruit_motor',            description: 'DC/stepper motor control' },
++        { name: 'adafruit_servokit',         description: 'PCA9685 servo kit' },
++        { name: 'adafruit_requests',         description: 'HTTP requests for CircuitPython' },
++        { name: 'adafruit_minimqtt',         description: 'MQTT client' },
++        { name: 'adafruit_display_text',     description: 'Text rendering for displays' },
++        { name: 'adafruit_imageload',        description: 'Image loading for displayio' },
++        { name: 'adafruit_esp32spi',         description: 'ESP32 SPI WiFi co-processor' },
++        { name: 'adafruit_pyportal',         description: 'PyPortal helper' },
++    ];
++}
++
++/**
++ * Opens the CircuitPython package manager using circup.
++ * Detects USB drive or Web Workflow and builds the correct circup command.
++ * @param {string|null} deviceCodeDir  Local code dir (used to find device.cfg)
++ * @param {function} runProcess  runPythonProcess-style function(exe, args, onDone)
++ * @param {function} findDrive   findCircuitPyDrive() from circuitpyDrive
++ * @param {function} getConfig   getConfigValue(path, section, key)
++ */
++async function openCircuitPythonPackageManager(deviceCodeDir, runProcess, findDrive, getConfig, onAfterInstall) {
++    // ── Resolve install target ─────────────────────────────────────────────────
++    const drive   = findDrive ? findDrive() : null;
++
++    // Read Web Workflow config from device.cfg
++    let wwIp = '', wwPass = '', wwPort = '80';
++    if (!drive && deviceCodeDir) {
++        const cfgPath = path.join(path.dirname(deviceCodeDir), 'device.cfg');
++        try {
++            wwIp   = await getConfig(cfgPath, 'remote', 'webworkflow_ip')   || '';
++            wwPass = await getConfig(cfgPath, 'remote', 'webworkflow_password') || '';
++            wwPort = await getConfig(cfgPath, 'remote', 'webworkflow_port')  || '80';
++        } catch (_) {}
++    }
++
++    if (!drive && !wwIp) {
++        vscode.window.showErrorMessage(
++            'No CircuitPython device found.\n' +
++            'Connect via USB (CIRCUITPY drive) or configure Wi-Fi in the Dashboard.'
++        );
++        return;
++    }
++
++    const targetLabel = drive
++        ? `USB drive (${drive})`
++        : `Wi-Fi (${wwIp}:${wwPort})`;
++
++    // ── Fetch package list ─────────────────────────────────────────────────────
++    const packages = await vscode.window.withProgress({
++        location: vscode.ProgressLocation.Notification,
++        title: 'CircuitPython Package Manager',
++        cancellable: false
++    }, async (progress) => {
++        progress.report({ message: 'Fetching Adafruit bundle library list…' });
++        return await fetchCircuitPythonPackageIndex();
++    });
++
++    const items = packages.map(pkg => ({
++        label:    `$(package) ${pkg.name}`,
++        detail:   pkg.description || 'Adafruit CircuitPython library',
++        pkgName:  pkg.name
++    }));
++
++    const selected = await vscode.window.showQuickPick(items, {
++        placeHolder: `Search for a CircuitPython library to install on ${targetLabel}`,
++        matchOnDetail: true
++    });
++    if (!selected) return;
++
++    // ── Build circup command args ──────────────────────────────────────────────
++    const venvFolder = getVenvPythonPathFolder();
++    const isWin  = process.platform === 'win32';
++    const circup = path.join(venvFolder, isWin ? 'Scripts' : 'bin', isWin ? 'circup.exe' : 'circup');
++
++    /** @type {string[]} */
++    const circupArgs = [];
++
++    if (drive) {
++        circupArgs.push('--path', drive);
++    } else {
++        circupArgs.push('--host', wwIp, '--password', wwPass);
++        if (wwPort && wwPort !== '80') circupArgs.push('--port', wwPort);
++    }
++
++    circupArgs.push('install', selected.pkgName);
++
++    const confirmed = await vscode.window.showWarningMessage(
++        `Install "${selected.pkgName}" on ${targetLabel}?\n\n` +
++        `⚠️ Make sure code is NOT running on the device before installing.\n` +
++        `Press the Stop button (or Ctrl+C in the REPL) first — CircuitPython locks the filesystem while code.py is active.`,
++        { modal: true },
++        'Install',
++        'Cancel'
++    );
++    if (confirmed !== 'Install') return;
++
++    runProcess(circup, circupArgs, onAfterInstall || null);
++    vscode.window.showInformationMessage(`Installing ${selected.pkgName}… check the output panel.`);
++}
++
++module.exports = { openPackageManager, openCircuitPythonPackageManager };
+diff --git a/src/refreshSettings.js b/src/refreshSettings.js
+index 86fcaa9..96a1a9d 100644
+--- a/src/refreshSettings.js
++++ b/src/refreshSettings.js
+@@ -62,7 +62,7 @@ async function findProjectRoot(startDir) {
+  * Reads the project's device.cfg and matches against connected devices.
+  *
+  * @param {vscode.Uri} [resource] - Optional folder URI (from explorer context menu)
+- * @returns {Promise<[string|null, string|null]>} [devicePort, deviceCodeDir]
++ * @returns {Promise<[string|null, string|null, string]>} [devicePort, deviceCodeDir, deviceFirmware]
+  */
+ async function getValidDevicePort(resource) {
+     let gRemoteDevicePort = null;
+@@ -79,7 +79,7 @@ async function getValidDevicePort(resource) {
+             startDir = workspaceFolders[0].uri.fsPath;
+         } else {
+             vscode.window.showWarningMessage('No workspace folder open. Please open a MicroPython project first.');
+-            return [null, null];
++            return [null, null, 'MicroPython'];
+         }
+     }
+ 
+@@ -89,7 +89,7 @@ async function getValidDevicePort(resource) {
+         vscode.window.showWarningMessage(
+             'No device.cfg found. Please create a project first or run from the project root folder.'
+         );
+-        return [null, null];
++        return [null, null, 'MicroPython'];
+     }
+ 
+     const configPath = path.join(projectDir, 'device.cfg');
+@@ -174,8 +174,9 @@ async function getValidDevicePort(resource) {
+     }
+ 
+     deviceCodeDir = await getConfigValue(configPath, 'filePath', 'deviceCodeDir');
++    const deviceFirmware = await getConfigValue(configPath, 'device', 'device_firmware');
+ 
+-    return [gRemoteDevicePort, deviceCodeDir];
++    return [gRemoteDevicePort, deviceCodeDir, deviceFirmware || 'MicroPython'];
+ }
+ 
+ module.exports = { getValidDevicePort };
+\ No newline at end of file
+diff --git a/src/webReplTerminal.js b/src/webReplTerminal.js
+index cfbbd47..0af4661 100644
+--- a/src/webReplTerminal.js
++++ b/src/webReplTerminal.js
+@@ -187,7 +187,7 @@ async function findDeviceCfgPath() {
+     let current = folders[0].uri.fsPath;
+     while (true) {
+         const candidate = path.join(current, 'device.cfg');
+-        try { await fs.access(candidate); return candidate; } catch (_) {}
++        try { await fs.access(candidate); return candidate; } catch (_) { }
+         const parent = path.dirname(current);
+         if (parent === current) return null;
+         current = parent;
+@@ -201,8 +201,8 @@ async function resolveWebReplCredentials(devicePort) {
+     const cfgPath = await findDeviceCfgPath();
+     if (!cfgPath) return null;
+ 
+-    const enabled  = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
+-    const ip       = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
++    const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
++    const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
+     const password = await getConfigValue(cfgPath, 'remote', 'webrepl_password');
+ 
+     if (enabled === 'true' && ip) return { ip, password: password || '' };
+@@ -226,8 +226,10 @@ async function openWebReplTerminal(context, devicePort) {
+         'webReplTerminal',
+         `WebREPL — ${ip}`,
+         vscode.ViewColumn.One,
+-        { enableScripts: true, retainContextWhenHidden: true,
+-          localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, 'resource', 'webrepl'))] }
++        {
++            enableScripts: true, retainContextWhenHidden: true,
++            localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, 'resource', 'webrepl'))]
++        }
+     );
+ 
+     const termJsUri = panel.webview.asWebviewUri(
+@@ -260,23 +262,29 @@ async function openWebReplTerminal(context, devicePort) {
+     //   21 = GET: waiting for first WB OK
+     //   22 = GET: receiving data chunks (loop: send ack, receive chunk)
+     //   23 = GET: waiting for final WB OK
+-    let binaryState  = 0;
+-    let putName      = '';
+-    let putData      = null;   // Buffer
+-    let getName      = '';
+-    let getAccum     = [];     // accumulated bytes
++    let binaryState = 0;
++    let putName = '';
++    let putData = null;   // Buffer
++    let getName = '';
++    let getAccum = [];     // accumulated bytes
+ 
+     /** Send the 82-byte WebREPL PUT/GET header record */
+     function sendWaHeader(type, name, fileSize = 0) {
+         const rec = Buffer.alloc(2 + 1 + 1 + 8 + 4 + 2 + 64);
+         rec.write('WA', 0, 'ascii');
+-        rec[2] = type;   // 1=PUT, 2=GET
+-        rec.writeUInt32LE(fileSize, 12);
++        rec[2] = type;           // 1=PUT, 2=GET
++        rec[3] = 0;              // reserved
++        // File size (64‑bit little‑endian)
++        rec.writeUInt32LE(fileSize & 0xffffffff, 4);
++        rec.writeUInt32LE(Math.floor(fileSize / 0x100000000), 8);
++        // Reserved 4 bytes at offset 12‑15
++        rec.writeUInt32LE(0, 12);
++        // Name length
+         rec.writeUInt16LE(name.length, 16);
++        // Name
+         Buffer.from(name).copy(rec, 18);
+         client.send(rec);
+     }
+-
+     function statusMsg(html) {
+         panel.webview.postMessage({ type: 'fileStatus', html });
+     }
+@@ -308,21 +316,18 @@ async function openWebReplTerminal(context, devicePort) {
+ 
+             // ── File transfer protocol handling ──────────────────────────────
+             if (binaryState === 11) {
+-                // PUT: board acknowledged header, now send file data
+                 const resp = peekResp();
+-                if (!resp) return; 
++                if (!resp) return;
+                 incomingBuf = incomingBuf.slice(resp.len);
+ 
+                 if (resp.code === 0) {
+-                    // Send small chunks with drain-aware writes to avoid
+-                    // overwhelming the ESP's tiny WebREPL receive buffer.
+-                    const CHUNK_SIZE = 256;
++                    const CHUNK_SIZE = 128;          // smaller chunk
+                     try {
+                         for (let off = 0; off < putData.length; off += CHUNK_SIZE) {
+                             const end = Math.min(off + CHUNK_SIZE, putData.length);
+                             await client.sendAsync(putData.slice(off, end));
+-                            // Give the device time to process each chunk
+-                            await new Promise(r => setTimeout(r, 30));
++                            // Give the device time to process
++                            await new Promise(r => setTimeout(r, 100));
+                             statusMsg(`Sending <b>${putName}</b>… ${end}/${putData.length} bytes`);
+                         }
+                         binaryState = 12;
+@@ -366,7 +371,7 @@ async function openWebReplTerminal(context, devicePort) {
+                 // GET: receive data chunk [sz_lo, sz_hi, ...data]
+                 if (incomingBuf.length < 2) return;
+                 const sz = incomingBuf[0] | (incomingBuf[1] << 8);
+-                
++
+                 if (sz === 0) {
+                     incomingBuf = incomingBuf.slice(2);
+                     binaryState = 23;
+@@ -375,7 +380,7 @@ async function openWebReplTerminal(context, devicePort) {
+                     const chunk = incomingBuf.slice(2, 2 + sz);
+                     for (let i = 0; i < chunk.length; i++) getAccum.push(chunk[i]);
+                     incomingBuf = incomingBuf.slice(2 + sz);
+-                    
++
+                     statusMsg(`Getting <b>${getName}</b>… ${getAccum.length} bytes`);
+                     client.send(Buffer.from([0])); // ack next chunk
+                     // Loop to next chunk or final status

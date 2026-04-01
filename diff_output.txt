@@ -1,0 +1,110 @@
+diff --git a/src/deviceFileExplorer.js b/src/deviceFileExplorer.js
+index 51ae205..f0caf80 100644
+--- a/src/deviceFileExplorer.js
++++ b/src/deviceFileExplorer.js
+@@ -144,49 +144,11 @@ class DeviceFileExplorerProvider {
+         const venvFolder = getVenvPythonPathFolder();
+         const venvPython = getVenvPythonPath(venvFolder);
+ 
+-        // If it's a CircuitPython project and we have a local drive path (e.g. E:\),
+-        // we can read it directly from the OS much faster and without mpremote errors!
+-        if (this._isCircuitPython && this._deviceCodeDir) {
+-            return new Promise((resolve) => {
+-                try {
+-                    // Map device path (e.g. '/lib') to the local drive path (e.g. 'E:\lib')
+-                    const localPath = dirPath === '/' 
+-                        ? this._deviceCodeDir 
+-                        : pathMod.join(this._deviceCodeDir, dirPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+-                    
+-                    const items = [];
+-                    const entries = fs.readdirSync(localPath, { withFileTypes: true });
+-
+-                    for (const entry of entries) {
+-                        // Skip hidden system files that CircuitPython auto-creates or Windows adds
+-                        if (entry.name === 'System Volume Information' || entry.name.startsWith('._')) continue;
+-
+-                        const isDir = entry.isDirectory();
+-                        const stat = fs.statSync(pathMod.join(localPath, entry.name));
+-                        const size = stat.size;
+-                        const fullPath = dirPath === '/' ? `/${entry.name}` : `${dirPath}/${entry.name}`;
+-                        
+-                        items.push(new DeviceFileItem(entry.name, isDir ? null : size, isDir, fullPath));
+-                    }
+-
+-                    items.sort((a, b) => {
+-                        if (a.isDirectory && !b.isDirectory) return -1;
+-                        if (!a.isDirectory && b.isDirectory) return 1;
+-                        return String(a.label).localeCompare(String(b.label));
+-                    });
+-
+-                    this._cache.set(dirPath, items);
+-                    resolve(items);
+-                } catch (error) {
+-                    console.error(`Local fs direct read error for CP: ${error.message}`);
+-                    const errItem = new vscode.TreeItem('$(warning) File system unavailable', vscode.TreeItemCollapsibleState.None);
+-                    resolve([/** @type {any} */ (errItem)]);
+-                }
+-            });
+-        }
++
+ 
+         return new Promise((resolve) => {
+-            const cmd = `"${venvPython}" -m mpremote connect ${this._port} fs ls ${dirPath}`;
++            const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
++            const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" ls --port "${this._port}" --path "${dirPath}"`;
+ 
+             exec(cmd, { timeout: 15000 }, (error, stdout) => {
+                 if (error) {
+@@ -320,13 +282,7 @@ class DeviceFileExplorerProvider {
+             if (srcPath === destPath) continue;   // already in that location
+ 
+             try {
+-                if (this._isCircuitPython && this._deviceCodeDir) {
+-                    const localSrc = pathMod.join(this._deviceCodeDir, srcPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+-                    const localDest = pathMod.join(this._deviceCodeDir, destPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+-                    fs.renameSync(localSrc, localDest);
+-                } else {
+-                    await this._moveFileOnDevice(srcPath, destPath);
+-                }
++                await this._moveFileOnDevice(srcPath, destPath);
+                 moved++;
+             } catch (err) {
+                 vscode.window.showErrorMessage(
+@@ -426,17 +382,7 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
+ 
+     if (confirm !== 'Delete') return;
+ 
+-    if (provider._isCircuitPython && provider._deviceCodeDir) {
+-        try {
+-            const localPath = pathMod.join(provider._deviceCodeDir, deviceFilePath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+-            fs.unlinkSync(localPath);
+-            vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
+-            provider.refresh();
+-        } catch (error) {
+-            vscode.window.showErrorMessage(`Failed to delete ${deviceFilePath}: ${error.message}`);
+-        }
+-        return;
+-    }
++
+ 
+     const venvFolder = getVenvPythonPathFolder();
+     const venvPython = getVenvPythonPath(venvFolder);
+@@ -472,17 +418,7 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
+     );
+     if (confirm !== 'Delete') return;
+ 
+-    if (provider._isCircuitPython && provider._deviceCodeDir) {
+-        try {
+-            const localPath = pathMod.join(provider._deviceCodeDir, deviceFolderPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+-            fs.rmSync(localPath, { recursive: true, force: true });
+-            vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
+-            provider.refresh();
+-        } catch (error) {
+-            vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${error.message}`);
+-        }
+-        return;
+-    }
++
+ 
+     const venvFolder = getVenvPythonPathFolder();
+     const venvPython = getVenvPythonPath(venvFolder);

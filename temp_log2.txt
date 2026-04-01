@@ -1,0 +1,155 @@
+commit c12ed7573d4273fb4d4399971ea840206e4cdb3c
+Author: niwantha33 <niwantha33@gmail.com>
+Date:   Sun Mar 29 21:35:45 2026 +0100
+
+    added ckpython web interface, updated lib install process, improve dashboard, updated readme,
+
+diff --git a/src/deviceFileExplorer.js b/src/deviceFileExplorer.js
+index e3b95a1..51ae205 100644
+--- a/src/deviceFileExplorer.js
++++ b/src/deviceFileExplorer.js
+@@ -79,13 +79,28 @@ class DeviceFileExplorerProvider {
+         this._cache = new Map(); // cache directory listings
+     }
+ 
++    /**
++     * Set the TreeView instance so we can update its title dynamically.
++     * @param {vscode.TreeView<vscode.TreeItem>} treeView
++     */
++    setTreeView(treeView) {
++        this._treeView = treeView;
++    }
++
+     /**
+      * Update the device port and refresh the tree.
+      * @param {string|null} port
++     * @param {string|null} deviceCodeDir
++     * @param {boolean} isCircuitPython
+      */
+-    setPort(port) {
++    setPort(port, deviceCodeDir = null, isCircuitPython = false) {
+         this._port = port;
++        this._deviceCodeDir = deviceCodeDir;
++        this._isCircuitPython = isCircuitPython;
+         this._cache.clear();
++        if (this._treeView) {
++            this._treeView.title = isCircuitPython ? 'Device Files (CircuitPython)' : 'Device Files (MicroPython)';
++        }
+         this._onDidChangeTreeData.fire();
+     }
+ 
+@@ -129,6 +144,47 @@ class DeviceFileExplorerProvider {
+         const venvFolder = getVenvPythonPathFolder();
+         const venvPython = getVenvPythonPath(venvFolder);
+ 
++        // If it's a CircuitPython project and we have a local drive path (e.g. E:\),
++        // we can read it directly from the OS much faster and without mpremote errors!
++        if (this._isCircuitPython && this._deviceCodeDir) {
++            return new Promise((resolve) => {
++                try {
++                    // Map device path (e.g. '/lib') to the local drive path (e.g. 'E:\lib')
++                    const localPath = dirPath === '/' 
++                        ? this._deviceCodeDir 
++                        : pathMod.join(this._deviceCodeDir, dirPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++                    
++                    const items = [];
++                    const entries = fs.readdirSync(localPath, { withFileTypes: true });
++
++                    for (const entry of entries) {
++                        // Skip hidden system files that CircuitPython auto-creates or Windows adds
++                        if (entry.name === 'System Volume Information' || entry.name.startsWith('._')) continue;
++
++                        const isDir = entry.isDirectory();
++                        const stat = fs.statSync(pathMod.join(localPath, entry.name));
++                        const size = stat.size;
++                        const fullPath = dirPath === '/' ? `/${entry.name}` : `${dirPath}/${entry.name}`;
++                        
++                        items.push(new DeviceFileItem(entry.name, isDir ? null : size, isDir, fullPath));
++                    }
++
++                    items.sort((a, b) => {
++                        if (a.isDirectory && !b.isDirectory) return -1;
++                        if (!a.isDirectory && b.isDirectory) return 1;
++                        return String(a.label).localeCompare(String(b.label));
++                    });
++
++                    this._cache.set(dirPath, items);
++                    resolve(items);
++                } catch (error) {
++                    console.error(`Local fs direct read error for CP: ${error.message}`);
++                    const errItem = new vscode.TreeItem('$(warning) File system unavailable', vscode.TreeItemCollapsibleState.None);
++                    resolve([/** @type {any} */ (errItem)]);
++                }
++            });
++        }
++
+         return new Promise((resolve) => {
+             const cmd = `"${venvPython}" -m mpremote connect ${this._port} fs ls ${dirPath}`;
+ 
+@@ -136,11 +192,11 @@ class DeviceFileExplorerProvider {
+                 if (error) {
+                     console.error(`Device ls error: ${error.message}`);
+                     const errItem = new vscode.TreeItem(
+-                        '$(warning) Failed to read device',
++                        '$(warning) Failed to read device files',
+                         vscode.TreeItemCollapsibleState.None
+                     );
+                     errItem.tooltip = error.message;
+-                    resolve([errItem]);
++                    resolve([/** @type {any} */ (errItem)]);
+                     return;
+                 }
+ 
+@@ -264,7 +320,13 @@ class DeviceFileExplorerProvider {
+             if (srcPath === destPath) continue;   // already in that location
+ 
+             try {
+-                await this._moveFileOnDevice(srcPath, destPath);
++                if (this._isCircuitPython && this._deviceCodeDir) {
++                    const localSrc = pathMod.join(this._deviceCodeDir, srcPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++                    const localDest = pathMod.join(this._deviceCodeDir, destPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++                    fs.renameSync(localSrc, localDest);
++                } else {
++                    await this._moveFileOnDevice(srcPath, destPath);
++                }
+                 moved++;
+             } catch (err) {
+                 vscode.window.showErrorMessage(
+@@ -364,6 +426,18 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
+ 
+     if (confirm !== 'Delete') return;
+ 
++    if (provider._isCircuitPython && provider._deviceCodeDir) {
++        try {
++            const localPath = pathMod.join(provider._deviceCodeDir, deviceFilePath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++            fs.unlinkSync(localPath);
++            vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
++            provider.refresh();
++        } catch (error) {
++            vscode.window.showErrorMessage(`Failed to delete ${deviceFilePath}: ${error.message}`);
++        }
++        return;
++    }
++
+     const venvFolder = getVenvPythonPathFolder();
+     const venvPython = getVenvPythonPath(venvFolder);
+     const cmd = `"${venvPython}" -m mpremote connect ${port} fs rm :${deviceFilePath}`;
+@@ -398,6 +472,18 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
+     );
+     if (confirm !== 'Delete') return;
+ 
++    if (provider._isCircuitPython && provider._deviceCodeDir) {
++        try {
++            const localPath = pathMod.join(provider._deviceCodeDir, deviceFolderPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
++            fs.rmSync(localPath, { recursive: true, force: true });
++            vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
++            provider.refresh();
++        } catch (error) {
++            vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${error.message}`);
++        }
++        return;
++    }
++
+     const venvFolder = getVenvPythonPathFolder();
+     const venvPython = getVenvPythonPath(venvFolder);
+ 
