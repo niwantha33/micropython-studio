@@ -35,6 +35,7 @@ let currentTarget = 'Host';
 
 let deviceStatusBarItem = null;
 let deviceFileExplorer = null;
+let deviceFileTreeView = null;
 
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
 
@@ -148,22 +149,24 @@ function runDownload(exe, baseArgs) {
             } catch (_) {}
         }
 
-        // Show the three options
+        // Show the conflict resolution options
         const pick = await vscode.window.showQuickPick([
             { label: '$(sync)       Overwrite all',       id: 'overwrite' },
+            { label: '$(file-add)   Keep (Rename)',        id: 'rename' },
             { label: '$(debug-step-over) Skip existing',  id: 'skip' },
             { label: '$(list-tree)  Choose files',        id: 'choose' }
         ], { placeHolder: `${conflicts.length} file(s) already exist locally. What should we do?` });
 
         if (!pick) return;
 
-        if (/** @type {any} */(pick).id === 'overwrite') {
+        const pickId = /** @type {any} */(pick).id;
+        if (pickId === 'overwrite') {
             runPythonProcess(exe, [...baseArgs, '--overwrite'], undefined);
-
-        } else if (/** @type {any} */(pick).id === 'skip') {
+        } else if (pickId === 'rename') {
+            runPythonProcess(exe, [...baseArgs, '--rename'], undefined);
+        } else if (pickId === 'skip') {
             runPythonProcess(exe, [...baseArgs, '--skip'], undefined);
-
-        } else {
+        } else if (pickId === 'choose') {
             // Choose files: show multi-select of conflicting files
             const items = /** @type {vscode.QuickPickItem[]} */ (
                 conflicts.map(f => ({ label: /** @type {string} */ (f), picked: true }))
@@ -322,8 +325,9 @@ function activate(context) {
                     updateDeviceStatusBar();
 
                     // Update the device file explorer with the new port
+                    const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
                     if (deviceFileExplorer) {
-                        const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
+                        if (deviceFileTreeView) deviceFileTreeView.message = undefined;
                         deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
                     }
 
@@ -882,7 +886,11 @@ function activate(context) {
                 updateDeviceStatusBar();
                 if (deviceFileExplorer) {
                     const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
-                    deviceFileExplorer.setPort(newPort, gDeviceCodeDir, isCp);
+                    if (isCp && gDeviceCodeDir) {
+                        deviceFileExplorer.setPort(null, null, false);
+                    } else {
+                        deviceFileExplorer.setPort(newPort, gDeviceCodeDir, isCp);
+                    }
                 }
             });
         })
@@ -899,12 +907,22 @@ function activate(context) {
                 vscode.window.showWarningMessage('No project detected. Open a project first.');
                 return;
             }
+
+            let dest = gDeviceCodeDir;
+            // If gDeviceCodeDir is a drive root (CircuitPython), use the local project 'main' folder instead
+            if (/^[A-Za-z]:[/\\]?$/.test(dest)) {
+                const workspaceFolders = vscode.workspace.workspaceFolders;
+                if (workspaceFolders && workspaceFolders.length > 0) {
+                    dest = path.join(workspaceFolders[0].uri.fsPath, 'main');
+                }
+            }
+
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
             runDownload(venvPython, [
                 scriptPath, '--python', venvPython,
                 'download', '--port', gRemoteDevicePort,
-                '--dest', gDeviceCodeDir
+                '--dest', dest
             ]);
         })
     );
@@ -970,13 +988,13 @@ function activate(context) {
     // ── Device File Explorer ─────────────────────────────────────────────
 
     deviceFileExplorer = new DeviceFileExplorerProvider();
-    const treeView = vscode.window.createTreeView('micropython-ide-device-files', {
+    deviceFileTreeView = vscode.window.createTreeView('micropython-ide-device-files', {
         treeDataProvider: deviceFileExplorer,
         showCollapseAll: true,
         dragAndDropController: deviceFileExplorer
     });
-    deviceFileExplorer.setTreeView(treeView);
-    context.subscriptions.push(treeView);
+    deviceFileExplorer.setTreeView(deviceFileTreeView);
+    context.subscriptions.push(deviceFileTreeView);
 
     // Refresh device files tree
     context.subscriptions.push(

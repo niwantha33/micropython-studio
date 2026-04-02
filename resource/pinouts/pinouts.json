@@ -20,33 +20,58 @@
     "right": ["VBUS","VSYS","GND","3V3_EN","3V3","ADC_VREF","GP28_A2","GND","GP27_A1","GP26_A0","RUN","GP22","GND","GP21","GP20","GP19","GP18","GND","GP17","GP16"]
   },
   "esp32": {
-    "name": "ESP32 (Standard 30-Pin)",
-    "left":  ["3V3","EN","VP_36","VN_39","34","35","32","33","25","26","27","14","12","13","GND"],
-    "right": ["VIN","GND","23","22","TX_1","RX_3","21","19","18","5","17","16","4","0","2","15"]
+    "name": "ESP32 (30-Pin DevKit)",
+    "left":  ["3V3","EN","VP/36","VN/39","IO34","IO35","IO32","IO33","IO25","IO26","IO27","IO14","IO12","GND","IO13"],
+    "right": ["VIN","GND","IO23","IO22","TX/IO1","RX/IO3","IO21","GND","IO19","IO18","IO5","IO17","IO16","IO4","IO0","IO2","IO15","SD1","SD0","CLK"]
+  },
+  "esp32_s2": {
+    "name": "ESP32-S2 (DevKit)",
+    "left":  ["3V3","EN","IO1","IO2","IO3","IO4","IO5","IO6","IO7","IO8","IO9","IO10","IO11","IO12","IO13","GND"],
+    "right": ["VIN","GND","IO21","IO33","IO34","IO35","IO36","IO37","IO38","IO39","IO40","IO41","IO42","TX/IO43","RX/IO44","IO45"]
+  },
+  "esp32_s3": {
+    "name": "ESP32-S3 (DevKit)",
+    "left":  ["3V3","3V3","RST","IO4","IO5","IO6","IO7","IO15","IO16","IO17","IO18","IO8","IO3","IO46","IO9","IO10"],
+    "right": ["GND","GND","IO43/TX","IO44/RX","IO1","IO2","IO41","IO40","IO39","IO38","IO37","IO36","IO35","IO0","IO45","IO48"]
+  },
+  "esp32_c3": {
+    "name": "ESP32-C3 (DevKit)",
+    "left":  ["GND","3V3","IO4","IO5","IO6","IO7","IO8","IO9","IO18/USB-","IO19/USB+","IO3/A3","IO2/A2","IO1/A1","IO0/A0","RST"],
+    "right": ["GND","5V","TX/IO21","RX/IO20","IO10","IO11","IO12","IO13","IO14","IO15","IO16","IO17","GND","3V3","EN"]
   },
   "esp8266": {
-    "name": "ESP8266 (NodeMCU)",
-    "left":  ["A0","ADC","RSV","RSV","D0(16)","D1(5)","D2(4)","D3(0)","D4(2)","3V3","GND","D5(14)","D6(12)","D7(13)","D8(15)"],
-    "right": ["3V3","EN","RST","GND","VIN","3V3","GND","TX","RX","D9(3)","D10(1)","GND","3V3","RSV","RSV"]
+    "name": "ESP8266 (NodeMCU v2)",
+    "left":  ["A0","RSV","RSV","SD3","SD2","SD1","CMD","SD0","CLK","GND","3V3","EN","RST","GND","VIN"],
+    "right": ["D0/IO16","D1/IO5","D2/IO4","D3/IO0","D4/IO2","3V3","GND","D5/IO14","D6/IO12","D7/IO13","D8/IO15","D9/RX","D10/TX","GND","3V3"]
   },
-  "samd": {
-    "name": "SAMD21 (Arduino Zero / MKR)",
-    "left":  ["AREF","A0","A1","A2","A3","A4","A5","SCK","MOSI","MISO","RX","TX","GND"],
-    "right": ["5V","3V3","VIN","GND","RST","SCL","SDA","D2","D3","D4","D5","D6","D7"]
+  "stm32_f4": {
+    "name": "STM32F4 (Pyboard v1.1)",
+    "left":  ["VIN","3V3","GND","VBAT","RST","PA0","PA1","PA2","PA3","PA4","PA5","PA6","PA7","PB0","PB1"],
+    "right": ["USBD+","USBD-","3V3","GND","PB3","PB4","PB5","PB6","PB7","PB8","PB9","PB10","PB11","PB12","PB13"]
   },
-  "stm32": {
-    "name": "STM32 (Pyboard)",
-    "left":  ["VIN","GND","3V3","RST","PA0","PA1","PA2","PA3","PA4","PA5","PA6","PA7","PB0","PB1"],
-    "right": ["5V","GND","3V3","PB3","PB4","PB5","PB6","PB7","PB8","PB9","PB10","PB11","PB12","PB13"]
+  "samd21": {
+    "name": "SAMD21 (Adafruit Feather M0)",
+    "left":  ["RST","3V3","AREF","GND","A0","A1","A2","A3","A4","A5","SCK","MOSI","MISO","RX/0","TX/1"],
+    "right": ["BAT","EN","USB","13/SCK","12/MISO","11/MOSI","10","9","6","5","SCL","SDA","GND","3V3","RST"]
   },
-  "mimxrt": {
-    "name": "i.MX RT (Teensy 4.x / NXP)",
-    "left":  ["GND","0","1","2","3","4","5","6","7","8","9","10","11","12","13"],
-    "right": ["VIN","3V3","GND","A0","A1","A2","A3","A4","A5","A6","A7","A8","A9","3V3"]
+  "samd51": {
+    "name": "SAMD51 (Adafruit Feather M4)",
+    "left":  ["RST","3V3","AREF","GND","A0","A1","A2","A3","A4","A5","SCK","MOSI","MISO","RX/0","TX/1"],
+    "right": ["BAT","EN","USB","13/SCK","12/MISO","11/MOSI","10","9","6","5","SCL","SDA","GND","3V3","RST"]
   },
-  "nrf": {
-    "name": "nRF52 (micro:bit / Feather)",
-    "left":  ["3V3","GND","P0","P1","P2","P3","P4","P5","P6","P7","P8","P9","P10","P11"],
-    "right": ["VCC","GND","SCL","SDA","MOSI","MISO","SCK","A0","A1","A2","A3","A4","A5","RST"]
+  "nrf52840": {
+    "name": "nRF52840 (Adafruit Feather)",
+    "left":  ["RST","3V3","AREF","GND","A0","A1","A2","A3","A4","A5","SCK","MOSI","MISO","RX/0","TX/1"],
+    "right": ["BAT","EN","USB","13","12","11","10","9","6","5","SCL","SDA","GND","3V3","RST"]
+  },
+  "mimxrt1010": {
+    "name": "i.MX RT1010 (Teensy 4.0)",
+    "left":  ["GND","0","1","2","3","4","5","6","7","8","9","10","11","12","GND"],
+    "right": ["VIN","3V3","GND","A0","A1","A2","A3","A4","A5","A6","A7","A8","A9","3V3","13"]
+  },
+  "rp2040_s2": {
+    "name": "RP2040 (Adafruit QT Py)",
+    "left":  ["GND","3V3","RST","A0","A1","A2","A3","SCK","MOSI","MISO"],
+    "right": ["VUSB","3V3","RST","SCL","SDA","TX","RX","D5","D6","D7"]
   }
 }

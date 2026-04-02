@@ -1,4 +1,8 @@
-# MicroPython Studio - VS Code Extension
+# 🚀 MicroPython Studio - VS Code Extension
+### ✨ Supporting MicroPython & CircuitPython Platforms ✨
+
+[![MicroPython](https://img.shields.io/badge/MicroPython-v1.20%2B-blue?logo=micropython&logoColor=white)](https://micropython.org)
+[![CircuitPython](https://img.shields.io/badge/CircuitPython-v8.0%2B-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
 
 <p >
   <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/project.png" alt="project" width="400">
@@ -190,6 +194,12 @@ MicroPython Studio is open source (MIT License) and builds on the following open
 | [term.js](https://github.com/chjj/term.js) | Christopher Jeffrey | MIT | Terminal emulator in WebREPL panel |
 | [FileSaver.js](https://github.com/eligrey/FileSaver.js) | Eli Grey | MIT | File download in WebREPL panel |
 | [MicroPython WebREPL](https://github.com/micropython/webrepl) | MicroPython project | MIT | WebREPL client (modified for VS Code integration) |
+| [CircuitPython](https://github.com/adafruit/circuitpython) | Adafruit Industries | MIT | CircuitPython firmware and runtime support |
+| [circup](https://github.com/adafruit/circup) | Adafruit Industries | MIT | CircuitPython package management and library installation |
+| [adafruit-ampy](https://github.com/scientifichackers/ampy) | Scientific Hackers / Adafruit | MIT | CircuitPython file execution via serial REPL |
+| [CircuitPython Web Workflow](https://docs.circuitpython.org/en/latest/docs/workflows.html) | Adafruit Industries | MIT | Wi-Fi file access and REPL via HTTP/WebSocket API |
+| [esptool](https://github.com/espressif/esptool) | Espressif Systems | GPL-2.0 | ESP32 firmware flashing |
+| [pyserial](https://github.com/pyserial/pyserial) | pyserial contributors | BSD | Serial port communication and device detection |
 
 A special thanks to **AI development tools**. This project has been a work in progress for approximately three years, and many complex implementation hurdles seemed insurmountable. AI tools provided the critical support and breakthroughs needed to finally bring these concepts to life and complete the project.
 

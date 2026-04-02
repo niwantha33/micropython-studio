@@ -9,6 +9,20 @@ from pathlib import Path
 from typing import Any, Union
 
 
+# Files/folders to avoid downloading from device to local project
+DOWNLOAD_EXCLUDE = {
+    'settings.toml',             # CircuitPython/MicroPython credentials
+    'boot_out.txt',              # CircuitPython auto-generated
+    '.Trashes',                  # macOS
+    '.fseventsd',                # macOS
+    '.Spotlight-V100',           # macOS
+    '.metadata_never_index',     # macOS
+    'System Volume Information', # Windows
+    '$RECYCLE.BIN',              # Windows
+    '.mcu',                      # Extension-internal metadata
+}
+
+
 # ---------------------------------------------------------------------------
 # WebREPL transport
 # mpremote 1.27.0 has no ws: support (transport_ws.py doesn't exist).
@@ -399,6 +413,10 @@ def cmd_run(python_exe, port, file_path, folder=None):
     print(f"🔌 Port: {port}", file=sys.stderr)
     print("-" * 50, file=sys.stderr)
 
+    # Pre-interrupt: send Ctrl+C to stop any running code on the device.
+    # This prevents "could not enter raw repl" when the device is busy.
+    _serial_pre_interrupt(python_exe, port)
+
     # 🔥 Correct command: mount "folder" run "full/file/path"
     args = [
         'connect', port,
@@ -407,7 +425,45 @@ def cmd_run(python_exe, port, file_path, folder=None):
     ]
 
     result = run_mpremote(python_exe, args, timeout=30)
+
+    # Auto-retry once on raw REPL failure (device may need an extra Ctrl+C)
+    if result.returncode != 0:
+        _serial_pre_interrupt(python_exe, port)
+        time.sleep(0.5)
+        print("🔄 Retrying...", file=sys.stderr)
+        result = run_mpremote(python_exe, args, timeout=30)
+
     sys.exit(result.returncode)
+
+
+def _serial_pre_interrupt(python_exe, port):
+    """Fast pre-interrupt using pyserial. Falls back to mpremote if serial is unavailable."""
+    if _is_ws_port(port):
+        return
+        
+    try:
+        import serial
+        import time
+        s = serial.Serial(port, 115200, timeout=0.1)
+        s.write(b'\r\x03\x03')
+        time.sleep(0.05)
+        s.close()
+        return
+    except Exception:
+        pass
+
+    try:
+        subprocess.run(
+            [python_exe, '-m', 'mpremote', 'connect', port, 'exec', 'print()'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, timeout=2
+        )
+    except KeyboardInterrupt:
+        print("\n\n👋 Script manually interrupted. Exiting cleanly.", file=sys.stderr)
+        sys.exit(0)
+    except Exception:
+        pass  # best-effort — device may not respond
+
 
 # ----------------------------
 # Command: run_mcu (mpremote run — no mount, file sent directly to device)
@@ -441,9 +497,18 @@ def cmd_run_mcu(python_exe, port, file_path):
             conn.close()
         sys.exit(rc)
 
-    # Serial: use mpremote as normal
+    # Serial: pre-interrupt any running code, then run
+    _serial_pre_interrupt(python_exe, port)
     args = ['connect', port, 'run', str(file_path)]
     result = run_mpremote(python_exe, args, timeout=30)
+
+    # Auto-retry once on failure
+    if result.returncode != 0:
+        _serial_pre_interrupt(python_exe, port)
+        time.sleep(0.5)
+        print("🔄 Retrying...", file=sys.stderr)
+        result = run_mpremote(python_exe, args, timeout=30)
+
     sys.exit(result.returncode)
 
 
@@ -705,6 +770,7 @@ def _get_device_files(python_exe: str, port: str) -> 'list[str]':
 
 def cmd_download(python_exe: str, port: str, dest_dir: str,
                  overwrite: bool = False, skip: bool = False,
+                 rename: bool = False,
                  overwrite_files: 'list[str] | None' = None) -> None:
     """Download all files from the device to a local directory."""
     import json as _json
@@ -721,16 +787,33 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
 
     print(f"📋 Found {len(device_files)} file(s) on device.", file=sys.stderr)
 
+    # Filter out excluded files/folders
+    filtered_files = []
+    for f in device_files:
+        name = f.split('/')[-1]
+        # Skip if name is in exclude list or starts with . (hidden junk)
+        if name in DOWNLOAD_EXCLUDE or (name.startswith('.') and name != '.py'):
+            continue
+        # Also skip if any parent part is in exclude list
+        if any(part in DOWNLOAD_EXCLUDE for part in f.split('/')):
+            continue
+        filtered_files.append(f)
+
+    if len(filtered_files) < len(device_files):
+        diff = len(device_files) - len(filtered_files)
+        print(f"🧹 Ignored {diff} system/junk file(s).", file=sys.stderr)
+        device_files = filtered_files
+
     # Detect conflicts (files that already exist locally)
     conflicts = [
         f for f in device_files
         if (dest / f.lstrip('/')).exists()
     ]
 
-    if conflicts and not overwrite and not skip and overwrite_files is None:
+    if conflicts and not overwrite and not skip and not rename and overwrite_files is None:
         # Signal the extension: print conflict list as JSON then exit 3
         for c in conflicts:
-            print(f"   • {c}", file=sys.stderr)
+            print(f"   * {c}", file=sys.stderr)
         print(_json.dumps({'conflicts': conflicts}), flush=True)
         sys.exit(3)
 
@@ -744,18 +827,29 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
         rel = remote_path.lstrip('/')
         local_path = dest / rel
 
-        # Decide: overwrite / skip / selective
+        # Decide: overwrite / skip / selective / rename
         if local_path.exists():
             if skip:
                 print(f"⏭  Skipped:  {rel}", file=sys.stderr)
                 skipped += 1
                 continue
-            _owf: 'list[str]' = overwrite_files or []  # type: ignore[assignment]
-            if overwrite_files is not None and remote_path not in _owf:
-                print(f"⏭  Skipped:  {rel}", file=sys.stderr)
-                skipped += 1
-                continue
-            # fall through → overwrite
+            if rename:
+                base = local_path.stem
+                ext = local_path.suffix
+                counter = 1
+                new_local = local_path.parent / f"{base}_{counter}{ext}"
+                while new_local.exists():
+                    counter += 1
+                    new_local = local_path.parent / f"{base}_{counter}{ext}"
+                local_path = new_local
+                rel = str(local_path.relative_to(dest)).replace('\\', '/')
+            else:
+                _owf: 'list[str]' = overwrite_files or []  # type: ignore[assignment]
+                if overwrite_files is not None and remote_path not in _owf:
+                    print(f"⏭  Skipped:  {rel}", file=sys.stderr)
+                    skipped += 1
+                    continue
+            # fall through → download (either to original name if overwrite, or new name if renamed)
 
         # Create parent directories locally
         local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -806,6 +900,51 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
     print(f"✅ Download complete: {downloaded} downloaded, {skipped} skipped.", file=sys.stderr)
 
 
+# ----------------------------
+# Command: ls
+# ----------------------------
+
+def cmd_ls(python_exe, port, path='/'):
+    """List directory contents in a format compatible with `mpremote fs ls`."""
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            code = f"""
+import os
+try:
+    for f in os.ilistdir('{path}'):
+        size = f[3] if len(f)>3 else 0
+        is_dir = (f[1] == 0x4000)
+        name = f[0] + ('/' if is_dir else '')
+        print('{{:10}} {{}}'.format(size, name))
+except:
+    pass
+"""
+            import io as _io
+            buf = _io.BytesIO()
+            old = sys.stdout
+            sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
+            conn.exec_code(code)
+            sys.stdout.flush()
+            sys.stdout = old
+            sys.stdout.write(buf.getvalue().decode('utf-8', errors='ignore'))
+        except Exception:
+            pass
+        finally:
+            conn.close()
+        sys.exit(0)
+
+    # Serial
+    _serial_pre_interrupt(python_exe, port)
+    result = run_mpremote(python_exe, ['connect', port, 'fs', 'ls', path], timeout=15)
+    sys.exit(result.returncode)
+
+
+# ----------------------------
+# Command: exec
+# ----------------------------
 def cmd_exec(python_exe, port, code):
     if not code.strip():
         print("❌ No code to execute", file=sys.stderr)
@@ -874,12 +1013,18 @@ def main():
     dl_p.add_argument('--dest', required=True, help='Local destination folder (e.g. main/)')
     dl_p.add_argument('--overwrite', action='store_true', help='Overwrite all existing local files')
     dl_p.add_argument('--skip', action='store_true', help='Skip files that already exist locally')
+    dl_p.add_argument('--rename', action='store_true', help='Keep both by renaming the incoming file')
     dl_p.add_argument('--overwrite-files', default='', help='Pipe-separated list of specific files to overwrite')
 
     # Exec
     exec_p = subparsers.add_parser('exec', help='Execute code on device')
     exec_p.add_argument('--port', required=True, help='Serial port (e.g., COM9)')
     exec_p.add_argument('--code', required=True, help='Code to execute')
+
+    # ls
+    ls_p = subparsers.add_parser('ls', help='List files on device')
+    ls_p.add_argument('--port', required=True)
+    ls_p.add_argument('--path', default='/')
 
     # Mount
     mount_p = subparsers.add_parser('mount', help='Mount folder only')
@@ -907,8 +1052,15 @@ def main():
         cmd_upload(args.python, args.port, args.source, args.dest, args.overwrite)
     elif args.command == 'download':
         owf = [f for f in args.overwrite_files.split('|') if f] if args.overwrite_files else None
-        cmd_download(args.python, args.port, args.dest, args.overwrite, args.skip, owf)
+        cmd_download(args.python, args.port, args.dest, args.overwrite, args.skip, args.rename, owf)
+    elif args.command == 'ls':
+        cmd_ls(args.python, args.port, args.path)
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        import sys
+        print("\n\n👋 Script manually interrupted. Exiting cleanly.", file=sys.stderr)
+        sys.exit(0)

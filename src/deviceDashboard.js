@@ -455,10 +455,17 @@ function createPinoutHtml(pinoutKey) {
         `;
   }
 
+  const boardOptions = Object.entries(PINOUT_DATA)
+    .map(([k, v]) => `<option value="${k}" ${k === pinoutKey ? 'selected' : ''}>${v.name}</option>`)
+    .join('');
+
   return `
-        <div class="pinout-header">
-            <h3>🧷 Hardware Pinout Diagram</h3>
-            <span class="badg">${data.name}</span>
+        <div class="pinout-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+            <span style="font-size:13px;font-weight:600;color:var(--text-main);">🧷 Pinout</span>
+            <select id="pinoutBoardSelect" onchange="switchPinout(this.value)"
+                style="background:#1e1e2e;color:#e2e8f0;border:1px solid rgba(99,102,241,0.3);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;">
+                ${boardOptions}
+            </select>
         </div>
         <div class="pinout-wrapper">
             <div class="board-chip">
@@ -466,14 +473,13 @@ function createPinoutHtml(pinoutKey) {
                 <div class="pins-left">${leftHtml}</div>
                 <div class="pins-right">${rightHtml}</div>
             </div>
-            
             <div class="pin-legend">
-                <div class="legend-item"><div class="dot pwr"></div> Power</div>
-                <div class="legend-item"><div class="dot gnd"></div> Ground</div>
-                <div class="legend-item"><div class="dot gpio"></div> GPIO</div>
-                <div class="legend-item"><div class="dot adc"></div> ADC</div>
-                <div class="legend-item"><div class="dot uart"></div> UART / TXRX</div>
-                <div class="legend-item"><div class="dot ctrl"></div> Control</div>
+                <div class="legend-item"><div class="dot pwr"></div>PWR</div>
+                <div class="legend-item"><div class="dot gnd"></div>GND</div>
+                <div class="legend-item"><div class="dot gpio"></div>GPIO</div>
+                <div class="legend-item"><div class="dot adc"></div>ADC</div>
+                <div class="legend-item"><div class="dot uart"></div>UART</div>
+                <div class="legend-item"><div class="dot ctrl"></div>CTRL</div>
             </div>
         </div>
     `;
@@ -742,34 +748,33 @@ function getWebviewContent(metrics) {
     width: 100%;
 }
 
-/* CHIP – compact */
 .board-chip {
-    background: linear-gradient(145deg, #1e1e2a 0%, #111115 100%);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 24px;
-    min-width: 220px;
+    background: linear-gradient(160deg, #1a1a2e 0%, #0f0f1a 100%);
+    border: 1px solid rgba(99,102,241,0.18);
+    border-radius: 16px;
+    min-width: 200px;
     width: auto;
     max-width: 100%;
     position: relative;
     display: flex;
     justify-content: space-between;
-    box-shadow: 0 20px 35px -10px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
-    margin: 20px 0 30px 0;
-    padding: 32px 12px;
+    box-shadow: 0 12px 28px -8px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04);
+    margin: 12px 0 18px 0;
+    padding: 20px 8px;
 }
 
 .board-chip::after {
     content: '';
     position: absolute;
-    top: 12px;
+    top: 8px;
     left: 50%;
     transform: translateX(-50%);
-    width: 20px;
-    height: 20px;
+    width: 14px;
+    height: 14px;
     border-radius: 50%;
-    background: #000;
-    border: 2px solid #2a2a2a;
-    box-shadow: 0 0 6px rgba(0,0,0,0.4);
+    background: #0a0a10;
+    border: 2px solid #2a2a3a;
+    box-shadow: 0 0 4px rgba(0,0,0,0.5);
 }
 
 .chip-label {
@@ -777,83 +782,68 @@ function getWebviewContent(metrics) {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%) rotate(-90deg);
-    font-size: 24px;
+    font-size: 18px;
     font-weight: 800;
-    letter-spacing: 4px;
-    color: rgba(148, 163, 184, 0.15);
+    letter-spacing: 3px;
+    color: rgba(99,102,241,0.1);
     text-transform: uppercase;
     white-space: nowrap;
     pointer-events: none;
-    font-family: 'Segoe UI', 'SF Pro Text', system-ui, sans-serif;
+    font-family: 'Segoe UI', system-ui, sans-serif;
 }
 
-/* PIN COLUMNS – tighter spacing */
 .pins-left, .pins-right {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 6px;
 }
 
 .pin-row {
     display: flex;
     align-items: center;
-    height: 28px;
+    height: 20px;
 }
 
 .pin {
     position: relative;
-    width: 18px;
-    height: 10px;
-    background: #cbd5e1;
+    width: 14px;
+    height: 8px;
+    background: #94a3b8;
     border-radius: 2px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
-    transition: all 0.15s ease;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+    transition: all 0.12s ease;
     cursor: default;
 }
 
-.pin:hover {
-    transform: scaleX(1.1);
-    filter: brightness(1.1);
-}
+.pin:hover { filter: brightness(1.25); }
 
-/* pin labels – adjust positioning for smaller pins */
 .pin-label {
     position: absolute;
     top: 50%;
     transform: translateY(-50%);
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    font-size: 9.5px;
     font-weight: 500;
     white-space: nowrap;
-    background: rgba(0,0,0,0.6);
-    padding: 2px 6px;
-    border-radius: 6px;
-    backdrop-filter: blur(4px);
-    opacity: 0.9;
+    background: rgba(0,0,0,0.72);
+    padding: 1px 5px;
+    border-radius: 4px;
+    opacity: 0.92;
     pointer-events: none;
 }
 
-.pin.left .pin-label {
-    right: 22px;
-    text-align: right;
-}
+.pin.left .pin-label  { right: 18px; text-align: right; }
+.pin.right .pin-label { left: 18px;  text-align: left;  }
 
-.pin.right .pin-label {
-    left: 22px;
-    text-align: left;
-}
-
-/* legend – compact */
 .pin-legend {
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 8px;              /* reduced gap */
-    background: rgba(255,255,255,0.03);
-    backdrop-filter: blur(8px);
-    border-radius: 32px;
-    padding: 8px 16px;     /* less padding */
-    margin-top: 12px;      /* reduced */
+    gap: 6px;
+    background: rgba(255,255,255,0.02);
+    border-radius: 24px;
+    padding: 6px 14px;
+    margin-top: 8px;
     border: 1px solid rgba(255,255,255,0.05);
     box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
@@ -1235,7 +1225,9 @@ function getWebviewContent(metrics) {
 
         <!-- Pinout Diagram Card -->
         <div class="card pinout-card">
-            ${createPinoutHtml(metrics.pinoutKey || metrics.platform)}
+            <div id="pinout-section">
+                ${createPinoutHtml(metrics.pinoutKey || metrics.platform)}
+            </div>
         </div>
 
         <!-- Wi-Fi Manager Card -->
@@ -1426,6 +1418,10 @@ function getWebviewContent(metrics) {
         }
 
         // ── CircuitPython Web Workflow ───────────────────────────────────────
+        function switchPinout(boardKey) {
+            vscode.postMessage({ command: 'switchPinout', boardKey });
+        }
+
         function toggleWebWorkflowForm() {
             const form = document.getElementById('webWorkflowForm');
             if (!form) return;
@@ -1455,6 +1451,12 @@ function getWebviewContent(metrics) {
 
         // ── Message receiver ────────────────────────────────────────────────
         window.addEventListener('message', event => {
+            const m = event.data;
+            if (m.command === 'updatePinout') {
+                const el = document.getElementById('pinout-section');
+                if (el) el.innerHTML = m.html;
+                return;
+            }
             const msg = event.data;
 
             if (msg.command === 'wifiResults') {
@@ -2202,6 +2204,17 @@ except Exception as e:
       }
 
       // ── Switch to Wireless ──────────────────────────────────────────────
+      if (message.command === "switchPinout") {
+        const key = message.boardKey;
+        if (PINOUT_DATA[key]) {
+          panel.webview.postMessage({
+            command: "updatePinout",
+            html: createPinoutHtml(key)
+          });
+        }
+        return;
+      }
+
       if (message.command === "switchToWireless") {
         const wsPort = `ws:${message.ip},micro123`;
         activePort = wsPort;
