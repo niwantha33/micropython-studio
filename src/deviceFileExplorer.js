@@ -146,43 +146,41 @@ class DeviceFileExplorerProvider {
 
         // If it's a CircuitPython project and we have a local drive path (e.g. E:\),
         // we can read it directly from the OS much faster and without mpremote errors!
-        if (this._isCircuitPython && this._deviceCodeDir) {
-            return new Promise((resolve) => {
-                try {
-                    // Map device path (e.g. '/lib') to the local drive path (e.g. 'E:\lib')
-                    const localPath = dirPath === '/' 
-                        ? this._deviceCodeDir 
-                        : pathMod.join(this._deviceCodeDir, dirPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+        const isLocalDrive = this._deviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(this._deviceCodeDir.replace(/[/\\]+$/, '') + '\\');
+        if (this._isCircuitPython && isLocalDrive) {
+            try {
+                // Map device path (e.g. '/lib') to the local drive path (e.g. 'E:\lib')
+                const localPath = dirPath === '/' 
+                    ? this._deviceCodeDir 
+                    : pathMod.join(this._deviceCodeDir, dirPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+                
+                const items = [];
+                const entries = fs.readdirSync(localPath, { withFileTypes: true });
+
+                for (const entry of entries) {
+                    // Skip hidden system files that CircuitPython auto-creates or Windows adds
+                    if (entry.name === 'System Volume Information' || entry.name.startsWith('._') || entry.name.startsWith('.$')) continue;
+
+                    const isDir = entry.isDirectory();
+                    const stat = fs.statSync(pathMod.join(localPath, entry.name));
+                    const size = stat.size;
+                    const fullPath = dirPath === '/' ? `/${entry.name}` : `${dirPath}/${entry.name}`;
                     
-                    const items = [];
-                    const entries = fs.readdirSync(localPath, { withFileTypes: true });
-
-                    for (const entry of entries) {
-                        // Skip hidden system files that CircuitPython auto-creates or Windows adds
-                        if (entry.name === 'System Volume Information' || entry.name.startsWith('._')) continue;
-
-                        const isDir = entry.isDirectory();
-                        const stat = fs.statSync(pathMod.join(localPath, entry.name));
-                        const size = stat.size;
-                        const fullPath = dirPath === '/' ? `/${entry.name}` : `${dirPath}/${entry.name}`;
-                        
-                        items.push(new DeviceFileItem(entry.name, isDir ? null : size, isDir, fullPath));
-                    }
-
-                    items.sort((a, b) => {
-                        if (a.isDirectory && !b.isDirectory) return -1;
-                        if (!a.isDirectory && b.isDirectory) return 1;
-                        return String(a.label).localeCompare(String(b.label));
-                    });
-
-                    this._cache.set(dirPath, items);
-                    resolve(items);
-                } catch (error) {
-                    console.error(`Local fs direct read error for CP: ${error.message}`);
-                    const errItem = new vscode.TreeItem('$(warning) File system unavailable', vscode.TreeItemCollapsibleState.None);
-                    resolve([/** @type {any} */ (errItem)]);
+                    items.push(new DeviceFileItem(entry.name, isDir ? null : size, isDir, fullPath));
                 }
-            });
+
+                items.sort((a, b) => {
+                    if (a.isDirectory && !b.isDirectory) return -1;
+                    if (!a.isDirectory && b.isDirectory) return 1;
+                    return String(a.label).localeCompare(String(b.label));
+                });
+
+                this._cache.set(dirPath, items);
+                return items;
+            } catch (error) {
+                console.error(`Local fs direct read error for CP: ${error.message} - falling back to serial REPL`);
+                // fall through to mpremote serial logic below
+            }
         }
 
         return new Promise((resolve) => {

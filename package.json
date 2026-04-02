@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and debug MicroPython on real hardware",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {
@@ -337,6 +337,11 @@
         },
         {
           "command": "micropython-ide.installPackage",
+          "when": "view == micropython-ide-device-files",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.downloadFromDevice",
           "when": "view == micropython-ide-device-files",
           "group": "navigation"
         }

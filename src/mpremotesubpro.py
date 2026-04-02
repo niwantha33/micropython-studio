@@ -9,6 +9,20 @@ from pathlib import Path
 from typing import Any, Union
 
 
+# Files/folders to avoid downloading from device to local project
+DOWNLOAD_EXCLUDE = {
+    'settings.toml',             # CircuitPython/MicroPython credentials
+    'boot_out.txt',              # CircuitPython auto-generated
+    '.Trashes',                  # macOS
+    '.fseventsd',                # macOS
+    '.Spotlight-V100',           # macOS
+    '.metadata_never_index',     # macOS
+    'System Volume Information', # Windows
+    '$RECYCLE.BIN',              # Windows
+    '.mcu',                      # Extension-internal metadata
+}
+
+
 # ---------------------------------------------------------------------------
 # WebREPL transport
 # mpremote 1.27.0 has no ws: support (transport_ws.py doesn't exist).
@@ -686,47 +700,6 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
 
 
 # ----------------------------
-# Command: ls
-# ----------------------------
-
-def cmd_ls(python_exe, port, path='/'):
-    """List directory contents in a format compatible with mpremote fs ls."""
-    if _is_ws_port(port):
-        host, password = _parse_ws_port(port)
-        conn = WebReplConnection(host, password)
-        try:
-            conn.connect()
-            code = f"""
-import os
-try:
-    for f in os.ilistdir('{path}'):
-        size = f[3] if len(f)>3 else 0
-        is_dir = (f[1] == 0x4000)
-        name = f[0] + ('/' if is_dir else '')
-        print('{{:10}} {{}}'.format(size, name))
-except:
-    pass
-"""
-            import io as _io
-            buf = _io.BytesIO()
-            old = sys.stdout
-            sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
-            conn.exec_code(code)
-            sys.stdout.flush()
-            sys.stdout = old
-            sys.stdout.write(buf.getvalue().decode('utf-8', errors='ignore'))
-        except Exception:
-            pass
-        finally:
-            conn.close()
-        sys.exit(0)
-
-    # Serial
-    _serial_pre_interrupt(python_exe, port)
-    result = run_mpremote(python_exe, ['connect', port, 'fs', 'ls', path], timeout=15)
-    sys.exit(result.returncode)
-
-# ----------------------------
 # Command: exec
 # ----------------------------
 # ----------------------------
@@ -797,6 +770,7 @@ def _get_device_files(python_exe: str, port: str) -> 'list[str]':
 
 def cmd_download(python_exe: str, port: str, dest_dir: str,
                  overwrite: bool = False, skip: bool = False,
+                 rename: bool = False,
                  overwrite_files: 'list[str] | None' = None) -> None:
     """Download all files from the device to a local directory."""
     import json as _json
@@ -813,16 +787,33 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
 
     print(f"📋 Found {len(device_files)} file(s) on device.", file=sys.stderr)
 
+    # Filter out excluded files/folders
+    filtered_files = []
+    for f in device_files:
+        name = f.split('/')[-1]
+        # Skip if name is in exclude list or starts with . (hidden junk)
+        if name in DOWNLOAD_EXCLUDE or (name.startswith('.') and name != '.py'):
+            continue
+        # Also skip if any parent part is in exclude list
+        if any(part in DOWNLOAD_EXCLUDE for part in f.split('/')):
+            continue
+        filtered_files.append(f)
+
+    if len(filtered_files) < len(device_files):
+        diff = len(device_files) - len(filtered_files)
+        print(f"🧹 Ignored {diff} system/junk file(s).", file=sys.stderr)
+        device_files = filtered_files
+
     # Detect conflicts (files that already exist locally)
     conflicts = [
         f for f in device_files
         if (dest / f.lstrip('/')).exists()
     ]
 
-    if conflicts and not overwrite and not skip and overwrite_files is None:
+    if conflicts and not overwrite and not skip and not rename and overwrite_files is None:
         # Signal the extension: print conflict list as JSON then exit 3
         for c in conflicts:
-            print(f"   • {c}", file=sys.stderr)
+            print(f"   * {c}", file=sys.stderr)
         print(_json.dumps({'conflicts': conflicts}), flush=True)
         sys.exit(3)
 
@@ -836,18 +827,29 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
         rel = remote_path.lstrip('/')
         local_path = dest / rel
 
-        # Decide: overwrite / skip / selective
+        # Decide: overwrite / skip / selective / rename
         if local_path.exists():
             if skip:
                 print(f"⏭  Skipped:  {rel}", file=sys.stderr)
                 skipped += 1
                 continue
-            _owf: 'list[str]' = overwrite_files or []  # type: ignore[assignment]
-            if overwrite_files is not None and remote_path not in _owf:
-                print(f"⏭  Skipped:  {rel}", file=sys.stderr)
-                skipped += 1
-                continue
-            # fall through → overwrite
+            if rename:
+                base = local_path.stem
+                ext = local_path.suffix
+                counter = 1
+                new_local = local_path.parent / f"{base}_{counter}{ext}"
+                while new_local.exists():
+                    counter += 1
+                    new_local = local_path.parent / f"{base}_{counter}{ext}"
+                local_path = new_local
+                rel = str(local_path.relative_to(dest)).replace('\\', '/')
+            else:
+                _owf: 'list[str]' = overwrite_files or []  # type: ignore[assignment]
+                if overwrite_files is not None and remote_path not in _owf:
+                    print(f"⏭  Skipped:  {rel}", file=sys.stderr)
+                    skipped += 1
+                    continue
+            # fall through → download (either to original name if overwrite, or new name if renamed)
 
         # Create parent directories locally
         local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -909,7 +911,6 @@ def cmd_ls(python_exe, port, path='/'):
         conn = WebReplConnection(host, password)
         try:
             conn.connect()
-            print(f"ls {path}:")
             code = f"""
 import os
 try:
@@ -940,132 +941,6 @@ except:
     result = run_mpremote(python_exe, ['connect', port, 'fs', 'ls', path], timeout=15)
     sys.exit(result.returncode)
 
-# ----------------------------
-# Command: ls
-# ----------------------------
-
-def cmd_ls(python_exe, port, path='/'):
-    """List directory contents in a format compatible with mpremote fs ls."""
-    if _is_ws_port(port):
-        host, password = _parse_ws_port(port)
-        conn = WebReplConnection(host, password)
-        try:
-            conn.connect()
-            code = f"""
-import os
-try:
-    for f in os.ilistdir('{path}'):
-        size = f[3] if len(f)>3 else 0
-        is_dir = (f[1] == 0x4000)
-        name = f[0] + ('/' if is_dir else '')
-        print('{{:10}} {{}}'.format(size, name))
-except:
-    pass
-"""
-            import io as _io
-            buf = _io.BytesIO()
-            old = sys.stdout
-            sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
-            conn.exec_code(code)
-            sys.stdout.flush()
-            sys.stdout = old
-            sys.stdout.write(buf.getvalue().decode('utf-8', errors='ignore'))
-        except Exception:
-            pass
-        finally:
-            conn.close()
-        sys.exit(0)
-
-    # Serial
-    _serial_pre_interrupt(python_exe, port)
-    result = run_mpremote(python_exe, ['connect', port, 'fs', 'ls', path], timeout=15)
-    sys.exit(result.returncode)
-
-# ----------------------------
-# Command: exec
-# ----------------------------
-# ----------------------------
-# Command: ls
-# ----------------------------
-
-def cmd_ls(python_exe, port, path='/'):
-    """List directory contents in a format compatible with `mpremote fs ls`."""
-    if _is_ws_port(port):
-        host, password = _parse_ws_port(port)
-        conn = WebReplConnection(host, password)
-        try:
-            conn.connect()
-            print(f"ls {path}:")
-            code = f"""
-import os
-try:
-    for f in os.ilistdir('{path}'):
-        size = f[3] if len(f)>3 else 0
-        is_dir = (f[1] == 0x4000)
-        name = f[0] + ('/' if is_dir else '')
-        print('{{:10}} {{}}'.format(size, name))
-except:
-    pass
-"""
-            import io as _io
-            buf = _io.BytesIO()
-            old = sys.stdout
-            sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
-            conn.exec_code(code)
-            sys.stdout.flush()
-            sys.stdout = old
-            sys.stdout.write(buf.getvalue().decode('utf-8', errors='ignore'))
-        except Exception:
-            pass
-        finally:
-            conn.close()
-        sys.exit(0)
-
-    # Serial
-    _serial_pre_interrupt(python_exe, port)
-    result = run_mpremote(python_exe, ['connect', port, 'fs', 'ls', path], timeout=15)
-    sys.exit(result.returncode)
-
-# ----------------------------
-# Command: ls
-# ----------------------------
-
-def cmd_ls(python_exe, port, path='/'):
-    """List directory contents in a format compatible with mpremote fs ls."""
-    if _is_ws_port(port):
-        host, password = _parse_ws_port(port)
-        conn = WebReplConnection(host, password)
-        try:
-            conn.connect()
-            code = f"""
-import os
-try:
-    for f in os.ilistdir('{path}'):
-        size = f[3] if len(f)>3 else 0
-        is_dir = (f[1] == 0x4000)
-        name = f[0] + ('/' if is_dir else '')
-        print('{{:10}} {{}}'.format(size, name))
-except:
-    pass
-"""
-            import io as _io
-            buf = _io.BytesIO()
-            old = sys.stdout
-            sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
-            conn.exec_code(code)
-            sys.stdout.flush()
-            sys.stdout = old
-            sys.stdout.write(buf.getvalue().decode('utf-8', errors='ignore'))
-        except Exception:
-            pass
-        finally:
-            conn.close()
-        sys.exit(0)
-
-    # Serial
-    _serial_pre_interrupt(python_exe, port)
-    result = run_mpremote(python_exe, ['connect', port, 'fs', 'ls', path], timeout=15)
-    sys.exit(result.returncode)
 
 # ----------------------------
 # Command: exec
@@ -1138,6 +1013,7 @@ def main():
     dl_p.add_argument('--dest', required=True, help='Local destination folder (e.g. main/)')
     dl_p.add_argument('--overwrite', action='store_true', help='Overwrite all existing local files')
     dl_p.add_argument('--skip', action='store_true', help='Skip files that already exist locally')
+    dl_p.add_argument('--rename', action='store_true', help='Keep both by renaming the incoming file')
     dl_p.add_argument('--overwrite-files', default='', help='Pipe-separated list of specific files to overwrite')
 
     # Exec
@@ -1176,7 +1052,7 @@ def main():
         cmd_upload(args.python, args.port, args.source, args.dest, args.overwrite)
     elif args.command == 'download':
         owf = [f for f in args.overwrite_files.split('|') if f] if args.overwrite_files else None
-        cmd_download(args.python, args.port, args.dest, args.overwrite, args.skip, owf)
+        cmd_download(args.python, args.port, args.dest, args.overwrite, args.skip, args.rename, owf)
     elif args.command == 'ls':
         cmd_ls(args.python, args.port, args.path)
 

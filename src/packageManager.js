@@ -1,7 +1,9 @@
 const vscode = require('vscode');
 const https = require('https');
 const path = require('path');
+const { exec } = require('child_process');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+
 
 /**
  * Fetch the package index from micropython.org
@@ -100,28 +102,70 @@ async function openPackageManager(context, currentDevicePort, terminal) {
 }
 
 /**
- * Fetch the Adafruit CircuitPython bundle package list from circup / PyPI bundle index.
- * Falls back to a curated list if the network is unavailable.
- * @returns {Promise<Array<{name:string, description:string}>>}
+ * Helper to perform an HTTPS GET request and return the JSON response.
+ * @param {string} url 
+ * @returns {Promise<any>}
  */
-function fetchCircuitPythonPackageIndex() {
-    return new Promise((resolve) => {
-        https.get('https://raw.githubusercontent.com/adafruit/Adafruit_CircuitPython_Bundle/refs/heads/main/circuitpython_library_list.md', (res) => {
+function _fetchJSON(url) {
+    return new Promise((resolve, reject) => {
+        const options = {
+            headers: { 'User-Agent': 'MicroPython-Studio-VSCode' }
+        };
+        https.get(url, options, (res) => {
+            if (res.statusCode === 301 || res.statusCode === 302) {
+                return _fetchJSON(res.headers.location).then(resolve).catch(reject);
+            }
+            if (res.statusCode !== 200) {
+                return reject(new Error(`Failed to fetch ${url}: Status ${res.statusCode}`));
+            }
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
-                // Parse markdown table rows: | adafruit_neopixel | ... |
-                const pkgs = [];
-                for (const line of data.split('\n')) {
-                    const m = line.match(/^\|\s*`?([a-zA-Z0-9_\-]+)`?\s*\|/);
-                    if (m && !m[1].startsWith('Library')) {
-                        pkgs.push({ name: m[1], description: '' });
-                    }
-                }
-                resolve(pkgs.length > 0 ? pkgs : _cpFallbackList());
+                try { resolve(JSON.parse(data)); }
+                catch (e) { reject(e); }
             });
-        }).on('error', () => resolve(_cpFallbackList()));
+        }).on('error', reject);
     });
+}
+
+/**
+ * Fetch the Adafruit and Community library bundles from GitHub releases.
+ * @returns {Promise<Array<{name:string, description:string}>>}
+ */
+async function fetchCircuitPythonPackageIndex() {
+    const bundles = [
+        'adafruit/Adafruit_CircuitPython_Bundle',
+        'adafruit/CircuitPython_Community_Bundle'
+    ];
+    
+    let allPkgs = [];
+    
+    for (const repo of bundles) {
+        try {
+            const release = await _fetchJSON(`https://api.github.com/repos/${repo}/releases/latest`);
+            // Find the JSON index asset
+            const asset = release.assets.find(a => a.name.endsWith('.json') && !a.name.includes('version'));
+            if (asset) {
+                const indexData = await _fetchJSON(asset.browser_download_url);
+                // The index is a dictionary where each key is a library name
+                for (const name in indexData) {
+                    allPkgs.push({
+                        name: name,
+                        description: indexData[name].description || `CircuitPython library: ${name}`
+                    });
+                }
+            }
+        } catch (err) {
+            console.error(`Failed to fetch bundle from ${repo}: ${err.message}`);
+        }
+    }
+
+    if (allPkgs.length === 0) {
+        return _cpFallbackList();
+    }
+
+    // Sort alphabetically
+    return allPkgs.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Curated fallback list if GitHub is unreachable */
@@ -180,13 +224,23 @@ async function openCircuitPythonPackageManager(deviceCodeDir, runProcess, findDr
         ? `USB drive (${drive})`
         : `Wi-Fi (${wwIp}:${wwPort})`;
 
+    // ── Build circup path ──────────────────────────────────────────────────────
+    const venvFolder = getVenvPythonPathFolder();
+    const isWin  = process.platform === 'win32';
+    const circup = path.join(venvFolder, isWin ? 'Scripts' : 'bin', isWin ? 'circup.exe' : 'circup');
+
     // ── Fetch package list ─────────────────────────────────────────────────────
     const packages = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: 'CircuitPython Package Manager',
         cancellable: false
     }, async (progress) => {
-        progress.report({ message: 'Fetching Adafruit bundle library list…' });
+        progress.report({ message: 'Fetching complete library list (may take a few seconds)...' });
+        
+        // Ensure circup is installed 
+        const venvPython = getVenvPythonPath(venvFolder);
+        await new Promise(r => exec(`"${venvPython}" -m pip install circup`, () => r()));
+        
         return await fetchCircuitPythonPackageIndex();
     });
 
@@ -203,10 +257,6 @@ async function openCircuitPythonPackageManager(deviceCodeDir, runProcess, findDr
     if (!selected) return;
 
     // ── Build circup command args ──────────────────────────────────────────────
-    const venvFolder = getVenvPythonPathFolder();
-    const isWin  = process.platform === 'win32';
-    const circup = path.join(venvFolder, isWin ? 'Scripts' : 'bin', isWin ? 'circup.exe' : 'circup');
-
     /** @type {string[]} */
     const circupArgs = [];
 
