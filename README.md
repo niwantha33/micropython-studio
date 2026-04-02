@@ -153,6 +153,16 @@ The extension contributes the following settings:
   - Improved IntelliSense for MicroPython modules
   - Unified command palette and status bar integration
 
+### 0.7.1 
+- **Added**:
+  - More detailed error messages and troubleshooting guides
+
+### 0.7.2 (Current)
+- **Added**:
+  - Support device upload/download 
+  - Improved error handling for file operations
+  - onclick library support for file upload/download
+  
 ---
 
 ## Working with MicroPython Studio
