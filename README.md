@@ -137,20 +137,25 @@ The extension contributes the following settings:
   - Error messaging for connection issues
   - Workspace loading performance
 
-### 0.7.3 (Current)
-- **Added**:
-  - **Clean Terminal UI**: Automatic clearing of terminal command echo for a clean, professional execution experience.
-  - **Output Filtering**: Silent mounting and suppression of absolute local paths from `mpremote` output.
+### 0.6.x 
 
-### 0.7.2
-- **Added**:
-  - Support device upload/download 
-  - Improved error handling for file operations
-  - onclick library support for file upload/download
-
-### 0.7.1 
-- **Added**:
-  - More detailed error messages and troubleshooting guides
+- **New Features**:
+  - Circuitpython (partial support)
+  - Bytecode conversion 
+  - Multiple device support
+  - Circuitpython -  (partial support)
+  - Bytecode conversion - Done
+  - Multiple device support - Done
+  - WebREPL terminal - (partial support)
+  - File upload and download - Done
+  - Device file explorer - Done
+  - Dashboard - Done
+  - Library Install - Done
+  - Pinout view - Done
+  
+- **Enhanced**:
+  - File sync performance 
+  - IntelliSense
 
 ### 0.7.0
 
@@ -167,7 +172,25 @@ The extension contributes the following settings:
   - File sync performance optimization
   - Improved IntelliSense for MicroPython modules
   - Unified command palette and status bar integration
-  
+
+### 0.7.1 
+- **Added**:
+  - More detailed error messages and troubleshooting guides
+
+### 0.7.2
+- **Added**:
+  - Support device upload/download 
+  - Improved error handling for file operations
+  - onclick library support for file upload/download
+
+### 0.7.3 (Current)
+- **Added**:
+  - **Clean Terminal UI**: Automatic clearing of terminal command echo for a clean, professional execution experience.
+  - **Output Filtering**: Silent mounting and suppression of absolute local paths from `mpremote` output.
+  - Enable file manupulation (upload/download) via onclick library for WebREPL connections, providing a seamless wireless file management experience.
+
+
+
 ---
 
 ## Working with MicroPython Studio

@@ -1204,24 +1204,19 @@ def cmd_ls(python_exe, port, path='/'):
             code = f"""
 import os
 try:
-    for f in os.ilistdir('{path}'):
+    for f in os.ilistdir({path!r}):
         size = f[3] if len(f)>3 else 0
         is_dir = (f[1] == 0x4000)
         name = f[0] + ('/' if is_dir else '')
         print('{{:10}} {{}}'.format(size, name))
-except:
-    pass
+except Exception as _e:
+    import sys as _sys
+    print('ls_error:' + str(_e), file=_sys.stderr)
 """
-            import io as _io
-            buf = _io.BytesIO()
-            old = sys.stdout
-            sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
             conn.exec_code(code)
-            sys.stdout.flush()
-            sys.stdout = old
-            sys.stdout.write(buf.getvalue().decode('utf-8', errors='ignore'))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"WebREPL ls failed: {e}", file=sys.stderr)
+            sys.exit(1)
         finally:
             conn.close()
         sys.exit(0)
@@ -1243,6 +1238,105 @@ except:
              sys.exit(1)
         finally: conn.close()
         
+    sys.exit(result.returncode)
+
+
+# ----------------------------
+# Command: cat
+# ----------------------------
+def cmd_cat(python_exe, port, remote_path):
+    """Print file contents to stdout (text mode). Handles both serial and WebREPL."""
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            # Read text file on device and print its contents
+            code = f"""
+try:
+    _f = open({remote_path!r}, 'r')
+    print(_f.read(), end='')
+    _f.close()
+except Exception as _e:
+    import sys as _sys
+    print(str(_e), file=_sys.stderr)
+"""
+            conn.exec_code(code)
+        except Exception as e:
+            print(f"WebREPL cat failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
+        sys.exit(0)
+
+    # Serial: use mpremote fs cat
+    result = run_mpremote(python_exe, ['connect', port, 'fs', 'cat', f':{remote_path}'], timeout=15)
+    sys.exit(result.returncode)
+
+
+# ----------------------------
+# Command: rm
+# ----------------------------
+def cmd_rm(python_exe, port, remote_path, recursive=False):
+    """Remove a file or folder from the device. Handles serial and WebREPL."""
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            if recursive:
+                code = f"""
+import os as _os
+def _rm(p):
+    try:
+        for e in _os.listdir(p):
+            _rm(p + '/' + e)
+        _os.rmdir(p)
+    except OSError:
+        _os.remove(p)
+_rm({remote_path!r})
+print('ok')
+"""
+            else:
+                code = f"import os; os.remove({remote_path!r}); print('ok')"
+            conn.exec_code(code)
+        except Exception as e:
+            print(f"WebREPL rm failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
+        sys.exit(0)
+
+    # Serial
+    if recursive:
+        result = run_mpremote(python_exe, ['connect', port, 'fs', 'rmdir', f':{remote_path}'], timeout=30)
+    else:
+        result = run_mpremote(python_exe, ['connect', port, 'fs', 'rm', f':{remote_path}'], timeout=15)
+    sys.exit(result.returncode)
+
+
+# ----------------------------
+# Command: mv
+# ----------------------------
+def cmd_mv(python_exe, port, src_path, dest_path):
+    """Move/rename a file on the device. Handles serial and WebREPL."""
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            code = f"import os; os.rename({src_path!r}, {dest_path!r}); print('ok')"
+            conn.exec_code(code)
+        except Exception as e:
+            print(f"WebREPL mv failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
+        sys.exit(0)
+
+    # Serial: no direct mpremote mv, use exec
+    code = f"import os; os.rename({src_path!r}, {dest_path!r})"
+    result = run_mpremote(python_exe, ['connect', port, 'exec', code], timeout=15)
     sys.exit(result.returncode)
 
 
@@ -1342,6 +1436,23 @@ def main():
     ls_p.add_argument('--port', required=True)
     ls_p.add_argument('--path', default='/')
 
+    # cat
+    cat_p = subparsers.add_parser('cat', help='Print file contents from device')
+    cat_p.add_argument('--port', required=True)
+    cat_p.add_argument('--path', required=True, help='Remote file path (e.g. /main.py)')
+
+    # rm
+    rm_p = subparsers.add_parser('rm', help='Remove a file or folder from device')
+    rm_p.add_argument('--port', required=True)
+    rm_p.add_argument('--path', required=True, help='Remote path to remove')
+    rm_p.add_argument('--recursive', action='store_true', help='Remove folder recursively')
+
+    # mv
+    mv_p = subparsers.add_parser('mv', help='Move/rename a file on device')
+    mv_p.add_argument('--port', required=True)
+    mv_p.add_argument('--src', required=True, help='Source path on device')
+    mv_p.add_argument('--dest', required=True, help='Destination path on device')
+
     # Mount
     mount_p = subparsers.add_parser('mount', help='Mount folder only')
     mount_p.add_argument('--port', required=True)
@@ -1379,6 +1490,12 @@ def main():
         cmd_download(args.python, args.port, args.dest, args.overwrite, args.skip, args.rename, owf)
     elif args.command == 'ls':
         cmd_ls(args.python, args.port, args.path)
+    elif args.command == 'cat':
+        cmd_cat(args.python, args.port, args.path)
+    elif args.command == 'rm':
+        cmd_rm(args.python, args.port, args.path, args.recursive)
+    elif args.command == 'mv':
+        cmd_mv(args.python, args.port, args.src, args.dest)
     elif args.command == 'kick':
         cmd_kick(args.python, args.port)
     elif args.command == 'hard_reset':
