@@ -129,7 +129,7 @@ except ImportError:
 # 5. Boot log (written by safe boot.py on each reboot)
 print("---BOOTLOG---")
 try:
-    with open('boot.log') as f:
+    with open('mps_boot.log') as f:
         print(f.read().strip())
 except:
     print("NO_LOG")
@@ -251,30 +251,23 @@ except:
       metrics.wifi.supported = false;
     }
 
-    // Apply Boot Log — written by robust boot.py on each reboot
-    if (bootLogLines.length > 0 && bootLogLines[0] !== "NO_LOG") {
+    // Apply Boot Log — written by safe boot.py on each reboot
+    const rawLog = bootLogLines.join("").trim();
+    if (rawLog && rawLog !== "NO_LOG") {
       metrics.bootLog.hasLog = true;
-      const reversedLog = [...bootLogLines].reverse();
-      // Find the last status message (Ready, WiFi connected, or Error)
-      let lastOkLine = reversedLog.find(l => l.includes("[OK]"));
-      let lastWarnLine = reversedLog.find(l => l.includes("[WARN]"));
-      let lastFailLine = reversedLog.find(l => l.includes("[FAIL]") || l.includes("[ERROR]"));
-
-      if (lastOkLine) {
+      if (rawLog.startsWith("OK:")) {
         metrics.bootLog.status = "ok";
-        // Extract IP: [OK] === Ready: 192.168.1.10 === or [OK] WiFi connected: 192.168.1.10
-        const ipMatch = lastOkLine.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);
-        metrics.bootLog.ip = ipMatch ? ipMatch[1] : "";
+        metrics.bootLog.ip = rawLog.slice(3);
         metrics.bootLog.detail = `Remote access active — ${metrics.bootLog.ip}`;
-      } else if (lastFailLine) {
-        metrics.bootLog.status = "error";
-        metrics.bootLog.detail = `Boot error: ${lastFailLine.split('] ')[1] || lastFailLine}`;
-      } else if (lastWarnLine) {
+      } else if (rawLog.startsWith("WIFI_TIMEOUT:")) {
         metrics.bootLog.status = "timeout";
         metrics.bootLog.detail = "Wi-Fi not available — USB mode only";
+      } else if (rawLog.startsWith("ERROR:")) {
+        metrics.bootLog.status = "error";
+        metrics.bootLog.detail = `Boot error: ${rawLog.slice(6)}`;
       } else {
         metrics.bootLog.status = "unknown";
-        metrics.bootLog.detail = bootLogLines[bootLogLines.length - 1]; // show latest entry
+        metrics.bootLog.detail = rawLog;
       }
     }
   } catch (err) {
@@ -1238,43 +1231,48 @@ function getWebviewContent(metrics) {
         </div>
 
         <!-- Wi-Fi Manager Card -->
-        ${metrics.wifi.supported
-      ? `
+        ${
+          metrics.wifi.supported
+            ? `
         <div class="card wifi-card" id="wifiCard">
             <h2>📶 Wi-Fi Manager</h2>
 
             <div id="wifiStatusArea">
-                ${metrics.wifi.connected
-        ? `<div class="wifi-status-badge connected"><span class="wifi-dot"></span> Connected</div>
+                ${
+                  metrics.wifi.connected
+                    ? `<div class="wifi-status-badge connected"><span class="wifi-dot"></span> Connected</div>
                        <div class="wifi-info-row">
                            <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">${metrics.wifi.ssid || "—"}</span></div>
                            <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp">${metrics.wifi.ip}</span></div>
                        </div>`
-        : `<div class="wifi-status-badge disconnected"><span class="wifi-dot"></span> Not Connected</div>`
-      }
-                ${metrics.bootLog.hasLog
-        ? `
+                    : `<div class="wifi-status-badge disconnected"><span class="wifi-dot"></span> Not Connected</div>`
+                }
+                ${
+                  metrics.bootLog.hasLog
+                    ? `
                 <div class="boot-log-row boot-log-${metrics.bootLog.status}" id="bootLogRow">
                     <span class="boot-log-icon">${metrics.bootLog.status === "ok" ? "✅" : metrics.bootLog.status === "timeout" ? "⚠️" : "❌"}</span>
                     <span class="boot-log-text">Last boot: ${metrics.bootLog.detail}</span>
                     <button class="btn btn-danger btn-sm" id="disableRemoteBtn" style="margin-left:auto">🔒 Disable Remote Access</button>
                 </div>`
-        : ""
-      }
+                    : ""
+                }
             </div>
 
             <div class="wifi-actions" id="wifiActionsBar">
                 <button class="btn btn-primary" id="scanBtn">🔍 Scan Networks</button>
-                ${metrics.wifi.connected
-        ? `<button class="btn btn-ghost" id="disconnectBtn">Disconnect</button>`
-        : ""
-      }
+                ${
+                  metrics.wifi.connected
+                    ? `<button class="btn btn-ghost" id="disconnectBtn">Disconnect</button>`
+                    : ""
+                }
             </div>
 
             <div class="wifi-scan-area" id="wifiScanArea" style="display:none"></div>
 
-            ${metrics.firmware === "CircuitPython"
-        ? `
+            ${
+              metrics.firmware === "CircuitPython"
+                ? `
             <div class="webrepl-area" id="webWorkflowArea">
                 <div class="toggle-row">
                     <div style="flex:1">
@@ -1314,8 +1312,9 @@ function getWebviewContent(metrics) {
                     </div>
                     <div id="webWorkflowStatus" style="margin-top:8px;font-size:12px"></div>
                 </div>
-                ${metrics.wifi.connected
-          ? `
+                ${
+                  metrics.wifi.connected
+                    ? `
                 <div class="webrepl-ip-box" style="margin-top:12px">
                     <div style="flex:1">
                         <div class="webrepl-ip-label">🌐 Web Workflow IP</div>
@@ -1323,11 +1322,11 @@ function getWebviewContent(metrics) {
                         <div style="font-size:11px;color:#94a3b8;margin-top:4px">Access at http://${metrics.wifi.ip}/edit/</div>
                     </div>
                 </div>`
-          : ""
-        }
+                    : ""
+                }
             </div>`
-        : metrics.wifi.connected
-          ? `
+                : metrics.wifi.connected
+                  ? `
             <div class="webrepl-area" id="webReplArea">
                 <div class="toggle-row">
                     <label class="toggle">
@@ -1341,10 +1340,11 @@ function getWebviewContent(metrics) {
                 </div>
                 <div id="webReplInfoBox" style="display:none"></div>
             </div>`
-          : ""
-      }
-            ${metrics.bootLog.status === "ok"
-        ? `
+                  : ""
+            }
+            ${
+              metrics.bootLog.status === "ok"
+                ? `
             <div class="webrepl-ip-box" id="webReplActiveBox">
                 <div style="flex:1">
                     <div class="webrepl-ip-label">⭐ Remote Access Active  ·  Password: micro123</div>
@@ -1356,15 +1356,15 @@ function getWebviewContent(metrics) {
                     <button class="btn btn-danger btn-sm" id="disableRemoteBtnBox">🔒 Disable</button>
                 </div>
             </div>`
-        : ""
-      }
+                : ""
+            }
         </div>`
-      : `
+            : `
         <div class="card wifi-card">
             <h2>📶 Wi-Fi Manager</h2>
             <div class="wifi-status-badge no-wifi"><span class="wifi-dot"></span> Wi-Fi Not Supported on this board</div>
         </div>`
-    }
+        }
 
     </div>
 
@@ -1763,7 +1763,7 @@ async function openDeviceDashboard(
       try {
         const cfgPath = path.join(workspaceRoot, "device.cfg");
         mcuFromCfg = (await getConfigValue(cfgPath, "device", "mcu")) || "";
-      } catch (_) { }
+      } catch (_) {}
 
       metrics.pinoutKey = resolvePinoutKey(metrics.platform, mcuFromCfg);
       panel.webview.html = getWebviewContent(metrics);
@@ -1917,7 +1917,7 @@ print('OK')
             activePort,
             outputChannel,
           );
-        } catch (_) { }
+        } catch (_) {}
         updateDashboard();
         return;
       }
@@ -1941,7 +1941,7 @@ print('OK')
               /(?:IP\s+address|ip)[\s:]+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/i,
             );
             if (m) ip = m[1];
-          } catch (_) { }
+          } catch (_) {}
         }
         if (ip) {
           const cfgPath = path.join(workspaceRoot, "device.cfg");
@@ -2075,181 +2075,50 @@ print('OK')
         //  • Full try/except — any crash is caught, USB serial stays alive
         //  • Writes mps_boot.log — Dashboard reads this to show last-boot status
         const bootPyContent = [
-          "# ===== boot.py - Robust Remote Access + USB Detection =====",
-          "",
+          "# MicroPython Studio - Remote Access Boot",
+          "# To disable: Dashboard > Disable Remote Access",
           "import time",
-          "import gc",
-          "import machine",
-          "import network",
-          "import webrepl",
-          "import os",
-          "import sys",
-          "import select",
+          "time.sleep(2)  # USB CDC must be up before any network code runs",
           "",
-          "# Config defaults",
-          "WIFI_SSID = ''",
-          "WIFI_PASS = ''",
-          "WEBREPL_PASS = 'micro123'",
-          "",
-          "# Load from webrepl_cfg.py if available",
-          "try:",
-          "    import webrepl_cfg",
-          "    WIFI_SSID = getattr(webrepl_cfg, 'SSID', WIFI_SSID)",
-          "    WIFI_PASS = getattr(webrepl_cfg, 'WIFI_PASS', WIFI_PASS)",
-          "    WEBREPL_PASS = getattr(webrepl_cfg, 'PASS', WEBREPL_PASS)",
-          "except:",
-          "    pass",
-          "",
-          "USB_WAIT_TIME = 3000      # ms (USB detection window)",
-          "WIFI_TIMEOUT = 20000      # ms",
-          "WIFI_RETRIES = 3",
-          "DEBUG = True",
-          "",
-          "# ===== Logging =====",
-          "def _log(msg, level='INFO'):",
-          "    if DEBUG:",
-          "        print(f'[{level}] {msg}')",
-          "",
-          "def _log_file(msg):",
+          "def _log(msg):",
           "    try:",
-          "        with open('boot.log', 'a') as f:",
+          "        with open('mps_boot.log', 'w') as f:",
           "            f.write(msg)",
           "    except:",
           "        pass",
+          "    print('[MPS]', msg)",
           "",
-          "def _log_clear():",
-          "    try:",
-          "        with open('boot.log', 'w') as f:",
-          "            emty=''",
-          "            f.write(emty)",
-          "    except:",
-          "        pass",
-          "",
-          "",
-          "# ===== USB Detection =====",
-          "def usb_activity_detect(timeout_ms):",
-          "    '''",
-          "    Detect if user is connected via USB REPL",
-          "    or sending input during boot window.",
-          "    '''",
-          "    _log('USB detect window...', 'DEBUG')",
-          "",
-          "    start = time.ticks_ms()",
-          "",
-          "    while time.ticks_diff(time.ticks_ms(), start) < timeout_ms:",
-          "        try:",
-          "            # Check if stdin has data (USB REPL active)",
-          "            if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:",
-          "                _log('USB activity detected!', 'OK')",
-          "                return True",
-          "        except:",
-          "            pass",
-          "",
-          "        time.sleep_ms(50)",
-          "",
-          "    return False",
-          "",
-          "",
-          "# ===== WiFi =====",
-          "def connect_wifi(ssid, password):",
-          "    if not ssid:",
-          "        _log('WiFi SSID not configured', 'WARN')",
-          "        return None",
-          "",
+          "try:",
+          "    import network",
           "    sta = network.WLAN(network.STA_IF)",
           "    sta.active(True)",
-          "",
-          "    for attempt in range(WIFI_RETRIES):",
-          "        _log(f'WiFi attempt {attempt+1}/{WIFI_RETRIES}')",
-          "",
+          `    sta.connect('${safeSsid}', '${safePassword}')`,
+          "    for _ in range(15):",
           "        if sta.isconnected():",
-          "            return sta",
-          "",
-          "        try:",
-          "            sta.disconnect()",
-          "        except:",
-          "            pass",
-          "",
-          "        sta.connect(ssid, password)",
-          "",
-          "        start = time.ticks_ms()",
-          "        while not sta.isconnected():",
-          "            if time.ticks_diff(time.ticks_ms(), start) > WIFI_TIMEOUT:",
-          "                _log('WiFi timeout', 'WARN')",
-          "                break",
-          "            time.sleep_ms(200)",
-          "",
-          "        if sta.isconnected():",
-          "            ip = sta.ifconfig()[0]",
-          "            _log(f'Connected: {ip}', 'OK')",
-          "            _log_file(f'IP: {ip}')",
-          "            return sta",
-          "",
-          "    return None",
-          "",
-          "",
-          "# ===== WebREPL =====",
-          "def setup_webrepl():",
-          "    try:",
-          "        # Clean restart (important!)",
-          "        try:",
-          "            webrepl.stop()",
-          "        except:",
-          "            pass",
-          "",
-          "        time.sleep_ms(200)",
-          "",
+          "            break",
+          "        time.sleep(1)",
+          "    if sta.isconnected():",
+          "        ip = sta.ifconfig()[0]",
+          "        import webrepl",
           "        webrepl.start()",
-          "        _log('WebREPL started', 'OK')",
-          "        return True",
-          "",
-          "    except Exception as e:",
-          "        _log(f'WebREPL error: {e}', 'ERROR')",
-          "        return False",
-          "",
-          "",
-          "# ===== Main =====",
-          "def main():",
-          "    _log_clear()",
-          "    _log(f'Boot @ {machine.freq()} Hz')",
-          "",
-          "    # 1. USB Detection Window",
-          "    if usb_activity_detect(USB_WAIT_TIME):",
-          "        _log('USB mode - skipping WiFi/WebREPL', 'WARN')",
-          "        return",
-          "",
-          "    # 2. WiFi",
-          "    wlan = connect_wifi(WIFI_SSID, WIFI_PASS)",
-          "",
-          "    if wlan and wlan.isconnected():",
-          "        setup_webrepl()",
-          "        _log(f'Ready @ {wlan.ifconfig()[0]}', 'OK')",
+          "        _log('OK:' + ip)",
           "    else:",
-          "        _log('USB mode only', 'WARN')",
-          "",
-          "    gc.collect()",
-          "",
-          "",
-          "# ===== Safe Boot =====",
-          "try:",
-          "    main()",
+          "        _log('WIFI_TIMEOUT:not available')",
           "except Exception as e:",
-          "    _log(f'CRITICAL: {e}', 'FAIL')",
-        ].join("\n");
+          "    _log('ERROR:' + str(e))",
+        ].join("\\n");
 
         const script = `import network, sys
 sta = network.WLAN(network.STA_IF)
 ip = sta.ifconfig()[0] if sta.isconnected() else ''
 try:
-    # 1. Write webrepl + wifi password config
+    # 1. Write webrepl password config
     with open('webrepl_cfg.py', 'w') as f:
         f.write("PASS = 'micro123'\\n")
-        f.write("SSID = '${safeSsid}'\\n")
-        f.write("WIFI_PASS = '${safePassword}'\\n")
-    # 2. Write stable boot.py
+    # 2. Write safe boot.py with USB-first delay and crash protection
     with open('boot.py', 'w') as f:
         f.write("""${bootPyContent}""")
-    # 3. Start WebREPL for this session
+    # 3. Start WebREPL for this session (evict stale cached modules first)
     for mod in ('webrepl_cfg', 'webrepl'):
         if mod in sys.modules:
             del sys.modules[mod]
@@ -2303,7 +2172,7 @@ except Exception as e:
 try:
     with open('boot.py', 'w') as f:
         f.write('# boot.py\\n# Remote access disabled by MicroPython Studio\\n')
-    for f in ('webrepl_cfg.py', 'boot.log'):
+    for f in ('webrepl_cfg.py', 'mps_boot.log'):
         try:
             os.remove(f)
         except:
