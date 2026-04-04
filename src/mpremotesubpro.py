@@ -9,6 +9,34 @@ from pathlib import Path
 from typing import Any, Union
 
 
+# ---------------------------------------------------------------------------
+# UI Helpers for Professional Terminal Output
+# ---------------------------------------------------------------------------
+
+CLR_RESET = "\033[0m"
+CLR_CYAN = "\033[36m"
+CLR_YELLOW = "\033[33m"
+CLR_GREEN = "\033[32m"
+CLR_BLUE = "\033[34m"
+CLR_MAGENTA = "\033[35m"
+CLR_WHITE = "\033[37m"
+CLR_DIM = "\033[2m"
+CLR_BOLD = "\033[1m"
+
+def _print_ui_header(port, folder, file_path):
+    """Prints a professional UI header for the execution session."""
+    file_name = Path(file_path).name
+    folder_name = Path(folder).name if folder else "Device Filesystem"
+    
+    # Modern Box Drawing UI
+    print(f"\n{CLR_CYAN}╔══════════════════════════════════════════════════════════════╗{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_BOLD}🚀 MicroPython Studio - Execution Session{CLR_RESET}             {CLR_CYAN}║{CLR_RESET}")
+    print(f"{CLR_CYAN}╠══════════════════════════════════════════════════════════════╣{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM}📂 Project:{CLR_RESET}  {folder_name:<46}  {CLR_CYAN}║{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM}🔌 Port:   {CLR_RESET}  {port:<46}  {CLR_CYAN}║{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM}⚡ Running: {CLR_RESET}  {file_name:<46}  {CLR_CYAN}║{CLR_RESET}")
+    print(f"{CLR_CYAN}╚══════════════════════════════════════════════════════════════╝{CLR_RESET}\n")
+
 # Files/folders to avoid downloading from device to local project
 DOWNLOAD_EXCLUDE = {
     'settings.toml',             # CircuitPython/MicroPython credentials
@@ -501,6 +529,10 @@ def run_mpremote(python_exe, args_list, timeout=60):
                             file=sys.stderr
                         )
                     else:
+                        # 🔇 Silence noisy "driver information" (long absolute paths)
+                        # from mpremote to keep the professional look.
+                        if "is mounted at /remote" in line or "Connected to " in line:
+                            continue
                         print(line, end="")
                 elif proc.poll() is not None:  # EOF and process has exited
                     break
@@ -560,10 +592,7 @@ def cmd_run(python_exe, port, file_path, folder=None):
         print(f"❌ Mount folder not found: {folder}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"📁 Mounting: {folder}", file=sys.stderr)
-    print(f"🚀 Running: {file_path}", file=sys.stderr)
-    print(f"🔌 Port: {port}", file=sys.stderr)
-    print("-" * 50, file=sys.stderr)
+    _print_ui_header(port, folder, file_path)
 
     # Pre-interrupt: send Ctrl+C to stop any running code on the device.
     # This prevents "could not enter raw repl" when the device is busy.
@@ -620,7 +649,7 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
         if hard:
             # 💡 Hard Reset Sequence (ESP32/ESP8266 logic)
             # RTS pulls EN low (Reset), DTR pulls GPIO0 low (Boot)
-            print(f"🔌 Hardware reset (DTR/RTS) on {port}...", file=sys.stderr)
+            print(f"{CLR_YELLOW}🔌 Performing Hardware Reset (DTR/RTS) on {port}...{CLR_RESET}", file=sys.stderr)
             s.setRTS(True)
             s.setDTR(False)
             time.sleep(0.1)
@@ -628,7 +657,7 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
             time.sleep(0.5)  # Wait for boot
         
         # 💡 Ultimate Kick: Ctrl-C Storm + Soft Reset (Ctrl-D)
-        print(f"⚡ Sending interrupt storm and soft reset to {port}...", file=sys.stderr)
+        print(f"{CLR_DIM}⚡ Synchronizing with device...{CLR_RESET}", file=sys.stderr)
         for _ in range(10):
             s.write(b'\x03')  # Ctrl-C
             time.sleep(0.01)
@@ -674,9 +703,7 @@ def cmd_run_mcu(python_exe, port, file_path):
         print(f"❌ File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"🚀 Running on MCU: {file_path}", file=sys.stderr)
-    print(f"🔌 Port: {port}", file=sys.stderr)
-    print("-" * 50, file=sys.stderr)
+    _print_ui_header(port, None, file_path)
 
     # WebSocket: mpremote has no ws: transport — use our own WebREPL implementation
     if _is_ws_port(port):

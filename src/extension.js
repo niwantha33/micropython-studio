@@ -252,6 +252,30 @@ function updateDeviceStatusBar() {
 
 // ─── Extension Activation ────────────────────────────────────────────────────
 
+/**
+ * Send a command to a terminal after clearing it for a clean, professional look.
+ * @param {vscode.Terminal} terminal
+ * @param {string} command
+ */
+async function sendCleanCommand(terminal, command) {
+    terminal.show(true);
+
+    // 1. Clear the terminal UI and scrollback for max polish
+    await vscode.commands.executeCommand('workbench.action.terminal.clear');
+
+    const isWindows = process.platform === 'win32';
+    if (isWindows) {
+        // 2. Hide the prompt and command echo on Windows (CMD/PowerShell)
+        // By sending 'cls' on the same line as the command (cls & command),
+        // the terminal clears AFTER the shell has already 'printed' the echo.
+        // This ensures the user only sees the professional execution header.
+        terminal.sendText(`cls & ${command}`);
+    } else {
+        // macOS/Linux equivalent
+        terminal.sendText(`clear; ${command}`);
+    }
+}
+
 function activate(context) {
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
@@ -349,8 +373,7 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
 
             const terminal = getMpremoteTerminal();
-            terminal.sendText(`"${venvPython}" -m mpremote connect ${gRemoteDevicePort} resume repl`);
-            terminal.show();
+            sendCleanCommand(terminal, `"${venvPython}" -m mpremote connect ${gRemoteDevicePort} resume repl`);
         })
     );
 
@@ -394,8 +417,7 @@ function activate(context) {
                     `--port "${runPort}"`,
                     `--file "${filePath}"`
                 ].join(' ');
-                terminal.show();
-                terminal.sendText(cpCmd);
+                sendCleanCommand(terminal, cpCmd);
                 return;
             }
 
@@ -436,8 +458,7 @@ function activate(context) {
                 ].join(' ');
             }
 
-            terminal.show();
-            terminal.sendText(cmd);
+            sendCleanCommand(terminal, cmd);
         })
     );
 
