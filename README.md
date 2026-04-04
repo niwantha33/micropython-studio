@@ -137,7 +137,22 @@ The extension contributes the following settings:
   - Error messaging for connection issues
   - Workspace loading performance
 
-### 0.7.0 (Current)
+### 0.7.3 (Current)
+- **Added**:
+  - **Clean Terminal UI**: Automatic clearing of terminal command echo for a clean, professional execution experience.
+  - **Output Filtering**: Silent mounting and suppression of absolute local paths from `mpremote` output.
+
+### 0.7.2
+- **Added**:
+  - Support device upload/download 
+  - Improved error handling for file operations
+  - onclick library support for file upload/download
+
+### 0.7.1 
+- **Added**:
+  - More detailed error messages and troubleshooting guides
+
+### 0.7.0
 
 - **Complete Support**:
   - Full CircuitPython compatibility (USB & Web Workflow)
@@ -152,16 +167,6 @@ The extension contributes the following settings:
   - File sync performance optimization
   - Improved IntelliSense for MicroPython modules
   - Unified command palette and status bar integration
-
-### 0.7.1 
-- **Added**:
-  - More detailed error messages and troubleshooting guides
-
-### 0.7.2 (Current)
-- **Added**:
-  - Support device upload/download 
-  - Improved error handling for file operations
-  - onclick library support for file upload/download
   
 ---
 
