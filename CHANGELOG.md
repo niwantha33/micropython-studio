@@ -4,6 +4,12 @@ All notable changes to the "micropython-studio" extension will be documented in 
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.7.3] - 2026-04-04
+
+### Added
+- **Clean Terminal UI**: Implemented automatic terminal clearing that hides the long execution command echo, providing a professional, GUI-like experience.
+- **Output Filtering**: Added logic to suppress noisy `mpremote` system messages (e.g., "is mounted at /remote") and absolute local paths to keep the terminal output focused on code results.
+
 ## [0.7.0] - 2026-03-29
 
 ### Added

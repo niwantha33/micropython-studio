@@ -476,43 +476,6 @@ function getHtml(ip, csp, termJsUri, fileSaverUri, cssUri) {
     <div id="term-wrap">
         <div id="term"></div>
     </div>
-    
-    <aside id="sidebar">
-        <div>
-            <span class="section-title">Transfer Controls</span>
-            <div class="card">
-                <div class="file-input-group">
-                    <label style="font-size: 11px; opacity: 0.8;">Send to Device</label>
-                    <input type="file" id="put-file-select" title="Choose file to upload">
-                    <div id="put-file-list" style="color:var(--vscode-descriptionForeground); font-size:10px; margin-top:2px">No file selected</div>
-                    <button id="put-file-button" class="btn" onclick="putFile()" disabled>
-                        <span>↑</span> Upload File
-                    </button>
-                </div>
-                
-                <div class="file-input-group" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
-                    <label style="font-size: 11px; opacity: 0.8;">Download from Device</label>
-                    <input type="text" id="get_filename" placeholder="/main.py">
-                    <button class="btn" onclick="getFile()">
-                        <span>↓</span> Download File
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <div>
-            <span class="section-title">Transfer Status</span>
-            <div class="card" id="file-status-container">
-                <div id="file-status">Ready</div>
-            </div>
-        </div>
-
-        <div style="margin-top: auto;">
-            <div style="font-size: 10px; opacity: 0.5; text-align: center;">
-                MicroPython Studio WebREPL v1.1
-            </div>
-        </div>
-    </aside>
 </div>
 
 <script src="${termJsUri}"></script>

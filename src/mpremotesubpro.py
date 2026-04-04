@@ -9,6 +9,34 @@ from pathlib import Path
 from typing import Any, Union
 
 
+# ---------------------------------------------------------------------------
+# UI Helpers for Professional Terminal Output
+# ---------------------------------------------------------------------------
+
+CLR_RESET = "\033[0m"
+CLR_CYAN = "\033[36m"
+CLR_YELLOW = "\033[33m"
+CLR_GREEN = "\033[32m"
+CLR_BLUE = "\033[34m"
+CLR_MAGENTA = "\033[35m"
+CLR_WHITE = "\033[37m"
+CLR_DIM = "\033[2m"
+CLR_BOLD = "\033[1m"
+
+def _print_ui_header(port, folder, file_path):
+    """Prints a professional UI header for the execution session."""
+    file_name = Path(file_path).name
+    folder_name = Path(folder).name if folder else "Device Filesystem"
+    
+    # Modern Box Drawing UI
+    print(f"\n{CLR_CYAN}╔════════════════════════════════════════════════════════════════════════{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_BOLD} MicroPython Studio - Execution Session{CLR_RESET}")
+    print(f"{CLR_CYAN}╠══════════════════════════════════════════════════════════════════════════{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Project:{CLR_RESET}  {folder_name:<46}{CLR_CYAN}{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Port:   {CLR_RESET}  {port:<46}     {CLR_CYAN}{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Running:{CLR_RESET}  {file_name:<46}{CLR_CYAN}{CLR_RESET}")
+    print(f"{CLR_CYAN}╚══════════════════════════════════════════════════════════════════════════{CLR_RESET}\n")
+
 # Files/folders to avoid downloading from device to local project
 DOWNLOAD_EXCLUDE = {
     'settings.toml',             # CircuitPython/MicroPython credentials
@@ -83,7 +111,7 @@ class WebReplConnection:
     def connect(self):
         import websocket as _wslib  # type: ignore[import]
         url = f'ws://{self.host}:{self.port}'
-        self.ws = _wslib.create_connection(url, timeout=15)
+        self.ws = _wslib.create_connection(url, timeout=25)
 
         # Read password prompt — comes as a WebSocket TEXT frame
         prompt = self._ws_recv(8)
@@ -239,6 +267,158 @@ class WebReplConnection:
         return 1
 
 
+# ---------------------------------------------------------------------------
+# Serial transport (robust fallback for mpremote)
+# ---------------------------------------------------------------------------
+
+class SerialConnection:
+    """
+    Direct serial transport using pyserial.
+    Provides a more robust 'enter_raw_repl' than mpremote in some cases.
+    """
+    def __init__(self, port: str, baudrate: int = 115200) -> None:
+        self.port = port
+        self.baudrate = baudrate
+        self.serial: 'Any' = None
+
+    def connect(self):
+        import serial
+        self.serial = serial.Serial(self.port, self.baudrate, timeout=1)
+
+    def close(self):
+        if self.serial:
+            self.serial.close()
+
+    def _drain(self):
+        """Consume all pending bytes aggressively."""
+        deadline = time.time() + 0.3
+        while time.time() < deadline:
+            if self.serial.in_waiting:
+                self.serial.read(self.serial.in_waiting)
+                deadline = time.time() + 0.1 # reset deadline if data still arriving
+            time.sleep(0.01)
+
+    def enter_raw_repl(self, soft_reset=True):
+        """Aggressively enter raw REPL mode."""
+        self.serial.write(b'\r\x03\x03\x03') # Ctrl-C storm
+        time.sleep(0.1)
+        if soft_reset:
+            self.serial.write(b'\x04') # Ctrl-D
+            time.sleep(1.5) # Wait for reboot
+            self.serial.write(b'\x03\x03') # Interrupt boot script
+        
+        self._drain()
+        self.serial.write(b'\x01') # Ctrl-A (Raw REPL)
+        time.sleep(0.1)
+        
+        # Read until we see the prompt '>' or timeout
+        data = b''
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            if self.serial.in_waiting:
+                data += self.serial.read(self.serial.in_waiting)
+                if data.endswith(b'>'):
+                    return True
+            time.sleep(0.05)
+        return False
+
+    def exec_code(self, code: Union[str, bytes], timeout=30):
+        if not self.enter_raw_repl(soft_reset=False):
+             # Try one more time with soft reset if polite entry failed
+            if not self.enter_raw_repl(soft_reset=True):
+                raise Exception("Could not enter raw REPL via serial")
+
+        code_buf = code.encode() if isinstance(code, str) else code
+        self.serial.write(code_buf + b'\x04') # Code + Ctrl-D
+
+        # Read: OK<stdout>\x04<stderr>\x04>
+        buf = bytearray()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.serial.in_waiting:
+                buf.extend(self.serial.read(self.serial.in_waiting))
+                if buf.endswith(b'\x04>'):
+                    break
+            time.sleep(0.02)
+        
+        # Exit raw REPL
+        self.serial.write(b'\x02') # Ctrl-B
+        
+        raw = bytes(buf)
+        if raw.startswith(b'OK'): raw = raw[2:]
+        parts = raw.split(b'\x04')
+        stdout = parts[0] if len(parts) > 0 else b''
+        stderr = parts[1] if len(parts) > 1 else b''
+        
+        if stdout:
+            sys.stdout.buffer.write(stdout)
+            sys.stdout.buffer.flush()
+        if stderr:
+             sys.stderr.write(stderr.decode('utf-8', errors='replace'))
+             return 1
+        return 0
+
+    def list_files(self, path='/'):
+        """Fetch directory listing manually via raw REPL."""
+        code = f"""
+import os
+try:
+    for f in os.ilistdir({path!r}):
+        size = f[3] if len(f)>3 else 0
+        is_dir = (f[1] == 0x4000)
+        name = f[0] + ('/' if is_dir else '')
+        print('{{:10}} {{}}'.format(size, name))
+except: pass
+"""
+        return self.exec_code(code)
+
+    def put_file(self, source_path: Path, remote_path: str):
+        """Upload a file using hex-encoding chunk by chunk."""
+        import binascii
+        data = source_path.read_bytes()
+        dest = remote_path.replace('\\', '/')
+        
+        print(f"📤 Robust upload: {source_path.name} -> {dest} ({len(data)} bytes)", file=sys.stderr)
+        
+        # 1. Initialize file
+        self.exec_code(f"f=open({dest!r},'wb')\nf.close()")
+        
+        # 2. Append hex-encoded chunks (safe-sized chunks for ESP/Pico buffers)
+        chunk_size = 120 # 60 bytes of binary
+        hex_data = binascii.hexlify(data).decode()
+        
+        total_chunks = (len(hex_data) + chunk_size - 1) // chunk_size
+        for i in range(0, len(hex_data), chunk_size):
+            chunk = hex_data[i:i+chunk_size]
+            code = f"import binascii; f=open({dest!r},'ab'); f.write(binascii.unhexlify({chunk!r})); f.close()"
+            self.exec_code(code)
+            if (i // chunk_size) % 10 == 0:
+                print(f"   [{ (i // chunk_size) + 1}/{total_chunks}]", file=sys.stderr)
+        return 0
+
+    def get_file(self, remote_path: str, local_path: Path):
+        """Download a file using hex-encoding via stdout."""
+        dest = remote_path.replace('\\', '/')
+        code = f"import binascii; f=open({dest!r},'rb'); print(binascii.hexlify(f.read()).decode()); f.close()"
+        
+        import io as _io
+        import binascii as _ba
+        buf = _io.BytesIO()
+        old_stdout = sys.stdout
+        sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
+        try:
+            rc = self.exec_code(code)
+            sys.stdout.flush()
+        finally:
+            sys.stdout = old_stdout
+            
+        if rc == 0:
+            hex_str = buf.getvalue().decode('utf-8', errors='ignore').strip()
+            local_path.write_bytes(_ba.unhexlify(hex_str))
+            return 0
+        return 1
+
+
 def _parse_ws_port(port):
     """Parse 'ws:IP,password' or 'ws:IP' into (host, password)."""
     raw = port[3:]  # strip 'ws:'
@@ -349,6 +529,10 @@ def run_mpremote(python_exe, args_list, timeout=60):
                             file=sys.stderr
                         )
                     else:
+                        # 🔇 Silence noisy "driver information" (long absolute paths)
+                        # from mpremote to keep the professional look.
+                        if "is mounted at /remote" in line or "Connected to " in line:
+                            continue
                         print(line, end="")
                 elif proc.poll() is not None:  # EOF and process has exited
                     break
@@ -408,14 +592,11 @@ def cmd_run(python_exe, port, file_path, folder=None):
         print(f"❌ Mount folder not found: {folder}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"📁 Mounting: {folder}", file=sys.stderr)
-    print(f"🚀 Running: {file_path}", file=sys.stderr)
-    print(f"🔌 Port: {port}", file=sys.stderr)
-    print("-" * 50, file=sys.stderr)
+    _print_ui_header(port, folder, file_path)
 
     # Pre-interrupt: send Ctrl+C to stop any running code on the device.
     # This prevents "could not enter raw repl" when the device is busy.
-    _serial_pre_interrupt(python_exe, port)
+    _serial_pre_interrupt(python_exe, port, hard=False)
 
     # 🔥 Correct command: mount "folder" run "full/file/path"
     args = [
@@ -426,30 +607,76 @@ def cmd_run(python_exe, port, file_path, folder=None):
 
     result = run_mpremote(python_exe, args, timeout=30)
 
-    # Auto-retry once on raw REPL failure (device may need an extra Ctrl+C)
+    # Auto-retry once on raw REPL failure (device may need an extra hard kick)
     if result.returncode != 0:
-        _serial_pre_interrupt(python_exe, port)
-        time.sleep(0.5)
-        print("🔄 Retrying...", file=sys.stderr)
+        print("💡 First attempt failed. Trying a hardware reset/kick...", file=sys.stderr)
+        _serial_pre_interrupt(python_exe, port, hard=True)
+        time.sleep(1.0)
+        print("🔄 Retrying with mpremote...", file=sys.stderr)
         result = run_mpremote(python_exe, args, timeout=30)
+        
+    # Final fallback: if mpremote still fails, use our robust SerialConnection
+    if result.returncode != 0:
+        print("💡 mpremote still failing. Trying robust serial fallback...", file=sys.stderr)
+        conn = SerialConnection(port)
+        try:
+            conn.connect()
+            code = Path(file_path).read_bytes()
+            rc = conn.exec_code(code)
+            sys.exit(rc)
+        except Exception as e:
+            print(f"❌ Robust fallback also failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
 
     sys.exit(result.returncode)
 
 
-def _serial_pre_interrupt(python_exe, port):
-    """Fast pre-interrupt using pyserial. Falls back to mpremote if serial is unavailable."""
+def _serial_pre_interrupt(python_exe, port, hard=False):
+    """Fast pre-interrupt using pyserial. Falls back to mpremote if serial is unavailable.
+    If hard=True, toggles DTR/RTS to trigger a hardware reset on ESP32/8266.
+    """
     if _is_ws_port(port):
         return
         
     try:
         import serial
         import time
-        s = serial.Serial(port, 115200, timeout=0.1)
-        s.write(b'\r\x03\x03')
+        # Open with 1s timeout to ensure we don't hang if the port is busy elsewhere
+        s = serial.Serial(port, 115200, timeout=1)
+        
+        if hard:
+            # 💡 Hard Reset Sequence (ESP32/ESP8266 logic)
+            # RTS pulls EN low (Reset), DTR pulls GPIO0 low (Boot)
+            print(f"{CLR_YELLOW}🔌 Performing Hardware Reset (DTR/RTS) on {port}...{CLR_RESET}", file=sys.stderr)
+            s.setRTS(True)
+            s.setDTR(False)
+            time.sleep(0.1)
+            s.setRTS(False)  # Release reset
+            time.sleep(0.5)  # Wait for boot
+        
+        # 💡 Ultimate Kick: Ctrl-C Storm + Soft Reset (Ctrl-D)
+        print(f"{CLR_DIM}⚡ Synchronizing with device...{CLR_RESET}", file=sys.stderr)
+        for _ in range(10):
+            s.write(b'\x03')  # Ctrl-C
+            time.sleep(0.01)
+        
+        s.write(b'\x04')      # Ctrl-D (Soft Reboot)
+        time.sleep(1.5)       # CRITICAL: Wait for MicroPython to re-initialize
+        
+        for _ in range(5):
+            s.write(b'\x03')  # Ctrl-C again to clear any boot messages
+            time.sleep(0.01)
+
+        s.write(b'\r')
         time.sleep(0.05)
+        
         s.close()
         return
-    except Exception:
+    except Exception as e:
+        # If pyserial fails (e.g. port already open by another tool), 
+        # mpremote will likely fail too, but we try its polite method as fallback.
         pass
 
     try:
@@ -476,9 +703,7 @@ def cmd_run_mcu(python_exe, port, file_path):
         print(f"❌ File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"🚀 Running on MCU: {file_path}", file=sys.stderr)
-    print(f"🔌 Port: {port}", file=sys.stderr)
-    print("-" * 50, file=sys.stderr)
+    _print_ui_header(port, None, file_path)
 
     # WebSocket: mpremote has no ws: transport — use our own WebREPL implementation
     if _is_ws_port(port):
@@ -498,16 +723,32 @@ def cmd_run_mcu(python_exe, port, file_path):
         sys.exit(rc)
 
     # Serial: pre-interrupt any running code, then run
-    _serial_pre_interrupt(python_exe, port)
+    _serial_pre_interrupt(python_exe, port, hard=False)
     args = ['connect', port, 'run', str(file_path)]
     result = run_mpremote(python_exe, args, timeout=30)
 
-    # Auto-retry once on failure
+    # Auto-retry once on failure with hardware kick
     if result.returncode != 0:
-        _serial_pre_interrupt(python_exe, port)
-        time.sleep(0.5)
-        print("🔄 Retrying...", file=sys.stderr)
+        print("💡 First attempt failed. Trying a hardware reset/kick...", file=sys.stderr)
+        _serial_pre_interrupt(python_exe, port, hard=True)
+        time.sleep(1.0)
+        print("🔄 Retrying with mpremote...", file=sys.stderr)
         result = run_mpremote(python_exe, args, timeout=30)
+
+    # Final fallback: robust serial
+    if result.returncode != 0:
+        print("💡 mpremote still failing. Trying robust serial fallback...", file=sys.stderr)
+        conn = SerialConnection(port)
+        try:
+            conn.connect()
+            code = Path(file_path).read_bytes()
+            rc = conn.exec_code(code)
+            sys.exit(rc)
+        except Exception as e:
+            print(f"❌ Robust fallback also failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
 
     sys.exit(result.returncode)
 
@@ -641,7 +882,22 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
     if source.is_file():
         remote = dest.rstrip('/') + '/' + source.name
         print(f"📤 Uploading {source.name} -> {remote}", file=sys.stderr)
+        # 💡 Safety delay to prevent port conflict
+        time.sleep(0.5)
         result = run_mpremote(python_exe, ['connect', port, 'fs', 'cp', str(source), f':{remote}'], timeout=30)
+        
+        # Robust Fallback
+        if result.returncode != 0:
+             print("💡 mpremote failed. Trying robust serial fallback...", file=sys.stderr)
+             conn = SerialConnection(port)
+             try:
+                 conn.connect()
+                 rc = conn.put_file(source, remote)
+                 sys.exit(rc)
+             except Exception as e:
+                 print(f"❌ Robust fallback also failed: {e}", file=sys.stderr)
+                 sys.exit(1)
+             finally: conn.close()
         sys.exit(result.returncode)
 
     files = sorted(f for f in source.rglob('*') if f.is_file())
@@ -690,10 +946,23 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
         rel = str(f.relative_to(source)).replace('\\', '/')
         remote = dest.rstrip('/') + '/' + rel
         print(f"[{i}/{len(files)}] {rel}", file=sys.stderr)
+        
+        time.sleep(0.5) # Port safety delay
         result = run_mpremote(python_exe, ['connect', port, 'fs', 'cp', str(f), f':{remote}'], timeout=30)
+        
+        # Robust Fallback per file
         if result.returncode != 0:
-            print(f"❌ Failed to upload {rel}", file=sys.stderr)
-            sys.exit(result.returncode)
+            print(f"💡 mpremote failed for {rel}. Trying robust fallback...", file=sys.stderr)
+            conn = SerialConnection(port)
+            try:
+                conn.connect()
+                rc = conn.put_file(f, remote)
+                if rc != 0: sys.exit(rc)
+            except Exception as e:
+                print(f"❌ Robust fallback also failed for {rel}: {e}", file=sys.stderr)
+                sys.exit(1)
+            finally: conn.close()
+            time.sleep(0.5)
 
     print(f"\n✅ Upload complete ({len(files)} file(s))", file=sys.stderr)
     sys.exit(0)
@@ -877,13 +1146,11 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
                 hex_str = buf.getvalue().decode('utf-8', errors='ignore').strip()
                 import binascii as _ba
                 local_path.write_bytes(_ba.unhexlify(hex_str))
-            except Exception as e:
-                print(f"❌ Failed: {remote_path}: {e}", file=sys.stderr)
-                continue
             finally:
                 conn.close()
         else:
             import subprocess as _sp
+            time.sleep(0.5) # Port safety delay
             result = _sp.run(
                 [python_exe, '-m', 'mpremote', 'connect', port,
                  'fs', 'cp', f':{remote_path}', str(local_path)],
@@ -901,6 +1168,29 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
 
 
 # ----------------------------
+# Command: kick / hard_reset
+# ----------------------------
+
+def cmd_kick(python_exe, port):
+    """Wake up a device using hardware toggles and interrupts."""
+    print(f"🚀 Attempting to wake up device on {port}...", file=sys.stderr)
+    _serial_pre_interrupt(python_exe, port, hard=True)
+    print("✅ Kick complete.", file=sys.stderr)
+    sys.exit(0)
+
+
+def cmd_hard_reset(python_exe, port):
+    """Force a reboot using hardware toggles and soft commands."""
+    print(f"🔥 Performing hard reset on {port}...", file=sys.stderr)
+    _serial_pre_interrupt(python_exe, port, hard=True)
+    # Attempt to send software reset command if we can connect now
+    args = ['connect', port, 'exec', 'import machine; machine.reset()']
+    run_mpremote(python_exe, args, timeout=5)
+    print("✅ Reset signal sent.", file=sys.stderr)
+    sys.exit(0)
+
+
+# ----------------------------
 # Command: ls
 # ----------------------------
 
@@ -914,31 +1204,139 @@ def cmd_ls(python_exe, port, path='/'):
             code = f"""
 import os
 try:
-    for f in os.ilistdir('{path}'):
+    for f in os.ilistdir({path!r}):
         size = f[3] if len(f)>3 else 0
         is_dir = (f[1] == 0x4000)
         name = f[0] + ('/' if is_dir else '')
         print('{{:10}} {{}}'.format(size, name))
-except:
-    pass
+except Exception as _e:
+    import sys as _sys
+    print('ls_error:' + str(_e), file=_sys.stderr)
 """
-            import io as _io
-            buf = _io.BytesIO()
-            old = sys.stdout
-            sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
             conn.exec_code(code)
-            sys.stdout.flush()
-            sys.stdout = old
-            sys.stdout.write(buf.getvalue().decode('utf-8', errors='ignore'))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"WebREPL ls failed: {e}", file=sys.stderr)
+            sys.exit(1)
         finally:
             conn.close()
         sys.exit(0)
 
     # Serial
-    _serial_pre_interrupt(python_exe, port)
+    time.sleep(0.5) # Port safety delay
+    _serial_pre_interrupt(python_exe, port, hard=False)
     result = run_mpremote(python_exe, ['connect', port, 'fs', 'ls', path], timeout=15)
+    
+    if result.returncode != 0:
+        print("💡 mpremote ls failed. Trying robust serial fallback...", file=sys.stderr)
+        conn = SerialConnection(port)
+        try:
+            conn.connect()
+            rc = conn.list_files(path)
+            sys.exit(rc)
+        except Exception as e:
+             print(f"❌ Robust fallback also failed: {e}", file=sys.stderr)
+             sys.exit(1)
+        finally: conn.close()
+        
+    sys.exit(result.returncode)
+
+
+# ----------------------------
+# Command: cat
+# ----------------------------
+def cmd_cat(python_exe, port, remote_path):
+    """Print file contents to stdout (text mode). Handles both serial and WebREPL."""
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            # Read text file on device and print its contents
+            code = f"""
+try:
+    _f = open({remote_path!r}, 'r')
+    print(_f.read(), end='')
+    _f.close()
+except Exception as _e:
+    import sys as _sys
+    print(str(_e), file=_sys.stderr)
+"""
+            conn.exec_code(code)
+        except Exception as e:
+            print(f"WebREPL cat failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
+        sys.exit(0)
+
+    # Serial: use mpremote fs cat
+    result = run_mpremote(python_exe, ['connect', port, 'fs', 'cat', f':{remote_path}'], timeout=15)
+    sys.exit(result.returncode)
+
+
+# ----------------------------
+# Command: rm
+# ----------------------------
+def cmd_rm(python_exe, port, remote_path, recursive=False):
+    """Remove a file or folder from the device. Handles serial and WebREPL."""
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            if recursive:
+                code = f"""
+import os as _os
+def _rm(p):
+    try:
+        for e in _os.listdir(p):
+            _rm(p + '/' + e)
+        _os.rmdir(p)
+    except OSError:
+        _os.remove(p)
+_rm({remote_path!r})
+print('ok')
+"""
+            else:
+                code = f"import os; os.remove({remote_path!r}); print('ok')"
+            conn.exec_code(code)
+        except Exception as e:
+            print(f"WebREPL rm failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
+        sys.exit(0)
+
+    # Serial
+    if recursive:
+        result = run_mpremote(python_exe, ['connect', port, 'fs', 'rmdir', f':{remote_path}'], timeout=30)
+    else:
+        result = run_mpremote(python_exe, ['connect', port, 'fs', 'rm', f':{remote_path}'], timeout=15)
+    sys.exit(result.returncode)
+
+
+# ----------------------------
+# Command: mv
+# ----------------------------
+def cmd_mv(python_exe, port, src_path, dest_path):
+    """Move/rename a file on the device. Handles serial and WebREPL."""
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+        try:
+            conn.connect()
+            code = f"import os; os.rename({src_path!r}, {dest_path!r}); print('ok')"
+            conn.exec_code(code)
+        except Exception as e:
+            print(f"WebREPL mv failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
+        sys.exit(0)
+
+    # Serial: no direct mpremote mv, use exec
+    code = f"import os; os.rename({src_path!r}, {dest_path!r})"
+    result = run_mpremote(python_exe, ['connect', port, 'exec', code], timeout=15)
     sys.exit(result.returncode)
 
 
@@ -965,9 +1363,21 @@ def cmd_exec(python_exe, port, code):
             conn.close()
         sys.exit(rc)
 
-    result = run_mpremote(python_exe, ['connect', port, 'exec', code], timeout=10)
+    # Serial path: try mpremote first, then our robust SerialConnection
+    result = run_mpremote(python_exe, ['connect', port, 'exec', code], timeout=15)
     if result.returncode != 0:
-        sys.exit(result.returncode)
+        print("💡 mpremote failed to execute. Trying robust serial fallback...", file=sys.stderr)
+        conn = SerialConnection(port)
+        try:
+            conn.connect()
+            rc = conn.exec_code(code)
+            sys.exit(rc)
+        except Exception as e:
+            print(f"❌ Robust fallback also failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
+    sys.exit(0)
 
 # ----------------------------
 # CLI
@@ -1026,6 +1436,23 @@ def main():
     ls_p.add_argument('--port', required=True)
     ls_p.add_argument('--path', default='/')
 
+    # cat
+    cat_p = subparsers.add_parser('cat', help='Print file contents from device')
+    cat_p.add_argument('--port', required=True)
+    cat_p.add_argument('--path', required=True, help='Remote file path (e.g. /main.py)')
+
+    # rm
+    rm_p = subparsers.add_parser('rm', help='Remove a file or folder from device')
+    rm_p.add_argument('--port', required=True)
+    rm_p.add_argument('--path', required=True, help='Remote path to remove')
+    rm_p.add_argument('--recursive', action='store_true', help='Remove folder recursively')
+
+    # mv
+    mv_p = subparsers.add_parser('mv', help='Move/rename a file on device')
+    mv_p.add_argument('--port', required=True)
+    mv_p.add_argument('--src', required=True, help='Source path on device')
+    mv_p.add_argument('--dest', required=True, help='Destination path on device')
+
     # Mount
     mount_p = subparsers.add_parser('mount', help='Mount folder only')
     mount_p.add_argument('--port', required=True)
@@ -1034,6 +1461,14 @@ def main():
     # Unmount
     unmount_p = subparsers.add_parser('unmount', help='Unmount /remote')
     unmount_p.add_argument('--port', required=True)
+
+    # Kick
+    kick_p = subparsers.add_parser('kick', help='Wake up a device using hardware reset lines')
+    kick_p.add_argument('--port', required=True)
+
+    # Hard reset
+    hr_p = subparsers.add_parser('hard_reset', help='Force hardware reset and software reboot')
+    hr_p.add_argument('--port', required=True)
 
     args = parser.parse_args()
 
@@ -1055,6 +1490,16 @@ def main():
         cmd_download(args.python, args.port, args.dest, args.overwrite, args.skip, args.rename, owf)
     elif args.command == 'ls':
         cmd_ls(args.python, args.port, args.path)
+    elif args.command == 'cat':
+        cmd_cat(args.python, args.port, args.path)
+    elif args.command == 'rm':
+        cmd_rm(args.python, args.port, args.path, args.recursive)
+    elif args.command == 'mv':
+        cmd_mv(args.python, args.port, args.src, args.dest)
+    elif args.command == 'kick':
+        cmd_kick(args.python, args.port)
+    elif args.command == 'hard_reset':
+        cmd_hard_reset(args.python, args.port)
 
 
 if __name__ == '__main__':

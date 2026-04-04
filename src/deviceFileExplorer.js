@@ -14,6 +14,7 @@ const os = require('os');
 const fs = require('fs');
 const pathMod = require('path');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const wsQueue = require('./wsQueue');
 
 const execAsync = promisify(exec);
 
@@ -183,7 +184,7 @@ class DeviceFileExplorerProvider {
             }
         }
 
-        return new Promise((resolve) => {
+        const lsOp = () => new Promise((resolve) => {
             const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
             const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" ls --port "${this._port}" --path "${dirPath}"`;
 
@@ -204,6 +205,10 @@ class DeviceFileExplorerProvider {
                 resolve(items);
             });
         });
+
+        return this._port && this._port.startsWith('ws:')
+            ? wsQueue.run(lsOp)
+            : lsOp();
     }
 
     /**
@@ -341,30 +346,41 @@ class DeviceFileExplorerProvider {
 
     /**
      * Move a single file on the device using os.rename().
-     * Writes a temp Python script to avoid shell-quoting issues on Windows.
+     * Routes WS ports through mpremotesubpro.py mv to avoid mpremote WS limitation.
      */
     _moveFileOnDevice(srcPath, destPath) {
         return new Promise((resolve, reject) => {
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+            const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
 
-            const code = [
-                'import os',
-                `os.rename(${JSON.stringify(srcPath)}, ${JSON.stringify(destPath)})`,
-                "print('ok')"
-            ].join('\n');
+            let cmd;
+            if (this._port && this._port.startsWith('ws:')) {
+                cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" mv --port "${this._port}" --src "${srcPath}" --dest "${destPath}"`;
+            } else {
+                const code = [
+                    'import os',
+                    `os.rename(${JSON.stringify(srcPath)}, ${JSON.stringify(destPath)})`,
+                    "print('ok')"
+                ].join('\n');
+                const tmpFile = pathMod.join(os.tmpdir(), 'mps_move.py');
+                fs.writeFileSync(tmpFile, code, 'utf8');
+                cmd = `"${venvPython}" -m mpremote connect ${this._port} run "${tmpFile}"`;
+            }
 
-            const tmpFile = pathMod.join(os.tmpdir(), 'mps_move.py');
-            fs.writeFileSync(tmpFile, code, 'utf8');
-
-            const cmd = `"${venvPython}" -m mpremote connect ${this._port} run "${tmpFile}"`;
-            exec(cmd, { timeout: 15000 }, (error, _stdout, stderr) => {
-                try { fs.unlinkSync(tmpFile); } catch (_) {}
-                if (error || (stderr && stderr.includes('Traceback'))) {
-                    reject(new Error(stderr || error?.message || 'Unknown error'));
-                } else {
-                    resolve();
-                }
+            const moveOp = () => new Promise((res, rej) => {
+                exec(cmd, { timeout: 15000 }, (error, _stdout, stderr) => {
+                    if (!this._port.startsWith('ws:')) {
+                        try { fs.unlinkSync(pathMod.join(os.tmpdir(), 'mps_move.py')); } catch (_) {}
+                    }
+                    if (error || (stderr && stderr.includes('Traceback'))) {
+                        rej(new Error(stderr || error?.message || 'Unknown error'));
+                    } else {
+                        res();
+                    }
+                });
             });
+            const p = this._port && this._port.startsWith('ws:') ? wsQueue.run(moveOp) : moveOp();
+            p.then(resolve, reject);
         });
     }
 }
@@ -390,9 +406,14 @@ async function readDeviceFile(port, deviceFilePath) {
             cancellable: false
         },
         async () => {
-            const cmd = `"${venvPython}" -m mpremote connect ${port} fs cat :${deviceFilePath}`;
+            // WS ports: mpremote has no WebSocket transport — use mpremotesubpro.py cat
+            const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
+            const cmd = port.startsWith('ws:')
+                ? `"${venvPython}" "${scriptPath}" --python "${venvPython}" cat --port "${port}" --path "${deviceFilePath}"`
+                : `"${venvPython}" -m mpremote connect ${port} fs cat :${deviceFilePath}`;
             try {
-                const { stdout } = await execAsync(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 });
+                const execOp = () => execAsync(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 });
+                const { stdout } = await (port.startsWith('ws:') ? wsQueue.run(execOp) : execOp());
                 const fileName = deviceFilePath.split('/').pop();
                 const lang = fileName.endsWith('.py') ? 'python'
                            : fileName.endsWith('.json') ? 'json' : 'plaintext';
@@ -439,16 +460,30 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
 
     const venvFolder = getVenvPythonPathFolder();
     const venvPython = getVenvPythonPath(venvFolder);
-    const cmd = `"${venvPython}" -m mpremote connect ${port} fs rm :${deviceFilePath}`;
+    const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
 
-    exec(cmd, { timeout: 15000 }, (error) => {
-        if (error) {
-            vscode.window.showErrorMessage(`Failed to delete ${deviceFilePath}: ${error.message}`);
-        } else {
-            vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
-            provider.refresh();
-        }
+    // WS ports: mpremote has no WebSocket transport — use mpremotesubpro.py rm
+    const cmd = port.startsWith('ws:')
+        ? `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFilePath}"`
+        : `"${venvPython}" -m mpremote connect ${port} fs rm :${deviceFilePath}`;
+
+    const rmOp = () => new Promise((resolve) => {
+        exec(cmd, { timeout: 15000 }, (error) => {
+            if (error) {
+                vscode.window.showErrorMessage(`Failed to delete ${deviceFilePath}: ${error.message}`);
+            } else {
+                vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
+                provider.refresh();
+            }
+            resolve();
+        });
     });
+
+    if (port.startsWith('ws:')) {
+        wsQueue.run(rmOp);
+    } else {
+        rmOp();
+    }
 }
 
 /**
@@ -485,36 +520,52 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
 
     const venvFolder = getVenvPythonPathFolder();
     const venvPython = getVenvPythonPath(venvFolder);
+    const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
 
-    // Write the recursive-delete script to a temp file to avoid shell quoting issues
-    const code = [
-        'import os',
-        'def _rm(p):',
-        '    try:',
-        '        for e in os.listdir(p):',
-        '            _rm(p + "/" + e)',
-        '        os.rmdir(p)',
-        '    except OSError:',
-        '        os.remove(p)',
-        `_rm(${JSON.stringify(deviceFolderPath)})`,
-        "print('ok')"
-    ].join('\n');
+    let cmd;
+    if (port.startsWith('ws:')) {
+        // WS ports: mpremote has no WebSocket transport — use mpremotesubpro.py rm --recursive
+        cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFolderPath}" --recursive`;
+    } else {
+        // Serial: write recursive-delete script to temp file to avoid shell quoting issues
+        const code = [
+            'import os',
+            'def _rm(p):',
+            '    try:',
+            '        for e in os.listdir(p):',
+            '            _rm(p + "/" + e)',
+            '        os.rmdir(p)',
+            '    except OSError:',
+            '        os.remove(p)',
+            `_rm(${JSON.stringify(deviceFolderPath)})`,
+            "print('ok')"
+        ].join('\n');
+        const tmpFile = pathMod.join(os.tmpdir(), 'mps_rmtree.py');
+        fs.writeFileSync(tmpFile, code, 'utf8');
+        cmd = `"${venvPython}" -m mpremote connect ${port} run "${tmpFile}"`;
+    }
 
-    const tmpFile = pathMod.join(os.tmpdir(), 'mps_rmtree.py');
-    fs.writeFileSync(tmpFile, code, 'utf8');
-
-    const cmd = `"${venvPython}" -m mpremote connect ${port} run "${tmpFile}"`;
-
-    exec(cmd, { timeout: 30000 }, (error, _stdout, stderr) => {
-        try { fs.unlinkSync(tmpFile); } catch (_) {}
-        if (error || (stderr && stderr.includes('Traceback'))) {
-            const msg = stderr || error?.message || 'Unknown error';
-            vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${msg}`);
-        } else {
-            vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
-            provider.refresh();
-        }
+    const rmTreeOp = () => new Promise((resolve) => {
+        exec(cmd, { timeout: 30000 }, (error, _stdout, stderr) => {
+            if (!port.startsWith('ws:')) {
+                try { fs.unlinkSync(pathMod.join(os.tmpdir(), 'mps_rmtree.py')); } catch (_) {}
+            }
+            if (error || (stderr && stderr.includes('Traceback'))) {
+                const msg = stderr || error?.message || 'Unknown error';
+                vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${msg}`);
+            } else {
+                vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
+                provider.refresh();
+            }
+            resolve();
+        });
     });
+
+    if (port.startsWith('ws:')) {
+        wsQueue.run(rmTreeOp);
+    } else {
+        rmTreeOp();
+    }
 }
 
 module.exports = {

@@ -9,6 +9,7 @@
 const vscode = require('vscode');
 const { exec, spawn } = require('child_process');
 const path = require('path');
+const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
@@ -90,6 +91,114 @@ function runPythonProcess(exe, args, onComplete) {
     proc.on('error', err => {
         channel.appendLine(`❌ Failed to start process: ${err.message}`);
     });
+}
+
+/**
+ * Like runPythonProcess but returns a Promise<number|null> with the exit code.
+ * Used by the ws: queue wrappers below so spawned processes can be serialised.
+ * @param {string} exe
+ * @param {string[]} args
+ * @returns {Promise<number|null>}
+ */
+function _spawnAsync(exe, args) {
+    return new Promise((resolve) => {
+        const channel = vscode.window.createOutputChannel('MicroPython Studio');
+        channel.show(true);
+        channel.appendLine('─'.repeat(50));
+        const proc = spawn(exe, args);
+        proc.stdout.on('data', d => channel.append(d.toString()));
+        proc.stderr.on('data', d => channel.append(d.toString()));
+        proc.on('close', code => resolve(code));
+        proc.on('error', err => {
+            channel.appendLine(`❌ Failed to start process: ${err.message}`);
+            resolve(null);
+        });
+    });
+}
+
+/**
+ * Upload via the ws: queue. Handles the conflict (exit-code 3) dialog just
+ * like runUpload, but each spawn is serialised through wsQueue so the device's
+ * single WebSocket connection is never double-booked.
+ * @param {string} exe
+ * @param {string[]} baseArgs
+ * @param {()=>void} [onDone]
+ */
+async function _runUploadQueued(exe, baseArgs, onDone) {
+    const code = await wsQueue.run(() => _spawnAsync(exe, baseArgs));
+    if (code === 3) {
+        const answer = await vscode.window.showWarningMessage(
+            'Some files already exist on the device. Overwrite them?',
+            { modal: true },
+            'Overwrite',
+            'Cancel'
+        );
+        if (answer === 'Overwrite') {
+            await wsQueue.run(() => _spawnAsync(exe, [...baseArgs, '--overwrite']));
+        }
+    }
+    if (onDone) onDone();
+}
+
+/**
+ * Download via the ws: queue. Mirrors runDownload's conflict-resolution logic
+ * but every spawn goes through wsQueue.
+ * @param {string} exe
+ * @param {string[]} baseArgs
+ */
+async function _runDownloadQueued(exe, baseArgs) {
+    const { code, stdoutBuf } = await wsQueue.run(() => new Promise((resolve) => {
+        let buf = '';
+        const channel = vscode.window.createOutputChannel('MicroPython Studio');
+        channel.show(true);
+        channel.appendLine('─'.repeat(50));
+        const proc = spawn(exe, baseArgs);
+        proc.stdout.on('data', d => { buf += d.toString(); channel.append(d.toString()); });
+        proc.stderr.on('data', d => channel.append(d.toString()));
+        proc.on('error', err => channel.appendLine(`❌ ${err.message}`));
+        proc.on('close', c => resolve({ code: c, stdoutBuf: buf }));
+    }));
+
+    if (code !== 3) return;
+
+    let conflicts = [];
+    for (const line of stdoutBuf.split('\n')) {
+        try {
+            const msg = JSON.parse(line.trim());
+            if (msg.conflicts) { conflicts = msg.conflicts; break; }
+        } catch (_) {}
+    }
+
+    const pick = await vscode.window.showQuickPick([
+        { label: '$(sync)       Overwrite all',       id: 'overwrite' },
+        { label: '$(file-add)   Keep (Rename)',        id: 'rename' },
+        { label: '$(debug-step-over) Skip existing',  id: 'skip' },
+        { label: '$(list-tree)  Choose files',        id: 'choose' }
+    ], { placeHolder: `${conflicts.length} file(s) already exist locally. What should we do?` });
+
+    if (!pick) return;
+
+    const pickId = /** @type {any} */(pick).id;
+    if (pickId === 'overwrite') {
+        await wsQueue.run(() => _spawnAsync(exe, [...baseArgs, '--overwrite']));
+    } else if (pickId === 'rename') {
+        await wsQueue.run(() => _spawnAsync(exe, [...baseArgs, '--rename']));
+    } else if (pickId === 'skip') {
+        await wsQueue.run(() => _spawnAsync(exe, [...baseArgs, '--skip']));
+    } else if (pickId === 'choose') {
+        const items = /** @type {vscode.QuickPickItem[]} */ (
+            conflicts.map(f => ({ label: /** @type {string} */ (f), picked: true }))
+        );
+        const chosen = /** @type {vscode.QuickPickItem[] | undefined} */ (
+            await vscode.window.showQuickPick(items, {
+                placeHolder: 'Select files to overwrite (unchecked = skip)',
+                canPickMany: true
+            })
+        );
+        if (!chosen || chosen.length === 0) return;
+        const owf = chosen.map(i => i.label).join('|');
+        await wsQueue.run(() => _spawnAsync(exe, [...baseArgs, '--overwrite-files', owf]));
+    }
 }
 
 /**
@@ -252,6 +361,30 @@ function updateDeviceStatusBar() {
 
 // ─── Extension Activation ────────────────────────────────────────────────────
 
+/**
+ * Send a command to a terminal after clearing it for a clean, professional look.
+ * @param {vscode.Terminal} terminal
+ * @param {string} command
+ */
+async function sendCleanCommand(terminal, command) {
+    terminal.show(true);
+
+    // 1. Clear the terminal UI and scrollback for max polish
+    await vscode.commands.executeCommand('workbench.action.terminal.clear');
+
+    const isWindows = process.platform === 'win32';
+    if (isWindows) {
+        // 2. Hide the prompt and command echo on Windows (CMD/PowerShell)
+        // By sending 'cls' on the same line as the command (cls & command),
+        // the terminal clears AFTER the shell has already 'printed' the echo.
+        // This ensures the user only sees the professional execution header.
+        terminal.sendText(`cls & ${command}`);
+    } else {
+        // macOS/Linux equivalent
+        terminal.sendText(`clear; ${command}`);
+    }
+}
+
 function activate(context) {
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
@@ -349,8 +482,7 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
 
             const terminal = getMpremoteTerminal();
-            terminal.sendText(`"${venvPython}" -m mpremote connect ${gRemoteDevicePort} resume repl`);
-            terminal.show();
+            sendCleanCommand(terminal, `"${venvPython}" -m mpremote connect ${gRemoteDevicePort} resume repl`);
         })
     );
 
@@ -394,8 +526,7 @@ function activate(context) {
                     `--port "${runPort}"`,
                     `--file "${filePath}"`
                 ].join(' ');
-                terminal.show();
-                terminal.sendText(cpCmd);
+                sendCleanCommand(terminal, cpCmd);
                 return;
             }
 
@@ -436,8 +567,7 @@ function activate(context) {
                 ].join(' ');
             }
 
-            terminal.show();
-            terminal.sendText(cmd);
+            sendCleanCommand(terminal, cmd);
         })
     );
 
@@ -558,12 +688,14 @@ function activate(context) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const uploadArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', filePath, '--dest', ''];
+            const onDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
-            runPythonProcess(venvPython, [
-                scriptPath, '--python', venvPython,
-                'upload', '--port', gRemoteDevicePort,
-                '--source', filePath, '--dest', ''
-            ], () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+            if (gRemoteDevicePort.startsWith('ws:')) {
+                _runUploadQueued(venvPython, uploadArgs, onDone);
+            } else {
+                runPythonProcess(venvPython, uploadArgs, onDone);
+            }
         })
     );
 
@@ -607,12 +739,14 @@ function activate(context) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const folderArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', folderPath, '--dest', dest];
+            const onFolderDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
-            runUpload(venvPython, [
-                scriptPath, '--python', venvPython,
-                'upload', '--port', gRemoteDevicePort,
-                '--source', folderPath, '--dest', dest
-            ], () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+            if (gRemoteDevicePort.startsWith('ws:')) {
+                _runUploadQueued(venvPython, folderArgs, onFolderDone);
+            } else {
+                runUpload(venvPython, folderArgs, onFolderDone);
+            }
         })
     );
 
@@ -666,12 +800,14 @@ function activate(context) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const projArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', ''];
+            const onProjDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
-            runUpload(venvPython, [
-                scriptPath, '--python', venvPython,
-                'upload', '--port', gRemoteDevicePort,
-                '--source', gDeviceCodeDir, '--dest', ''
-            ], () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+            if (gRemoteDevicePort.startsWith('ws:')) {
+                _runUploadQueued(venvPython, projArgs, onProjDone);
+            } else {
+                runUpload(venvPython, projArgs, onProjDone);
+            }
         })
     );
 
@@ -919,11 +1055,13 @@ function activate(context) {
 
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
-            runDownload(venvPython, [
-                scriptPath, '--python', venvPython,
-                'download', '--port', gRemoteDevicePort,
-                '--dest', dest
-            ]);
+            const dlArgs = [scriptPath, '--python', venvPython, 'download', '--port', gRemoteDevicePort, '--dest', dest];
+
+            if (gRemoteDevicePort.startsWith('ws:')) {
+                _runDownloadQueued(venvPython, dlArgs);
+            } else {
+                runDownload(venvPython, dlArgs);
+            }
         })
     );
 
