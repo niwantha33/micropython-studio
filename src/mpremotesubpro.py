@@ -29,13 +29,13 @@ def _print_ui_header(port, folder, file_path):
     folder_name = Path(folder).name if folder else "Device Filesystem"
     
     # Modern Box Drawing UI
-    print(f"\n{CLR_CYAN}╔══════════════════════════════════════════════════════════════╗{CLR_RESET}")
-    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_BOLD}🚀 MicroPython Studio - Execution Session{CLR_RESET}             {CLR_CYAN}║{CLR_RESET}")
-    print(f"{CLR_CYAN}╠══════════════════════════════════════════════════════════════╣{CLR_RESET}")
-    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM}📂 Project:{CLR_RESET}  {folder_name:<46}  {CLR_CYAN}║{CLR_RESET}")
-    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM}🔌 Port:   {CLR_RESET}  {port:<46}  {CLR_CYAN}║{CLR_RESET}")
-    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM}⚡ Running: {CLR_RESET}  {file_name:<46}  {CLR_CYAN}║{CLR_RESET}")
-    print(f"{CLR_CYAN}╚══════════════════════════════════════════════════════════════╝{CLR_RESET}\n")
+    print(f"\n{CLR_CYAN}╔════════════════════════════════════════════════════════════════════════{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_BOLD} MicroPython Studio - Execution Session{CLR_RESET}")
+    print(f"{CLR_CYAN}╠══════════════════════════════════════════════════════════════════════════{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Project:{CLR_RESET}  {folder_name:<46}{CLR_CYAN}{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Port:   {CLR_RESET}  {port:<46}     {CLR_CYAN}{CLR_RESET}")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Running:{CLR_RESET}  {file_name:<46}{CLR_CYAN}{CLR_RESET}")
+    print(f"{CLR_CYAN}╚══════════════════════════════════════════════════════════════════════════{CLR_RESET}\n")
 
 # Files/folders to avoid downloading from device to local project
 DOWNLOAD_EXCLUDE = {

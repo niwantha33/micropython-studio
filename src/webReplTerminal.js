@@ -20,7 +20,6 @@ class WebReplClient {
         // Callbacks set by caller
         this.onData = null;          // (Buffer) → void
         this.onConnect = null;       // () → void
-        this.onStatus = null;        // (msg: string) → void
         this.onDisconnect = null;    // (reason: string) → void
     }
 
@@ -48,7 +47,6 @@ class WebReplClient {
                 const sep = this._buf.indexOf('\r\n\r\n');
                 if (sep !== -1) {
                     this._handshakeDone = true;
-                    if (this.onConnect) this.onConnect();
                     const rest = this._buf.slice(sep + 4);
                     this._buf = Buffer.alloc(0);
                     if (rest.length > 0) this._handleWsData(rest);
@@ -59,7 +57,7 @@ class WebReplClient {
         });
 
         this.socket.on('timeout', () => {
-            if (this.socket) this.socket.destroy();
+            this.socket.destroy();
             if (this.onDisconnect) this.onDisconnect('Connection timed out');
         });
 
@@ -108,19 +106,11 @@ class WebReplClient {
             if (opcode === 1 || opcode === 2) { // text or binary
                 // Auto-authenticate
                 if (!this._authenticated && payload.toString().includes('Password')) {
-                    if (this.onStatus) this.onStatus('🔑 Sending password...');
-                    if (this.onData) this.onData(payload); // Show the prompt to the user
                     this._sendFrame(Buffer.from(this.password + '\r\n'));
                     this._authenticated = true;
-                    // The device usually sends the greeting after the password is accepted
+                    if (this.onConnect) this.onConnect();
                 } else if (this._authenticated && this.onData) {
                     this.onData(payload);
-                } else if (!this._authenticated && this.onData) {
-                    // Forward greeting or any pre-auth text (like "Access denied")
-                    this.onData(payload);
-                    if (payload.toString().includes('denied')) {
-                         if (this.onDisconnect) this.onDisconnect('Access denied (password wrong)');
-                    }
                 }
             }
         }
@@ -302,37 +292,27 @@ async function openWebReplTerminal(context, devicePort) {
     client.onConnect = () => {
         panel.webview.postMessage({ type: 'status', state: 'connected', ip });
     };
-    client.onStatus = (msg) => {
-        panel.webview.postMessage({ type: 'status', state: 'status', msg });
-    };
 
-    let isProcessing = false;
     let incomingBuf = Buffer.alloc(0);
 
     /** Decode a WebREPL binary response frame from the front of incomingBuf; 
      * returns { code: number, len: number } or null if not enough data. */
     function peekResp() {
-        while (incomingBuf.length >= 4) {
-            if (incomingBuf[0] === 0x57 && incomingBuf[1] === 0x42) {
-                return { code: incomingBuf[2] | (incomingBuf[3] << 8), len: 4 };
-            }
-            // Not a WB header: skip junk byte
-            incomingBuf = incomingBuf.slice(1);
+        if (incomingBuf.length < 4) return null;
+        if (incomingBuf[0] === 0x57 && incomingBuf[1] === 0x42) {
+            return { code: incomingBuf[2] | (incomingBuf[3] << 8), len: 4 };
         }
         return null;
     }
 
     async function processIncoming() {
-        if (isProcessing) return;
-        isProcessing = true;
-        try {
-            while (incomingBuf.length > 0) {
-                if (binaryState === 0) {
-                    // Normal REPL output → forward to terminal
-                    panel.webview.postMessage({ type: 'output', data: Array.from(incomingBuf) });
-                    incomingBuf = Buffer.alloc(0);
-                    return;
-                }
+        while (incomingBuf.length > 0) {
+            if (binaryState === 0) {
+                // Normal REPL output → forward to terminal
+                panel.webview.postMessage({ type: 'output', data: Array.from(incomingBuf) });
+                incomingBuf = Buffer.alloc(0);
+                return;
+            }
 
             // ── File transfer protocol handling ──────────────────────────────
             if (binaryState === 11) {
@@ -352,8 +332,7 @@ async function openWebReplTerminal(context, devicePort) {
                         }
                         binaryState = 12;
                     } catch (err) {
-                        const error = err instanceof Error ? err : new Error(String(err));
-                        statusMsg(`<span style="color:#f44">Upload error: ${error.message}</span>`);
+                        statusMsg(`<span style="color:#f44">Upload error: ${err.message}</span>`);
                         binaryState = 0;
                     }
                 } else {
@@ -425,13 +404,6 @@ async function openWebReplTerminal(context, devicePort) {
                 }
                 binaryState = 0;
             }
-            }
-        } finally {
-            isProcessing = false;
-            // If more data arrived, process it in the next tick
-            if (incomingBuf.length > 0) {
-                setImmediate(() => processIncoming());
-            }
         }
     }
 
@@ -449,7 +421,7 @@ async function openWebReplTerminal(context, devicePort) {
     panel.webview.onDidReceiveMessage((msg) => {
         if (msg.type === 'input') {
             if (binaryState !== 0) return; // ignore keystrokes during file transfer
-            client.send(Buffer.from(msg.data)); // Use binary frame for REPL input
+            client.sendText(Buffer.from(msg.data));
         } else if (msg.type === 'putFile') {
             if (binaryState !== 0) return;
             putName = msg.name;
@@ -504,43 +476,6 @@ function getHtml(ip, csp, termJsUri, fileSaverUri, cssUri) {
     <div id="term-wrap">
         <div id="term"></div>
     </div>
-    
-    <aside id="sidebar">
-        <div>
-            <span class="section-title">Transfer Controls</span>
-            <div class="card">
-                <div class="file-input-group">
-                    <label style="font-size: 11px; opacity: 0.8;">Send to Device</label>
-                    <input type="file" id="put-file-select" title="Choose file to upload">
-                    <div id="put-file-list" style="color:var(--vscode-descriptionForeground); font-size:10px; margin-top:2px">No file selected</div>
-                    <button id="put-file-button" class="btn" onclick="putFile()" disabled>
-                        <span>↑</span> Upload File
-                    </button>
-                </div>
-                
-                <div class="file-input-group" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
-                    <label style="font-size: 11px; opacity: 0.8;">Download from Device</label>
-                    <input type="text" id="get_filename" placeholder="/main.py">
-                    <button class="btn" onclick="getFile()">
-                        <span>↓</span> Download File
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <div>
-            <span class="section-title">Transfer Status</span>
-            <div class="card" id="file-status-container">
-                <div id="file-status">Ready</div>
-            </div>
-        </div>
-
-        <div style="margin-top: auto;">
-            <div style="font-size: 10px; opacity: 0.5; text-align: center;">
-                MicroPython Studio WebREPL v1.1
-            </div>
-        </div>
-    </aside>
 </div>
 
 <script src="${termJsUri}"></script>
@@ -600,8 +535,6 @@ window.addEventListener('message', function(event) {
             dot.className = 'ok';
             txt.textContent = 'CONNECTED';
             term.write('\\x1b[38;5;48m✔ WebREPL connected to ${ip}\\x1b[m\\r\\n');
-        } else if (msg.state === 'status') {
-            term.write('\\x1b[38;5;226m◒ ' + msg.msg + '\\x1b[m\\r\\n');
         } else {
             dot.className = '';
             txt.textContent = 'DISCONNECTED';
