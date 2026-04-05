@@ -7,6 +7,7 @@ class AiAssistanceProvider {
         this._extensionUri = _extensionUri;
         this._context = _context;
         this._view = undefined;
+        this._history = []; // Initialize history
     }
 
     resolveWebviewView(webviewView) {
@@ -29,6 +30,9 @@ class AiAssistanceProvider {
                     break;
                 case 'installModel':
                     await this._installModel();
+                    break;
+                case 'clearHistory':
+                    this._history = [];
                     break;
             }
         });
@@ -122,10 +126,21 @@ class AiAssistanceProvider {
         const pythonPath = this._getPythonPath();
         const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
 
-        const proc = spawn(pythonPath, [scriptPath, 'chat', message]);
+        // Add user message to history
+        this._history.push({ role: 'user', content: message });
         
+        // Limit history to last 10 exchanges to keep prompt size reasonable
+        if (this._history.length > 20) {
+            this._history = this._history.slice(-20);
+        }
+
+        const messagesJson = JSON.stringify(this._history);
+        const proc = spawn(pythonPath, [scriptPath, 'chat', messagesJson]);
+        
+        let fullResponse = '';
         proc.stdout.on('data', (d) => {
             const chunk = d.toString();
+            fullResponse += chunk;
             this._view.webview.postMessage({ type: 'chatResponse', value: chunk });
         });
 
@@ -134,6 +149,8 @@ class AiAssistanceProvider {
         });
 
         proc.on('close', () => {
+            // Add AI response to history
+            this._history.push({ role: 'assistant', content: fullResponse });
             this._view.webview.postMessage({ type: 'chatDone' });
         });
     }

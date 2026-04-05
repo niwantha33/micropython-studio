@@ -71,15 +71,14 @@ class OllamaHelper:
         except:
             return False
 
-    def chat(self, prompt, system_prompt="You are a helpful MicroPython expert assistant."):
-        """Stream a chat response from the model."""
+    def chat_with_history(self, messages):
+        """Stream a chat response using the chat endpoint (supports history)."""
         try:
             response = requests.post(
-                f"{self.base_url}/api/generate",
+                f"{self.base_url}/api/chat",
                 json={
                     "model": self.model,
-                    "prompt": prompt,
-                    "system": system_prompt,
+                    "messages": messages,
                     "stream": True,
                     "options": {
                         "num_ctx": 16384,
@@ -91,7 +90,8 @@ class OllamaHelper:
             for line in response.iter_lines():
                 if line:
                     chunk = json.loads(line)
-                    yield chunk.get("response", "")
+                    if "message" in chunk:
+                        yield chunk["message"].get("content", "")
                     if chunk.get("done"):
                         break
         except Exception as e:
@@ -120,6 +120,18 @@ if __name__ == "__main__":
         print(json.dumps({"success": success}))
         
     elif cmd == "chat":
-        prompt = sys.argv[2] if len(sys.argv) > 2 else ""
-        for chunk in helper.chat(prompt):
-            print(chunk, end="", flush=True)
+        # Supports both single prompt (old) and JSON messages (new)
+        input_data = sys.argv[2] if len(sys.argv) > 2 else ""
+        try:
+            # Try to parse as JSON messages list
+            messages = json.loads(input_data)
+            if isinstance(messages, list):
+                for chunk in helper.chat_with_history(messages):
+                    print(chunk, end="", flush=True)
+            else:
+                raise ValueError("Not a list")
+        except:
+            # Fallback to single prompt
+            prompt = input_data
+            for chunk in helper.chat(prompt):
+                print(chunk, end="", flush=True)
