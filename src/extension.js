@@ -9,6 +9,7 @@
 const vscode = require('vscode');
 const { exec, spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs'); // Added fs import
 const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
@@ -392,8 +393,32 @@ function activate(context) {
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
 
+    const getAIAssistanceContext = async () => {
+        const contextData = {
+            port: gRemoteDevicePort || 'Not Connected',
+            firmware: gDeviceFirmware || 'Unknown',
+            projectDir: gDeviceCodeDir || 'Not set',
+            config: null,
+            stubsPath: gDeviceFirmware === 'CircuitPython' 
+                ? path.join(process.env.USERPROFILE, '.micropython-studio', 'stubs', 'circuitpython-stubs') 
+                : null
+        };
+
+        if (gDeviceCodeDir) {
+            const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+            if (fs.existsSync(cfgPath)) {
+                try {
+                    contextData.config = fs.readFileSync(cfgPath, 'utf8');
+                } catch (e) {
+                    console.error('Failed to read device.cfg for AI context', e);
+                }
+            }
+        }
+        return contextData;
+    };
+
     // ── Register AI Assistance Sidebar ──────────────────────────────────
-    aiAssistanceProvider = new AiAssistanceProvider(context.extensionUri, context);
+    aiAssistanceProvider = new AiAssistanceProvider(context.extensionUri, context, getAIAssistanceContext);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('micropython-ide-ai-chat', aiAssistanceProvider)
     );

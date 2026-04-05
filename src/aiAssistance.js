@@ -1,11 +1,13 @@
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const vscode = require('vscode'); // Added vscode import
 
 class AiAssistanceProvider {
-    constructor(_extensionUri, _context) {
+    constructor(_extensionUri, _context, _getContext) {
         this._extensionUri = _extensionUri;
         this._context = _context;
+        this._getContext = _getContext;
         this._view = undefined;
         // Load history from state if available
         this._history = this._context.workspaceState.get('aiChatHistory', []);
@@ -131,17 +133,35 @@ class AiAssistanceProvider {
         const pythonPath = this._getPythonPath();
         const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
 
+        // --- Context Gathering ---
+        const editor = vscode.window.activeTextEditor;
+        let fileContext = "";
+        if (editor) {
+            const doc = editor.document;
+            const content = doc.getText();
+            const fileName = path.basename(doc.fileName);
+            // Limit context size
+            const truncatedContent = content.length > 5000 ? content.substring(0, 5000) + "... [truncated]" : content;
+            fileContext = `[Current File: ${fileName}]\n\`\`\`python\n${truncatedContent}\n\`\`\``;
+        }
+
+        const deviceContext = await this._getContext();
+        let systemContext = `[Device Environment]\n- Port: ${deviceContext.port}\n- Firmware: ${deviceContext.firmware}\n`;
+        if (deviceContext.config) systemContext += `- Config: ${deviceContext.config}\n`;
+        if (deviceContext.stubsPath) systemContext += `- Target Stubs: ${deviceContext.stubsPath}\n`;
+
+        const fullMessageWithContext = `${systemContext}\n${fileContext}\n\nUSER MESSAGE: ${message}`;
+
         // Add user message to history
-        this._history.push({ role: 'user', content: message });
+        this._history.push({ role: 'user', content: fullMessageWithContext });
         
-        // Limit history size to prevent context overflow or performance lag
+        // Limit history size
         if (this._history.length > 30) {
             this._history = this._history.slice(-30);
         }
 
         const messagesJson = JSON.stringify(this._history);
         
-        // Use stdin for the messages to avoid shell argument length limits
         const proc = spawn(pythonPath, [scriptPath, 'chat']);
         
         let fullResponse = '';
@@ -159,13 +179,11 @@ class AiAssistanceProvider {
             const trimmedResponse = fullResponse.trim();
             if (trimmedResponse) {
                 this._history.push({ role: 'assistant', content: trimmedResponse });
-                // Persist the history
                 this._context.workspaceState.update('aiChatHistory', this._history);
             }
             this._view.webview.postMessage({ type: 'chatDone' });
         });
 
-        // Write the history to stdin and end the stream
         proc.stdin.write(messagesJson);
         proc.stdin.end();
     }

@@ -77,6 +77,7 @@ A powerful IDE extension for MicroPython development with hardware integration, 
 | 28 | Install package (mip) | Command Palette → *Install Package* | Package installed on device via mip |
 | 29 | Flash firmware | Click *Flash* in status bar | Firmware selection + flash to device |
 | 30 | Download firmware | Command Palette → *Download Firmware* | Firmware downloaded locally |
+| 31 | Private AI Assistant | Click *Hubot* icon in sidebar | Private, local AI helper (Ollama) |
 
 ### Dashboard
 
@@ -86,6 +87,18 @@ A powerful IDE extension for MicroPython development with hardware integration, 
 | 32 | Wi-Fi Manager | Dashboard → Wi-Fi tab | Set SSID + password, save to device |
 | 33 | WebREPL config | Dashboard → Wi-Fi → enable WebREPL | `webrepl_enabled` saved to `device.cfg` |
 | 34 | Pinout view | Dashboard → Pinout tab | Board pinout diagram shown |
+
+## 🧠 Private & Local AI Assistance (v0.8.0+)
+
+MicroPython Studio now features a state-of-the-art **Private AI Assistant** that runs entirely on your local machine.
+
+- **100% Private**: Your code never leaves your computer. No cloud processing, no data tracking.
+- **Context Aware**: The AI automatically sees your active file content and understands your connected device (Port, Firmware, Config).
+- **Ollama Powered**: Uses high-performance local LLMs like `qwen2.5-coder`.
+- **MicroPython & CircuitPython Expert**: Specialized in embedded Python development.
+
+> [!TIP]
+> To get started, click the **AI Assistant** icon in the sidebar. The extension will automatically check for **Ollama** and help you set up the model.
 
 ## Requirements
 
@@ -183,11 +196,22 @@ The extension contributes the following settings:
   - Improved error handling for file operations
   - onclick library support for file upload/download
 
-### 0.7.3 (Current)
+### 0.7.3
 - **Added**:
   - **Clean Terminal UI**: Automatic clearing of terminal command echo for a clean, professional execution experience.
   - **Output Filtering**: Silent mounting and suppression of absolute local paths from `mpremote` output.
   - Enable file manupulation (upload/download) via onclick library for WebREPL connections, providing a seamless wireless file management experience.
+
+### 0.8.0 (Modernized AI Update)
+- **New Features**:
+  - **Premium AI Assistance**: Completely redesigned UI with glassmorphism and modern aesthetics.
+  - **Conversation Memory**: Switched to multi-turn chat history (supports Ollama's `api/chat`).
+  - **Deep Context Sensitivity**: AI now automatically detects active file content and hardware environment (Port, Firmware, `device.cfg`).
+  - **High-Performance Communication**: Refactored backend to use `stdin` data streams for large chat histories.
+  - **History Persistence**: Chat sessions are saved and restored across VS Code reloads.
+- **Improved**:
+  - Enhanced connection status reporting for local LLMs.
+  - Modern typography (Inter) and Markdown/Syntax highlighting integration.
 
 
 
