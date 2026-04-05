@@ -1,5 +1,5 @@
 # 🚀 MicroPython Studio - VS Code Extension
-### ✨ Supporting MicroPython & CircuitPython Platforms ✨
+### ✨ Supporting MicroPython & CircuitPython Platforms - Local Private AI Assistant ✨
 
 [![MicroPython](https://img.shields.io/badge/MicroPython-v1.20%2B-blue?logo=micropython&logoColor=white)](https://micropython.org)
 [![CircuitPython](https://img.shields.io/badge/CircuitPython-v8.0%2B-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)

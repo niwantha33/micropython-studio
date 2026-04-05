@@ -1213,6 +1213,36 @@ function activate(context) {
             }
         })
     );
+
+    // Run Code Snippet (from AI Chat)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.runCodeSnippet', async (code) => {
+            if (!gRemoteDevicePort) {
+                vscode.window.showWarningMessage('No device port set. Connect a device first.');
+                return;
+            }
+
+            const tempDir = path.join(context.extensionPath, 'tmp');
+            if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+            const tempFile = path.join(tempDir, 'ai_snippet.py');
+            fs.writeFileSync(tempFile, code);
+
+            const venvFolder = getVenvPythonPathFolder();
+            const venvPython = getVenvPythonPath(venvFolder);
+            const terminal = getMpremoteTerminal();
+            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+
+            const cmd = [
+                `"${venvPython}"`, `"${scriptPath}"`,
+                `--python "${venvPython}"`,
+                `run_mcu`,
+                `--port "${gRemoteDevicePort}"`,
+                `--file "${tempFile}"`
+            ].join(' ');
+
+            sendCleanCommand(terminal, cmd);
+        })
+    );
 }
 
 // ─── Status Bar Creation ─────────────────────────────────────────────────────

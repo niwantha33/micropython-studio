@@ -42,6 +42,9 @@ class AiAssistanceProvider {
                     // If UI reloads, give it the history back
                     this._view.webview.postMessage({ type: 'historySync', value: this._history });
                     break;
+                case 'codeAction':
+                    await this._handleCodeAction(data.action, data.value);
+                    break;
             }
         });
 
@@ -188,10 +191,35 @@ class AiAssistanceProvider {
         proc.stdin.end();
     }
 
+    async _handleCodeAction(action, code) {
+        switch (action) {
+            case 'insert':
+                const editor = vscode.window.activeTextEditor;
+                if (editor) {
+                    editor.edit(editBuilder => {
+                        editBuilder.insert(editor.selection.active, code);
+                    });
+                } else {
+                    vscode.window.showInformationMessage('No active editor to insert code.');
+                }
+                break;
+            case 'new':
+                const doc = await vscode.workspace.openTextDocument({
+                    content: code,
+                    language: 'python'
+                });
+                await vscode.window.showTextDocument(doc);
+                break;
+            case 'run':
+                // Send to extension command to handle execution on device
+                vscode.commands.executeCommand('micropython-ide.runCodeSnippet', code);
+                break;
+        }
+    }
+
     _getPythonPath() {
-        // Attempt to use the venv python if available
-        const venvPythonPath = path.join(process.env.USERPROFILE, '.micropython-studio', '.venv', 'Scripts', 'python.exe');
-        return fs.existsSync(venvPythonPath) ? venvPythonPath : 'python';
+        const config = vscode.workspace.getConfiguration('micropython-studio');
+        return config.get('pythonPath') || 'python';
     }
 
     _getHtmlForWebview() {

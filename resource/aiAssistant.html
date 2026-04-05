@@ -164,18 +164,60 @@
 
         .message pre {
             background: #0d1117 !important;
-            padding: 14px;
+            padding: 0;
             border-radius: 12px;
-            overflow-x: auto;
+            overflow: hidden;
             border: 1px solid var(--border-color);
             margin: 12px 0;
+            position: relative;
+        }
+
+        .code-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid var(--border-color);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .code-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .action-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .action-btn:hover {
+            color: var(--text-color);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .action-btn svg {
+            width: 14px;
+            height: 14px;
         }
 
         .message pre code {
             background: transparent;
-            padding: 0;
+            padding: 14px;
             display: block;
             line-height: 1.5;
+            overflow-x: auto;
         }
 
         /* --- Input Area --- */
@@ -384,12 +426,42 @@
         });
 
         // Configure Markdown Parser
+        const renderer = new marked.Renderer();
+        renderer.code = function(code, lang) {
+            const language = lang || 'python';
+            const highlighted = hljs.getLanguage(language) 
+                ? hljs.highlight(code, { language }).value 
+                : hljs.highlightAuto(code).value;
+
+            // Escape code for data attributes
+            const escapedCode = code.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+            return `
+                <div class="code-block-container">
+                    <pre><div class="code-header">
+                        <span>${language}</span>
+                        <div class="code-actions">
+                            <button class="action-btn" onclick="handleAction('insert', this)" title="Insert at cursor">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                                <span>Insert</span>
+                            </button>
+                            <button class="action-btn" onclick="handleAction('run', this)" title="Run on device">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                <span>Run</span>
+                            </button>
+                            <button class="action-btn" onclick="handleAction('new', this)" title="New file">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                                <span>New</span>
+                            </button>
+                           
+                        </div>
+                    </div><code class="hljs language-${language}">${highlighted}</code><textarea style="display:none">${code}</textarea></pre>
+                </div>
+            `;
+        };
+
         marked.setOptions({
-            highlight: function(code, lang) {
-                const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-                return hljs.highlight(code, { language }).value;
-            },
-            langPrefix: 'hljs language-',
+            renderer: renderer,
             breaks: true,
             gfm: true
         });
@@ -458,6 +530,20 @@
             scrollToBottom();
             return div;
         }
+
+        window.handleAction = function(type, btn) {
+            const code = btn.closest('pre').querySelector('textarea').value;
+            vscode.postMessage({ type: 'codeAction', action: type, value: code });
+            
+            // Subtle visual feedback
+            const originalText = btn.querySelector('span').textContent;
+            btn.querySelector('span').textContent = 'Done!';
+            btn.style.color = '#3fb950';
+            setTimeout(() => {
+                btn.querySelector('span').textContent = originalText;
+                btn.style.color = '';
+            }, 1000);
+        };
 
         function scrollToBottom() {
             chatContainer.scrollTop = chatContainer.scrollHeight;
