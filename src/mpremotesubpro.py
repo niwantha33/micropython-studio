@@ -23,6 +23,13 @@ CLR_WHITE = "\033[37m"
 CLR_DIM = "\033[2m"
 CLR_BOLD = "\033[1m"
 
+# Regular expression to strip ANSI escape sequences (including OSC/status bar noise)
+ANSI_STRIP_RE = re.compile(rb'(?:\x1b\]0;.*?\x1b\\|\x1b\[[0-9;?]*[A-Za-z])', re.DOTALL)
+
+def _strip_ansi(data: bytes) -> bytes:
+    """Helper to strip terminal escape sequences from the serial buffer."""
+    return ANSI_STRIP_RE.sub(b'', data)
+
 def _print_ui_header(port, folder, file_path):
     """Prints a professional UI header for the execution session."""
     file_name = Path(file_path).name
@@ -299,25 +306,52 @@ class SerialConnection:
             time.sleep(0.01)
 
     def enter_raw_repl(self, soft_reset=True):
-        """Aggressively enter raw REPL mode."""
-        self.serial.write(b'\r\x03\x03\x03') # Ctrl-C storm
+        """Aggressively enter raw REPL mode with firmware-aware synchronization."""
+        # 1. Break any running code
+        self.serial.write(b'\r\x03\x03\x03') 
         time.sleep(0.1)
+        
         if soft_reset:
-            self.serial.write(b'\x04') # Ctrl-D
-            time.sleep(1.5) # Wait for reboot
-            self.serial.write(b'\x03\x03') # Interrupt boot script
+            # 2. Trigger soft reboot
+            self.serial.write(b'\x04') 
+            
+            # 3. Wait for the reboot confirmation (CircuitPython or MicroPython)
+            deadline = time.time() + 2.0
+            rebooted = False
+            data = b''
+            while time.time() < deadline:
+                if self.serial.in_waiting:
+                    data += self.serial.read(self.serial.in_waiting)
+                    # Look for reboot messages while ignoring ANSI noise
+                    clean_data = _strip_ansi(data)
+                    if b'soft reboot' in clean_data or b'MPY: soft reboot' in clean_data:
+                        rebooted = True
+                        break
+                time.sleep(0.05)
+            
+            if not rebooted:
+                # If we didn't see the reboot string, we might have reset so fast we missed it,
+                # or it's a very quiet firmware. Just proceed with a small delay.
+                time.sleep(0.5)
+
+            # 4. Break again to catch the board before main.py takes over
+            self.serial.write(b'\x03\x03') 
         
         self._drain()
-        self.serial.write(b'\x01') # Ctrl-A (Raw REPL)
-        time.sleep(0.1)
         
-        # Read until we see the prompt '>' or timeout
+        # 5. Enter raw REPL mode (Ctrl-A)
+        self.serial.write(b'\x01') 
+        time.sleep(0.2)
+        
+        # 6. Read until we see the prompt '>' while ignoring trailing ANSI/OSC noise
         data = b''
-        deadline = time.time() + 2
+        deadline = time.time() + 2.5
         while time.time() < deadline:
             if self.serial.in_waiting:
                 data += self.serial.read(self.serial.in_waiting)
-                if data.endswith(b'>'):
+                # Raw REPL prompt looks like: b'raw REPL; CTRL-B to exit\r\n>'
+                # Stripping ANSI handles pesky OSC title updates from CP10.
+                if b'>' in _strip_ansi(data):
                     return True
             time.sleep(0.05)
         return False
@@ -656,19 +690,21 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
             s.setRTS(False)  # Release reset
             time.sleep(0.5)  # Wait for boot
         
-        # 💡 Ultimate Kick: Ctrl-C Storm + Soft Reset (Ctrl-D)
+        # 💡 Ultimate Kick: Deliberate Sync
         print(f"{CLR_DIM}⚡ Synchronizing with device...{CLR_RESET}", file=sys.stderr)
-        for _ in range(10):
-            s.write(b'\x03')  # Ctrl-C
-            time.sleep(0.01)
         
-        s.write(b'\x04')      # Ctrl-D (Soft Reboot)
-        time.sleep(1.5)       # CRITICAL: Wait for MicroPython to re-initialize
+        # 1. Break
+        s.write(b'\x03\x03\x03') 
+        time.sleep(0.05)
         
-        for _ in range(5):
-            s.write(b'\x03')  # Ctrl-C again to clear any boot messages
-            time.sleep(0.01)
-
+        # 2. Reset (Soft)
+        s.write(b'\x04')      
+        
+        # 3. Wait for boot/reboot while ignoring noise
+        time.sleep(1.2)
+        
+        # 4. Break again to catch it before main.py
+        s.write(b'\x03\x03')  
         s.write(b'\r')
         time.sleep(0.05)
         
