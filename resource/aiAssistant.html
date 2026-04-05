@@ -469,6 +469,16 @@
                 case 'status':
                     updateStatus(message.value);
                     break;
+                case 'historySync':
+                    if (message.value && message.value.length > 0) {
+                        chatContainer.innerHTML = '';
+                        message.value.forEach(m => {
+                            if (m.role !== 'system') {
+                                appendMessage(m.role == 'assistant' ? 'ai' : 'user', m.content);
+                            }
+                        });
+                    }
+                    break;
                 case 'chatResponse':
                     if (currentAiMessageElement) {
                         if (isThinking) {

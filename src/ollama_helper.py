@@ -42,11 +42,10 @@ class OllamaHelper:
                 },
                 stream=True
             )
-            # We can stream progress back if needed, for now just wait
             for line in response.iter_lines():
                 if line:
                     status_json = line.decode('utf-8')
-                    print(status_json, flush=True) # Stream status to stdout
+                    print(status_json, flush=True) 
                     status = json.loads(status_json)
                     if status.get("status") == "success":
                         return True
@@ -66,7 +65,7 @@ class OllamaHelper:
             for line in response.iter_lines():
                 if line:
                     status_json = line.decode('utf-8')
-                    print(status_json, flush=True) # Stream status to stdout
+                    print(status_json, flush=True) 
             return True
         except:
             return False
@@ -74,6 +73,13 @@ class OllamaHelper:
     def chat_with_history(self, messages):
         """Stream a chat response using the chat endpoint (supports history)."""
         try:
+            # Add a default system prompt if not present
+            if not any(m.get("role") == "system" for m in messages):
+                messages.insert(0, {
+                    "role": "system", 
+                    "content": "You are a professional MicroPython and CircuitPython expert assistant for the MicroPython Studio IDE. Be concise and provide high-quality code snippets."
+                })
+
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json={
@@ -114,24 +120,29 @@ if __name__ == "__main__":
     
     elif cmd == "setup":
         modelfile = sys.argv[2] if len(sys.argv) > 2 else "resource/Modelfile"
-        # First ensure base model is there (quiet pull)
         helper.pull_model("qwen2.5-coder:3b")
         success = helper.create_model(modelfile)
         print(json.dumps({"success": success}))
         
     elif cmd == "chat":
-        # Supports both single prompt (old) and JSON messages (new)
-        input_data = sys.argv[2] if len(sys.argv) > 2 else ""
+        # Read JSON messages from STDIN for robustness
         try:
-            # Try to parse as JSON messages list
+            input_data = sys.stdin.read()
+            if not input_data.strip():
+                sys.exit(0)
+            
             messages = json.loads(input_data)
             if isinstance(messages, list):
                 for chunk in helper.chat_with_history(messages):
                     print(chunk, end="", flush=True)
             else:
-                raise ValueError("Not a list")
-        except:
-            # Fallback to single prompt
-            prompt = input_data
-            for chunk in helper.chat(prompt):
-                print(chunk, end="", flush=True)
+                # Handle single prompt if it's just a string in quotes
+                prompt = str(messages)
+                for chunk in helper.chat_with_history([{"role": "user", "content": prompt}]):
+                    print(chunk, end="", flush=True)
+        except Exception as e:
+            # Fallback to sys.argv[2] if stdin is empty/fails
+            if len(sys.argv) > 2:
+                prompt = sys.argv[2]
+                for chunk in helper.chat_with_history([{"role": "user", "content": prompt}]):
+                    print(chunk, end="", flush=True)

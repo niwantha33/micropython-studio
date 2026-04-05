@@ -7,7 +7,8 @@ class AiAssistanceProvider {
         this._extensionUri = _extensionUri;
         this._context = _context;
         this._view = undefined;
-        this._history = []; // Initialize history
+        // Load history from state if available
+        this._history = this._context.workspaceState.get('aiChatHistory', []);
     }
 
     resolveWebviewView(webviewView) {
@@ -33,6 +34,11 @@ class AiAssistanceProvider {
                     break;
                 case 'clearHistory':
                     this._history = [];
+                    this._context.workspaceState.update('aiChatHistory', []);
+                    break;
+                case 'getHistory':
+                    // If UI reloads, give it the history back
+                    this._view.webview.postMessage({ type: 'historySync', value: this._history });
                     break;
             }
         });
@@ -45,7 +51,6 @@ class AiAssistanceProvider {
         const pythonPath = this._getPythonPath();
         const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
 
-        // 🔥 Use spawn but with early notification
         const proc = spawn(pythonPath, [scriptPath, 'check']);
         
         let result = '';
@@ -129,13 +134,15 @@ class AiAssistanceProvider {
         // Add user message to history
         this._history.push({ role: 'user', content: message });
         
-        // Limit history to last 10 exchanges to keep prompt size reasonable
-        if (this._history.length > 20) {
-            this._history = this._history.slice(-20);
+        // Limit history size to prevent context overflow or performance lag
+        if (this._history.length > 30) {
+            this._history = this._history.slice(-30);
         }
 
         const messagesJson = JSON.stringify(this._history);
-        const proc = spawn(pythonPath, [scriptPath, 'chat', messagesJson]);
+        
+        // Use stdin for the messages to avoid shell argument length limits
+        const proc = spawn(pythonPath, [scriptPath, 'chat']);
         
         let fullResponse = '';
         proc.stdout.on('data', (d) => {
@@ -149,10 +156,18 @@ class AiAssistanceProvider {
         });
 
         proc.on('close', () => {
-            // Add AI response to history
-            this._history.push({ role: 'assistant', content: fullResponse });
+            const trimmedResponse = fullResponse.trim();
+            if (trimmedResponse) {
+                this._history.push({ role: 'assistant', content: trimmedResponse });
+                // Persist the history
+                this._context.workspaceState.update('aiChatHistory', this._history);
+            }
             this._view.webview.postMessage({ type: 'chatDone' });
         });
+
+        // Write the history to stdin and end the stream
+        proc.stdin.write(messagesJson);
+        proc.stdin.end();
     }
 
     _getPythonPath() {
