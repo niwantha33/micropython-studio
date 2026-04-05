@@ -36,13 +36,13 @@ def _print_ui_header(port, folder, file_path):
     folder_name = Path(folder).name if folder else "Device Filesystem"
     
     # Modern Box Drawing UI
-    print(f"\n{CLR_CYAN}╔════════════════════════════════════════════════════════════════════════{CLR_RESET}")
-    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_BOLD} MicroPython Studio - Execution Session{CLR_RESET}")
-    print(f"{CLR_CYAN}╠══════════════════════════════════════════════════════════════════════════{CLR_RESET}")
-    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Project:{CLR_RESET}  {folder_name:<46}{CLR_CYAN}{CLR_RESET}")
-    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Port:   {CLR_RESET}  {port:<46}     {CLR_CYAN}{CLR_RESET}")
-    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Running:{CLR_RESET}  {file_name:<46}{CLR_CYAN}{CLR_RESET}")
-    print(f"{CLR_CYAN}╚══════════════════════════════════════════════════════════════════════════{CLR_RESET}\n")
+    print(f"{CLR_CYAN}╔═══════════════════════════════════════════════════════════════════════════{CLR_RESET} ")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_BOLD} MicroPython Studio - Execution Session{CLR_RESET}              ")          
+    print(f"{CLR_CYAN}╠═══════════════════════════════════════════════════════════════════════════{CLR_RESET} ")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Project:{CLR_RESET}  {folder_name:<46}{CLR_CYAN}{CLR_RESET}     ")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Port:   {CLR_RESET}  {port:<46}     {CLR_CYAN}{CLR_RESET}       ")
+    print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Running:{CLR_RESET}  {file_name:<46}{CLR_CYAN}{CLR_RESET}       ")
+    print(f"{CLR_CYAN}╚═══════════════════════════════════════════════════════════════════════════{CLR_RESET}\n")
 
 # Files/folders to avoid downloading from device to local project
 DOWNLOAD_EXCLUDE = {
@@ -678,7 +678,7 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
         import serial
         import time
         # Open with 1s timeout to ensure we don't hang if the port is busy elsewhere
-        s = serial.Serial(port, 115200, timeout=1)
+        s = serial.Serial(port, 115200, timeout=2)
         
         if hard:
             # 💡 Hard Reset Sequence (ESP32/ESP8266 logic)
@@ -695,7 +695,7 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
         
         # 1. Break
         s.write(b'\x03\x03\x03') 
-        time.sleep(0.05)
+        time.sleep(0.1)
         
         # 2. Reset (Soft)
         s.write(b'\x04')      

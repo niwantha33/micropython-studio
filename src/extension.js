@@ -21,6 +21,7 @@ const { updateCfgComponent } = require('./commonFxn');
 const { openDeviceDashboard } = require('./deviceDashboard');
 const { openWebReplTerminal } = require('./webReplTerminal');
 const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive } = require('./circuitpyDrive');
+const { AiAssistanceProvider } = require('./aiAssistance');
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
@@ -359,6 +360,8 @@ function updateDeviceStatusBar() {
 
 }
 
+let aiAssistanceProvider = null;
+
 // ─── Extension Activation ────────────────────────────────────────────────────
 
 /**
@@ -388,6 +391,12 @@ async function sendCleanCommand(terminal, command) {
 function activate(context) {
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
+
+    // ── Register AI Assistance Sidebar ──────────────────────────────────
+    aiAssistanceProvider = new AiAssistanceProvider(context.extensionUri, context);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider('micropython-ide-ai-chat', aiAssistanceProvider)
+    );
 
     // ── Create Status Bar ────────────────────────────────────────────────
 
@@ -1269,8 +1278,11 @@ function createStatusBar(context) {
     webReplButton.tooltip = 'Open WebREPL Terminal (Wi-Fi)';
     webReplButton.command = 'micropython-ide.openWebReplTerminal';
     webReplButton.show();
-    context.subscriptions.push(webReplButton);
-
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.enterAiAssistance', () => {
+            vscode.commands.executeCommand('micropython-ide-ai-chat.focus');
+        })
+    );
 }
 
 // ─── Extension Deactivation ──────────────────────────────────────────────────
