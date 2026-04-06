@@ -394,23 +394,78 @@ function activate(context) {
     checkPythonAvailability();
 
     const getAIAssistanceContext = async () => {
+        const venvFolder = getVenvPythonPathFolder();
+        const venvPython = getVenvPythonPath(venvFolder);
+
         const contextData = {
             port: gRemoteDevicePort || 'Not Connected',
             firmware: gDeviceFirmware || 'Unknown',
-            projectDir: gDeviceCodeDir || 'Not set',
+            projectDir: gDeviceCodeDir ? path.dirname(gDeviceCodeDir) : 'Not set',
+            mcu: 'Unknown',
+            sync_folder: 'device_code',
+            root_folder: gDeviceCodeDir ? path.basename(path.dirname(gDeviceCodeDir)) : 'Unknown',
+            project_created: 'Unknown',
+            last_sync: 'Unknown',
+            deviceId: 'Unknown',
+            ProjectFolder: gDeviceCodeDir ? path.dirname(gDeviceCodeDir) : 'Not set',
+            deviceCodeDir: gDeviceCodeDir || 'Not set',
+            virtualEnv: venvFolder,
+            virtualPython: venvPython,
             config: null,
             stubsPath: gDeviceFirmware === 'CircuitPython' 
                 ? path.join(process.env.USERPROFILE, '.micropython-studio', 'stubs', 'circuitpython-stubs') 
                 : null
         };
 
-        if (gDeviceCodeDir) {
-            const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+        let projectRoot = gDeviceCodeDir ? path.dirname(gDeviceCodeDir) : null;
+        
+        // --- Fallback: Try to find device.cfg in opening workspace folders if no device selected ---
+        if (!projectRoot) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (workspaceFolders && workspaceFolders.length > 0) {
+                for (const folder of workspaceFolders) {
+                    const cfgPath = path.join(folder.uri.fsPath, 'device.cfg');
+                    if (fs.existsSync(cfgPath)) {
+                        projectRoot = folder.uri.fsPath;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (projectRoot) {
+            contextData.projectDir = projectRoot;
+            contextData.ProjectFolder = projectRoot;
+            
+            const cfgPath = path.join(projectRoot, 'device.cfg');
             if (fs.existsSync(cfgPath)) {
                 try {
-                    contextData.config = fs.readFileSync(cfgPath, 'utf8');
+                    const rawConfig = fs.readFileSync(cfgPath, 'utf8');
+                    contextData.config = rawConfig;
+                    
+                    const getVal = (key) => {
+                        const match = rawConfig.match(new RegExp(`^${key}\\s*=\\s*"?([^"\\r\\n]+)"?`, 'm'));
+                        return match ? match[1] : null;
+                    };
+
+                    contextData.mcu = getVal('mcu') || contextData.mcu;
+                    contextData.deviceId = getVal('deviceId') || contextData.deviceId;
+                    contextData.project_created = getVal('project_created') || contextData.project_created;
+                    contextData.last_sync = getVal('last_sync') || contextData.last_sync;
+                    contextData.root_folder = getVal('root_folder') || contextData.root_folder;
+                    contextData.sync_folder = getVal('sync_folder') || contextData.sync_folder;
+
                 } catch (e) {
                     console.error('Failed to read device.cfg for AI context', e);
+                }
+            }
+
+            const settingsPath = path.join(projectRoot, '.vscode', 'settings.json');
+            if (fs.existsSync(settingsPath)) {
+                try {
+                    contextData.vscodeSettings = fs.readFileSync(settingsPath, 'utf8');
+                } catch (e) {
+                    console.error('Failed to read settings.json for AI context', e);
                 }
             }
         }
@@ -421,6 +476,26 @@ function activate(context) {
     aiAssistanceProvider = new AiAssistanceProvider(context.extensionUri, context, getAIAssistanceContext);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('micropython-ide-ai-chat', aiAssistanceProvider)
+    );
+
+    const pushAiContextUpdate = () => {
+        if (!aiAssistanceProvider) return;
+        const editor = vscode.window.activeTextEditor;
+        const fileName = editor ? path.basename(editor.document.fileName) : 'No file open';
+        aiAssistanceProvider.updateViewContext({
+            fileName: fileName,
+            firmware: gDeviceFirmware
+        });
+    };
+
+    // Initial push once provider is ready or on editor switch
+    setTimeout(() => pushAiContextUpdate(), 1000); 
+
+    // Listen for editor changes to update AI sidebar status
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(() => {
+            pushAiContextUpdate();
+        })
     );
 
     // ── Create Status Bar ────────────────────────────────────────────────
@@ -490,6 +565,7 @@ function activate(context) {
                         gDeviceFirmware === 'CircuitPython');
 
                     updateDeviceStatusBar();
+                    pushAiContextUpdate();
 
                     // Update the device file explorer with the new port
                     const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));

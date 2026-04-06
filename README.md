@@ -202,6 +202,7 @@ The extension contributes the following settings:
   - **Output Filtering**: Silent mounting and suppression of absolute local paths from `mpremote` output.
   - Enable file manupulation (upload/download) via onclick library for WebREPL connections, providing a seamless wireless file management experience.
 
+
 ### 0.8.0 (Modernized AI Update)
 - **New Features**:
   - **Premium AI Assistance**: Completely redesigned UI with glassmorphism and modern aesthetics.
@@ -213,7 +214,13 @@ The extension contributes the following settings:
   - Enhanced connection status reporting for local LLMs.
   - Modern typography (Inter) and Markdown/Syntax highlighting integration.
 
-
+### 0.8.1 (AI Context & Stability)
+- **Enhanced AI Context Awareness**: Improved situational awareness by dynamically detecting project root and connected device configuration.
+- **Interactive AI Code Actions**: Added "Insert", "Run", "New File", and "Copy" buttons directly in the AI Chat window for a seamless coding workflow.
+- **Structured Prompt Engineering**: Improved AI response quality through structured context injection (`[device]`, `[filePath]`).
+- **Stable WebREPL**: Resolved connection stability issues by enforcing mandatory WebSocket frame masking (RFC 6455).
+- **Robust Boot Configuration**: New `boot.py` template with improved Wi-Fi connectivity and a dedicated USB-detection window to prevent lockouts.
+- **UI Polishing**: Refined the AI Assistant interface with better markdown rendering and transition effects.
 
 ---
 

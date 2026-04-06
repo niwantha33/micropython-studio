@@ -87,8 +87,8 @@ class OllamaHelper:
                     "messages": messages,
                     "stream": True,
                     "options": {
-                        "num_ctx": 16384,
-                        "num_predict": 4096
+                        "num_ctx": 8192,
+                        "num_predict": 3072
                     }
                 },
                 stream=True

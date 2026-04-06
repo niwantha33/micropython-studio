@@ -11,6 +11,7 @@ class AiAssistanceProvider {
         this._view = undefined;
         // Load history from state if available
         this._history = this._context.workspaceState.get('aiChatHistory', []);
+        this._firmwareOverride = null;
     }
 
     resolveWebviewView(webviewView) {
@@ -44,6 +45,10 @@ class AiAssistanceProvider {
                     break;
                 case 'codeAction':
                     await this._handleCodeAction(data.action, data.value);
+                    break;
+                case 'setFirmware':
+                    this._firmwareOverride = data.value;
+                    // Notify webview to update UI if needed (though it likely already updated from click)
                     break;
             }
         });
@@ -148,22 +153,73 @@ class AiAssistanceProvider {
             fileContext = `[Current File: ${fileName}]\n\`\`\`python\n${truncatedContent}\n\`\`\``;
         }
 
-        const deviceContext = await this._getContext();
-        let systemContext = `[Device Environment]\n- Port: ${deviceContext.port}\n- Firmware: ${deviceContext.firmware}\n`;
-        if (deviceContext.config) systemContext += `- Config: ${deviceContext.config}\n`;
-        if (deviceContext.stubsPath) systemContext += `- Target Stubs: ${deviceContext.stubsPath}\n`;
 
-        const fullMessageWithContext = `${systemContext}\n${fileContext}\n\nUSER MESSAGE: ${message}`;
-
-        // Add user message to history
-        this._history.push({ role: 'user', content: fullMessageWithContext });
+        // --- Add only RAW message to history to keep it clean ---
+        this._history.push({ role: 'user', content: message });
         
         // Limit history size
         if (this._history.length > 30) {
             this._history = this._history.slice(-30);
         }
 
-        const messagesJson = JSON.stringify(this._history);
+        // --- Construct the Ephemeral Prompt (with context tags) for the LATEST turn ---
+        const contextData = await this._getContext();
+        const systemContext = `[device]
+port = ${contextData.port}
+mcu = ${contextData.mcu}
+sync_folder = ${contextData.sync_folder}
+root_folder = ${contextData.root_folder}
+project_created = ${contextData.project_created}
+last_sync = ${contextData.last_sync}
+device_firmware = ${this._firmwareOverride || contextData.firmware}
+deviceId = ${contextData.deviceId}
+
+[filePath]
+projectDir = "${contextData.projectDir}"
+ProjectFolder = "${contextData.ProjectFolder}"
+deviceCodeDir = "${contextData.deviceCodeDir}"
+virtualEnv = "${contextData.virtualEnv}"
+virtualPython = "${contextData.virtualPython}"
+
+${contextData.vscodeSettings ? '[settings.json]\n' + contextData.vscodeSettings : ''}`;
+        
+        // Truncate file content to prevent context overflow (max 2500 chars)
+        const truncatedFileContext = fileContext.length > 2500 ? fileContext.substring(0, 2500) + "\n... [truncated]" : fileContext;
+
+        const latestPrompt = `
+<contaxt>
+${systemContext}
+${truncatedFileContext}
+</contaxt>
+<task>
+${message}
+</task>
+<format>
+You are the MicroPython Studio Private AI Assistant. Respond as a MicroPython/CircuitPython expert in MicroPython Studio. Use professional markdown. Be concise.
+Provide high-quality code snippets when asked. 
+
+LIBRARY INSTALLATION:
+- If a library is needed, DO NOT recommend using 'pip' or 'sh' from a terminal.
+- Instead, instruct the user to install the library using the built-in "Package Manager" (MicroPython) or "CircuitPython Package Manager" available in MicroPython Studio.
+CRITICAL: Always wrap code in triple backticks with the language specified (e.g. \`\`\`python).
+
+CONTEXT GUIDANCE:
+- If 'port' is 'Not Connected', 'deviceId' is 'Unknown', or 'projectDir' is 'Not set', you lack specific project context.
+- In such cases, politely inform the user that you don't know which device they are using yet.
+- Suggest they open a MicroPython project folder and click the "Refresh Device Files" button in the status bar or explorer to provide this context.
+- Avoid guessing or using hardcoded paths like 'E:\' if you don't see them in the [filePath] section.
+</format>
+<refrence>
+${contextData.stubsPath ? 'IDE Stubs Path: ' + contextData.stubsPath : 'Standard MicroPython libs.'}
+</refrence>
+`;
+
+        // Create the message list for Ollama
+        const messagesToSend = [...this._history];
+        // Replace the last (raw) message with the context-rich prompt
+        messagesToSend[messagesToSend.length - 1] = { role: 'user', content: latestPrompt };
+
+        const messagesJson = JSON.stringify(messagesToSend);
         
         const proc = spawn(pythonPath, [scriptPath, 'chat']);
         
@@ -193,11 +249,15 @@ class AiAssistanceProvider {
 
     async _handleCodeAction(action, code) {
         switch (action) {
+            case 'copy':
+                await vscode.env.clipboard.writeText(code);
+                break;
             case 'insert':
                 const editor = vscode.window.activeTextEditor;
                 if (editor) {
                     editor.edit(editBuilder => {
-                        editBuilder.insert(editor.selection.active, code);
+                        // Use replace on current selection (if empty, it acts as insert)
+                        editBuilder.replace(editor.selection, code);
                     });
                 } else {
                     vscode.window.showInformationMessage('No active editor to insert code.');
@@ -226,9 +286,13 @@ class AiAssistanceProvider {
         const htmlPath = path.join(this._extensionUri.fsPath, 'resource', 'aiAssistant.html');
         let html = fs.readFileSync(htmlPath, 'utf8');
 
-        // Replace any relative paths with webview URIs if needed
-        // For simple html-only components this is enough.
         return html;
+    }
+
+    updateViewContext(data) {
+        if (this._view) {
+            this._view.webview.postMessage({ type: 'contextUpdate', value: data });
+        }
     }
 }
 
