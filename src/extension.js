@@ -9,6 +9,7 @@
 const vscode = require('vscode');
 const { exec, spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs'); // Added fs import
 const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
@@ -21,6 +22,7 @@ const { updateCfgComponent } = require('./commonFxn');
 const { openDeviceDashboard } = require('./deviceDashboard');
 const { openWebReplTerminal } = require('./webReplTerminal');
 const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive } = require('./circuitpyDrive');
+const { AiAssistanceProvider } = require('./aiAssistance');
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
@@ -359,6 +361,8 @@ function updateDeviceStatusBar() {
 
 }
 
+let aiAssistanceProvider = null;
+
 // ─── Extension Activation ────────────────────────────────────────────────────
 
 /**
@@ -388,6 +392,111 @@ async function sendCleanCommand(terminal, command) {
 function activate(context) {
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
+
+    const getAIAssistanceContext = async () => {
+        const venvFolder = getVenvPythonPathFolder();
+        const venvPython = getVenvPythonPath(venvFolder);
+
+        const contextData = {
+            port: gRemoteDevicePort || 'Not Connected',
+            firmware: gDeviceFirmware || 'Unknown',
+            projectDir: gDeviceCodeDir ? path.dirname(gDeviceCodeDir) : 'Not set',
+            mcu: 'Unknown',
+            sync_folder: 'device_code',
+            root_folder: gDeviceCodeDir ? path.basename(path.dirname(gDeviceCodeDir)) : 'Unknown',
+            project_created: 'Unknown',
+            last_sync: 'Unknown',
+            deviceId: 'Unknown',
+            ProjectFolder: gDeviceCodeDir ? path.dirname(gDeviceCodeDir) : 'Not set',
+            deviceCodeDir: gDeviceCodeDir || 'Not set',
+            virtualEnv: venvFolder,
+            virtualPython: venvPython,
+            config: null,
+            stubsPath: gDeviceFirmware === 'CircuitPython' 
+                ? path.join(process.env.USERPROFILE, '.micropython-studio', 'stubs', 'circuitpython-stubs') 
+                : null
+        };
+
+        let projectRoot = gDeviceCodeDir ? path.dirname(gDeviceCodeDir) : null;
+        
+        // --- Fallback: Try to find device.cfg in opening workspace folders if no device selected ---
+        if (!projectRoot) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (workspaceFolders && workspaceFolders.length > 0) {
+                for (const folder of workspaceFolders) {
+                    const cfgPath = path.join(folder.uri.fsPath, 'device.cfg');
+                    if (fs.existsSync(cfgPath)) {
+                        projectRoot = folder.uri.fsPath;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (projectRoot) {
+            contextData.projectDir = projectRoot;
+            contextData.ProjectFolder = projectRoot;
+            
+            const cfgPath = path.join(projectRoot, 'device.cfg');
+            if (fs.existsSync(cfgPath)) {
+                try {
+                    const rawConfig = fs.readFileSync(cfgPath, 'utf8');
+                    contextData.config = rawConfig;
+                    
+                    const getVal = (key) => {
+                        const match = rawConfig.match(new RegExp(`^${key}\\s*=\\s*"?([^"\\r\\n]+)"?`, 'm'));
+                        return match ? match[1] : null;
+                    };
+
+                    contextData.mcu = getVal('mcu') || contextData.mcu;
+                    contextData.deviceId = getVal('deviceId') || contextData.deviceId;
+                    contextData.project_created = getVal('project_created') || contextData.project_created;
+                    contextData.last_sync = getVal('last_sync') || contextData.last_sync;
+                    contextData.root_folder = getVal('root_folder') || contextData.root_folder;
+                    contextData.sync_folder = getVal('sync_folder') || contextData.sync_folder;
+
+                } catch (e) {
+                    console.error('Failed to read device.cfg for AI context', e);
+                }
+            }
+
+            const settingsPath = path.join(projectRoot, '.vscode', 'settings.json');
+            if (fs.existsSync(settingsPath)) {
+                try {
+                    contextData.vscodeSettings = fs.readFileSync(settingsPath, 'utf8');
+                } catch (e) {
+                    console.error('Failed to read settings.json for AI context', e);
+                }
+            }
+        }
+        return contextData;
+    };
+
+    // ── Register AI Assistance Sidebar ──────────────────────────────────
+    aiAssistanceProvider = new AiAssistanceProvider(context.extensionUri, context, getAIAssistanceContext);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider('micropython-ide-ai-chat', aiAssistanceProvider)
+    );
+
+    const pushAiContextUpdate = () => {
+        if (!aiAssistanceProvider) return;
+        const editor = vscode.window.activeTextEditor;
+        const fileName = editor ? path.basename(editor.document.fileName) : 'No file open';
+        aiAssistanceProvider.updateViewContext({
+            fileName: fileName,
+            firmware: gDeviceFirmware
+        });
+    };
+
+    // Initial push once provider is ready or on editor switch
+    setTimeout(() => pushAiContextUpdate(), 1000); 
+
+    // Listen for editor changes to update AI sidebar status
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(() => {
+            pushAiContextUpdate();
+        })
+    );
 
     // ── Create Status Bar ────────────────────────────────────────────────
 
@@ -456,6 +565,7 @@ function activate(context) {
                         gDeviceFirmware === 'CircuitPython');
 
                     updateDeviceStatusBar();
+                    pushAiContextUpdate();
 
                     // Update the device file explorer with the new port
                     const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
@@ -1179,6 +1289,36 @@ function activate(context) {
             }
         })
     );
+
+    // Run Code Snippet (from AI Chat)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.runCodeSnippet', async (code) => {
+            if (!gRemoteDevicePort) {
+                vscode.window.showWarningMessage('No device port set. Connect a device first.');
+                return;
+            }
+
+            const tempDir = path.join(context.extensionPath, 'tmp');
+            if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+            const tempFile = path.join(tempDir, 'ai_snippet.py');
+            fs.writeFileSync(tempFile, code);
+
+            const venvFolder = getVenvPythonPathFolder();
+            const venvPython = getVenvPythonPath(venvFolder);
+            const terminal = getMpremoteTerminal();
+            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+
+            const cmd = [
+                `"${venvPython}"`, `"${scriptPath}"`,
+                `--python "${venvPython}"`,
+                `run_mcu`,
+                `--port "${gRemoteDevicePort}"`,
+                `--file "${tempFile}"`
+            ].join(' ');
+
+            sendCleanCommand(terminal, cmd);
+        })
+    );
 }
 
 // ─── Status Bar Creation ─────────────────────────────────────────────────────
@@ -1269,8 +1409,11 @@ function createStatusBar(context) {
     webReplButton.tooltip = 'Open WebREPL Terminal (Wi-Fi)';
     webReplButton.command = 'micropython-ide.openWebReplTerminal';
     webReplButton.show();
-    context.subscriptions.push(webReplButton);
-
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.enterAiAssistance', () => {
+            vscode.commands.executeCommand('micropython-ide-ai-chat.focus');
+        })
+    );
 }
 
 // ─── Extension Deactivation ──────────────────────────────────────────────────
