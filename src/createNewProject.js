@@ -149,8 +149,10 @@ async function selectMcuAndBoard() {
  * @returns {Promise<{port: string|null, vidpid: string|null}>}
  */
 async function detectAndSelectDevice(config) {
+    const vscodeConfig = vscode.workspace.getConfiguration('micropython-studio');
+    const customPython = vscodeConfig.get('pythonPath');
     const venvFolder = getVenvPythonPathFolder();
-    const venvPython = getVenvPythonPath(venvFolder);
+    const venvPython = customPython || getVenvPythonPath(venvFolder);
 
     return new Promise((resolve) => {
         const command = `"${venvPython}" -m mpremote connect list`;
@@ -216,8 +218,10 @@ async function createNewProject(context) {
         const isCircuitPython = config.progLanguage === 'CircuitPython';
 
         // Get virtual environment paths
+        const configSettings = vscode.workspace.getConfiguration('micropython-studio');
+        const customPython = configSettings.get('pythonPath');
         const venvFolder = getVenvPythonPathFolder();
-        const venvPython = getVenvPythonPath(venvFolder);
+        const venvPython = customPython || getVenvPythonPath(venvFolder);
 
         // For CircuitPython: find the device drive (has boot_out.txt in root)
         // and point deviceCodeDir there instead of creating a local main/ folder

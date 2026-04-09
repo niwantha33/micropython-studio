@@ -2,7 +2,13 @@
 ### ✨ Supporting MicroPython & CircuitPython Platforms - Local Private AI Assistant ✨
 
 [![MicroPython](https://img.shields.io/badge/MicroPython-v1.20%2B-blue?logo=micropython&logoColor=white)](https://micropython.org)
-[![CircuitPython](https://img.shields.io/badge/CircuitPython-v8.0%2B-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
+[![CircuitPython](https://img.shields.io/badge/CircuitPython-v10.x-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
+[![VS Marketplace Downloads](https://img.shields.io/visual-studio-marketplace/d/niwantha33.micropython-studio?label=downloads&color=brightgreen)](https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio)
+[![VS Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/niwantha33.micropython-studio?label=version)](https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio)
+
+<p >
+  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/micro_ai.png" alt="project" width="400">
+</p>
 
 <p >
   <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/project.png" alt="project" width="400">
@@ -94,7 +100,7 @@ MicroPython Studio now features a state-of-the-art **Private AI Assistant** that
 
 - **100% Private**: Your code never leaves your computer. No cloud processing, no data tracking.
 - **Context Aware**: The AI automatically sees your active file content and understands your connected device (Port, Firmware, Config).
-- **Ollama Powered**: Uses high-performance local LLMs like `qwen2.5-coder`.
+- **Ollama Powered**: Uses high-performance local LLMs like `gemma4` (Google's latest), `qwen2.5-coder`, and more.
 - **MicroPython & CircuitPython Expert**: Specialized in embedded Python development.
 
 > [!TIP]
@@ -221,6 +227,13 @@ The extension contributes the following settings:
 - **Stable WebREPL**: Resolved connection stability issues by enforcing mandatory WebSocket frame masking (RFC 6455).
 - **Robust Boot Configuration**: New `boot.py` template with improved Wi-Fi connectivity and a dedicated USB-detection window to prevent lockouts.
 - **UI Polishing**: Refined the AI Assistant interface with better markdown rendering and transition effects.
+
+### 0.8.2 (Private AI & Gemma 4)
+- **New**: Private AI now supports **Gemma 4** (`gemma4:e2b`) — Google's latest model, optimized for low-resource laptops (8GB RAM).
+- **Improved**: AI response speed — tuned Ollama parameters (`num_ctx 2048`, `num_predict 512`, `num_thread 4`) for faster local inference.
+- **Improved**: AI prompts refined — concise code-first responses with short explanations, no lengthy prose.
+- **Improved**: Greeting/non-code queries now receive a proper reply instead of being silently passed.
+- **Milestone**: 🎉 **200+ downloads** on VS Code Marketplace — thank you to all users!
 
 ---
 

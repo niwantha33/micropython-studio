@@ -1,7 +1,12 @@
 const path = require('path');
 const { spawn } = require('child_process');
+const http = require('http');
 const fs = require('fs');
-const vscode = require('vscode'); // Added vscode import
+const vscode = require('vscode');
+const os = require('os');
+
+const OLLAMA_HOST = '127.0.0.1';
+const OLLAMA_PORT = 11434;
 
 class AiAssistanceProvider {
     constructor(_extensionUri, _context, _getContext) {
@@ -48,7 +53,6 @@ class AiAssistanceProvider {
                     break;
                 case 'setFirmware':
                     this._firmwareOverride = data.value;
-                    // Notify webview to update UI if needed (though it likely already updated from click)
                     break;
             }
         });
@@ -57,12 +61,65 @@ class AiAssistanceProvider {
         this._checkOllamaStatus();
     }
 
+    // ─── Ollama HTTP Helper (used only for chat streaming) ─────
+
+    /**
+     * Make a streaming HTTP request to the Ollama API.
+     * Parses NDJSON and calls onChunk(parsedJson) for each line.
+     */
+    _ollamaStream(apiPath, body, onChunk) {
+        return new Promise((resolve, reject) => {
+            const options = {
+                hostname: OLLAMA_HOST,
+                port: OLLAMA_PORT,
+                path: apiPath,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            };
+
+            const req = http.request(options, (res) => {
+                if (res.statusCode !== 200) {
+                    let errData = '';
+                    res.on('data', chunk => errData += chunk);
+                    res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${errData}`)));
+                    return;
+                }
+
+                let buffer = '';
+                res.on('data', chunk => {
+                    buffer += chunk.toString();
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // keep incomplete line in buffer
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        try {
+                            onChunk(JSON.parse(line));
+                        } catch { /* skip malformed JSON */ }
+                    }
+                });
+                res.on('end', () => {
+                    // Process any remaining data in buffer
+                    if (buffer.trim()) {
+                        try { onChunk(JSON.parse(buffer)); } catch { /* ignore */ }
+                    }
+                    resolve();
+                });
+            });
+
+            req.on('error', reject);
+            req.write(JSON.stringify(body));
+            req.end();
+        });
+    }
+
+    // ─── Status Check (via Python — reliable across firewalls) ──
+
     async _checkOllamaStatus() {
         const pythonPath = this._getPythonPath();
         const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
 
         const proc = spawn(pythonPath, [scriptPath, 'check']);
-        
+
         let result = '';
         let errorOutput = '';
 
@@ -95,15 +152,19 @@ class AiAssistanceProvider {
         });
     }
 
+    // ─── Model Installation (via Python — terminal speed) ───────
+
     async _installModel() {
         this._view.webview.postMessage({ type: 'installProgress', value: 'Pulling base model (2.3GB)...' });
-        
+
         const pythonPath = this._getPythonPath();
         const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
-        const modelfilePath = path.join(this._extensionUri.fsPath, 'resource', 'Modelfile');
+        const firmware = this._firmwareOverride || '';
+        const modelfileName = firmware.toLowerCase().includes('circuitpython') ? 'Modelfile-cpy' : 'Modelfile-mpy';
+        const modelfilePath = path.join(this._extensionUri.fsPath, 'resource', modelfileName);
 
         const proc = spawn(pythonPath, [scriptPath, 'setup', modelfilePath]);
-        
+
         let buffer = '';
         proc.stdout.on('data', (d) => {
             buffer += d.toString();
@@ -137,115 +198,164 @@ class AiAssistanceProvider {
         });
     }
 
+    // ─── Chat (direct HTTP streaming — no Python, no CLI) ───────
+
     async _handleChat(message) {
-        const pythonPath = this._getPythonPath();
-        const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
-
-        // --- Context Gathering ---
+        // -------------------------------
+        // 1. FILE CONTEXT (current editor)
+        // -------------------------------
+        let fileContext = '';
         const editor = vscode.window.activeTextEditor;
-        let fileContext = "";
         if (editor) {
-            const doc = editor.document;
-            const content = doc.getText();
-            const fileName = path.basename(doc.fileName);
-            // Limit context size
-            const truncatedContent = content.length > 5000 ? content.substring(0, 5000) + "... [truncated]" : content;
-            fileContext = `[Current File: ${fileName}]\n\`\`\`python\n${truncatedContent}\n\`\`\``;
+            const fileName = path.basename(editor.document.fileName);
+            const fileContent = editor.document.getText();
+            fileContext = `[Current File: ${fileName}]\n\`\`\`python\n${fileContent}\n\`\`\``;
         }
+        const truncatedFileContext = fileContext.length > 2500
+            ? fileContext.substring(0, 2500) + '\n... [truncated]'
+            : fileContext;
 
-
-        // --- Add only RAW message to history to keep it clean ---
-        this._history.push({ role: 'user', content: message });
-        
-        // Limit history size
-        if (this._history.length > 30) {
-            this._history = this._history.slice(-30);
-        }
-
-        // --- Construct the Ephemeral Prompt (with context tags) for the LATEST turn ---
+        // -------------------------------
+        // 2. CONTEXT + PLATFORM DETECTION
+        // -------------------------------
         const contextData = await this._getContext();
+        const firmware = this._firmwareOverride || contextData.firmware;
+        const isCircuitPython = typeof firmware === 'string' && firmware.toLowerCase().includes('circuitpython');
+        const modelName = isCircuitPython ? 'mycoder-cpy' : 'mycoder-mpy';
+        // const aiFooter = isCircuitPython ? '[CircuitPython Studio AI]' : '[MicroPython Studio AI]';
+
+        // -------------------------------
+        // 3. DEVICE OUTPUT (read fresh each call)
+        // -------------------------------
+        let deviceOutput = '';
+        const tmpFile = path.join(os.tmpdir(), 'mpremote-output.txt');
+        try {
+            if (fs.existsSync(tmpFile)) {
+                deviceOutput = fs.readFileSync(tmpFile, 'utf-8').trim();
+                fs.unlinkSync(tmpFile);
+            }
+        } catch { /* ignore read errors */ }
+
+        // -------------------------------
+        // 4. HISTORY MANAGEMENT (keep light for speed)
+        // -------------------------------
+        this._history.push({ role: 'user', content: message });
+        if (this._history.length > 6) {
+            this._history = this._history.slice(-6);
+        }
+
+        // -------------------------------
+        // 5. SYSTEM CONTEXT
+        // -------------------------------
         const systemContext = `[device]
 port = ${contextData.port}
 mcu = ${contextData.mcu}
-sync_folder = ${contextData.sync_folder}
-root_folder = ${contextData.root_folder}
-project_created = ${contextData.project_created}
-last_sync = ${contextData.last_sync}
-device_firmware = ${this._firmwareOverride || contextData.firmware}
-deviceId = ${contextData.deviceId}
-
+device_firmware = ${firmware}
 [filePath]
 projectDir = "${contextData.projectDir}"
-ProjectFolder = "${contextData.ProjectFolder}"
-deviceCodeDir = "${contextData.deviceCodeDir}"
-virtualEnv = "${contextData.virtualEnv}"
-virtualPython = "${contextData.virtualPython}"
-
-${contextData.vscodeSettings ? '[settings.json]\n' + contextData.vscodeSettings : ''}`;
-        
-        // Truncate file content to prevent context overflow (max 2500 chars)
-        const truncatedFileContext = fileContext.length > 2500 ? fileContext.substring(0, 2500) + "\n... [truncated]" : fileContext;
-
-        const latestPrompt = `
-<contaxt>
-${systemContext}
-${truncatedFileContext}
-</contaxt>
-<task>
-${message}
-</task>
-<format>
-You are the MicroPython Studio Private AI Assistant. Respond as a MicroPython/CircuitPython expert in MicroPython Studio. Use professional markdown. Be concise.
-Provide high-quality code snippets when asked. 
-
-LIBRARY INSTALLATION:
-- If a library is needed, DO NOT recommend using 'pip' or 'sh' from a terminal.
-- Instead, instruct the user to install the library using the built-in "Package Manager" (MicroPython) or "CircuitPython Package Manager" available in MicroPython Studio.
-CRITICAL: Always wrap code in triple backticks with the language specified (e.g. \`\`\`python).
-
-CONTEXT GUIDANCE:
-- If 'port' is 'Not Connected', 'deviceId' is 'Unknown', or 'projectDir' is 'Not set', you lack specific project context.
-- In such cases, politely inform the user that you don't know which device they are using yet.
-- Suggest they open a MicroPython project folder and click the "Refresh Device Files" button in the status bar or explorer to provide this context.
-- Avoid guessing or using hardcoded paths like 'E:\' if you don't see them in the [filePath] section.
-</format>
-<refrence>
-${contextData.stubsPath ? 'IDE Stubs Path: ' + contextData.stubsPath : 'Standard MicroPython libs.'}
-</refrence>
 `;
 
-        // Create the message list for Ollama
+        // -------------------------------
+        // 6. FINAL PROMPT (ephemeral — not saved to history)
+        // -------------------------------
+        const latestPrompt = deviceOutput
+            ? `${message}\n\n<device_output>\n${deviceOutput}\n</device_output>`
+            : message + systemContext;
+
+        // Replace last history entry with context-rich prompt for the API call
         const messagesToSend = [...this._history];
-        // Replace the last (raw) message with the context-rich prompt
         messagesToSend[messagesToSend.length - 1] = { role: 'user', content: latestPrompt };
 
-        const messagesJson = JSON.stringify(messagesToSend);
-        
-        const proc = spawn(pythonPath, [scriptPath, 'chat']);
-        
+        // Signal UI to start loading
+        this._view.webview.postMessage({ type: 'chatStart' });
+        this._view.webview.postMessage({ type: 'chatStatus', value: `Connecting to ${modelName}...` });
+
+        // -------------------------------
+        // 7. STREAM via Ollama HTTP API
+        // -------------------------------
         let fullResponse = '';
-        proc.stdout.on('data', (d) => {
-            const chunk = d.toString();
-            fullResponse += chunk;
-            this._view.webview.postMessage({ type: 'chatResponse', value: chunk });
-        });
+        let insideThinking = false;   // Track thinking block state
+        let firstTokenReceived = false;
 
-        proc.stderr.on('data', (d) => {
-            console.error(`AI Error: ${d}`);
-        });
+        try {
+            this._view.webview.postMessage({ type: 'chatStatus', value: `Waiting for Micro AI to respond...` });
 
-        proc.on('close', () => {
-            const trimmedResponse = fullResponse.trim();
-            if (trimmedResponse) {
-                this._history.push({ role: 'assistant', content: trimmedResponse });
-                this._context.workspaceState.update('aiChatHistory', this._history);
+            await this._ollamaStream('/api/chat', {
+                model: modelName,
+                messages: messagesToSend,
+                stream: true,
+                options: {
+                    temperature: 1,
+                    top_p: 0.96,
+                    top_k: 60,
+                    num_ctx: 4096
+                }
+            }, (chunk) => {
+                // Handle Ollama-level error inside stream
+                if (chunk.error) {
+                    this._view.webview.postMessage({
+                        type: 'chatResponse',
+                        value: `\n❌ ${chunk.error}`
+                    });
+                    return;
+                }
+
+                // Stream token to webview (filter out thinking blocks)
+                if (chunk.message && chunk.message.content) {
+                    let token = chunk.message.content;
+
+                    // Detect thinking block boundaries
+                    if (token.includes('Thinking...') || token.includes('Thinking Process:') || token.includes('<think>')) {
+                        insideThinking = true;
+                        this._view.webview.postMessage({ type: 'chatStatus', value: 'AI is thinking...' });
+                        return;
+                    }
+                    if (token.includes('...done thinking.') || token.includes('</think>')) {
+                        insideThinking = false;
+                        this._view.webview.postMessage({ type: 'chatStatus', value: 'Generating response...' });
+                        return;
+                    }
+                    // Skip tokens while inside thinking block
+                    if (insideThinking) return;
+
+                    // Signal first real token
+                    if (!firstTokenReceived) {
+                        firstTokenReceived = true;
+                        this._view.webview.postMessage({ type: 'chatStatus', value: 'Generating response...' });
+                    }
+
+                    fullResponse += token;
+                    this._view.webview.postMessage({ type: 'chatStream', value: token });
+                }
+            });
+
+            // Post-process: clean up & save to history
+            if (fullResponse.trim()) {
+                let clean = fullResponse
+                    .replace(/\n{4,}/g, '\n\n\n')               // Fix excessive blank lines
+                    .replace(/\s*\[.*Studio AI\].*$/i, '')      // Remove old footer if present
+                    .trim();
+
+                if (fullResponse) {
+                    // const finalResponse = `${clean}\n\n${aiFooter}`;
+                    const finalResponse = `${fullResponse}\n\n`;
+                    this._history.push({ role: 'assistant', content: finalResponse });
+                    this._context.workspaceState.update('aiChatHistory', this._history);
+                }
             }
             this._view.webview.postMessage({ type: 'chatDone' });
-        });
 
-        proc.stdin.write(messagesJson);
-        proc.stdin.end();
+        } catch (err) {
+            console.error('❌ Chat failed:', err);
+            this._view.webview.postMessage({
+                type: 'chatResponse',
+                value: `\n❌ AI Error: ${err.message}`
+            });
+            this._view.webview.postMessage({ type: 'chatDone' });
+        }
     }
+
+    // ─── Code Actions ───────────────────────────────────────────
 
     async _handleCodeAction(action, code) {
         switch (action) {
@@ -293,6 +403,29 @@ ${contextData.stubsPath ? 'IDE Stubs Path: ' + contextData.stubsPath : 'Standard
         if (this._view) {
             this._view.webview.postMessage({ type: 'contextUpdate', value: data });
         }
+    }
+
+    /**
+     * Automatically send a device error to the AI chat for investigation.
+     * Called by extension.js when mpremote output contains a traceback/error.
+     * @param {string} errorOutput - Raw error text captured from mpremote subprocess
+     * @param {{port?:string, firmware?:string, file?:string}} deviceCtx
+     */
+    async autoInvestigateError(errorOutput, deviceCtx = {}) {
+        if (!this._view) return;
+
+        const contextData = await this._getContext();
+        const firmware = this._firmwareOverride || deviceCtx.firmware || contextData.firmware || 'MicroPython';
+        const port = deviceCtx.port || contextData.port || 'unknown';
+        const file = deviceCtx.file || '';
+
+        const message = `Device error detected${file ? ` in \`${file}\`` : ''} on ${port}. Investigate and suggest a fix:\n\n\`\`\`\n${errorOutput.trim()}\n\`\`\``;
+
+        // Show the AI panel and inject the message as if the user sent it
+        await vscode.commands.executeCommand('micropython-ide-ai-chat.focus');
+        this._view.webview.postMessage({ type: 'autoError', value: message });
+
+        await this._handleChat(message);
     }
 }
 

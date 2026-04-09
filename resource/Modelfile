@@ -1,3 +1,0 @@
-FROM qwen2.5-coder:3b
-PARAMETER num_ctx 16384
-PARAMETER num_predict 4096

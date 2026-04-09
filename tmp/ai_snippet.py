@@ -1,16 +1,21 @@
-# Import the os module
-import os
+import asyncio
 
-# Define the path to the board directory
-board_dir = os.path.join(os.getcwd(), 'lib', 'stubs', 'circuitpython-stubs', 'boards', 'rp2350')
+import digitalio
 
-# Check if the board directory exists
-if os.path.exists(board_dir):
-    # List all files and directories in the board directory
-    items = os.listdir(board_dir)
-    
-    # Print each item in the directory
-    for item in items:
-        print(item)
-else:
-    print(f"The board directory at {board_dir} does not exist.")
+
+async def blink_led():
+    # Assuming LED pin number 13 for CircuitPython on RP2350
+    led = digitalio.DigitalInOut(board.LED)
+
+    led.direction = digitalio.Direction.OUTPUT
+
+    while True:
+        led.value = False
+        await asyncio.sleep(0.5)
+        led.value = True
+        print("LED is ON")  # Print message when LED turns on
+        await asyncio.sleep(0.5)
+
+
+if __name__ == "__main__":
+    asyncio.run(blink_led())

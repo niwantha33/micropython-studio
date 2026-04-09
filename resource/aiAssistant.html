@@ -331,6 +331,33 @@
         }
 
         /* --- Animations --- */
+        .thinking-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 8px 0;
+        }
+
+        .thinking-dots {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+
+        .thinking-status {
+            font-size: 0.78rem;
+            color: var(--accent-color);
+            font-weight: 500;
+            opacity: 0.9;
+        }
+
+        .thinking-timer {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            font-family: 'Cascadia Code', 'Consolas', monospace;
+        }
+
+        /* Legacy compat */
         .thinking {
             display: flex;
             gap: 5px;
@@ -418,7 +445,7 @@
 
     <div id="chat-container" class="chat-container">
         <div class="message ai">
-            Hello! I'm your private MicroPython assistant. How can I help you today?
+            Hello! I'm your private assistant. How can I help you today?
         </div>
     </div>
 
@@ -447,6 +474,7 @@
             <p id="setup-desc" style="color: var(--text-muted); font-size: 0.9rem; line-height: 1.5;">
                 Initialize your local LLM to get started with offline coding assistance.
             </p>
+            <div id="error-msg" style="color: #f85149; font-size: 0.8rem; margin-top: 12px; display: none; padding: 10px; background: rgba(248,81,73,0.1); border-radius: 8px;"></div>
             <button id="setup-btn" class="btn-primary">Initialize Model</button>
         </div>
     </div>
@@ -467,6 +495,8 @@
         let currentAiMessageElement = null;
         let isThinking = false;
         let currentFirmware = 'MicroPython';
+        let chatTimerInterval = null;
+        let chatStartTime = null;
 
         // --- Event Listeners ---
         firmwareToggle.addEventListener('click', () => {
@@ -537,17 +567,59 @@
             userInput.value = '';
             userInput.style.height = 'auto';
             
-            // Create thinking indicator
+            // Create thinking indicator with status
             currentAiMessageElement = createAiBubble();
+            showThinkingIndicator('Sending message...');
+            isThinking = true;
+            startChatTimer();
+            scrollToBottom();
+        }
+
+        function showThinkingIndicator(statusText) {
+            if (!currentAiMessageElement) return;
+            const timerText = chatStartTime ? formatElapsed(Date.now() - chatStartTime) : '0s';
             currentAiMessageElement.innerHTML = `
-                <div class="thinking">
-                    <div class="pulse"></div>
-                    <div class="pulse"></div>
-                    <div class="pulse"></div>
+                <div class="thinking-container">
+                    <div class="thinking-dots">
+                        <div class="pulse"></div>
+                        <div class="pulse"></div>
+                        <div class="pulse"></div>
+                    </div>
+                    <div class="thinking-status">${statusText}</div>
+                    <div class="thinking-timer">${timerText}</div>
                 </div>
             `;
-            isThinking = true;
-            scrollToBottom();
+        }
+
+        function startChatTimer() {
+            chatStartTime = Date.now();
+            if (chatTimerInterval) clearInterval(chatTimerInterval);
+            chatTimerInterval = setInterval(() => {
+                if (!isThinking || !currentAiMessageElement) {
+                    clearInterval(chatTimerInterval);
+                    return;
+                }
+                const timerEl = currentAiMessageElement.querySelector('.thinking-timer');
+                if (timerEl) {
+                    timerEl.textContent = formatElapsed(Date.now() - chatStartTime);
+                }
+            }, 1000);
+        }
+
+        function stopChatTimer() {
+            if (chatTimerInterval) {
+                clearInterval(chatTimerInterval);
+                chatTimerInterval = null;
+            }
+            chatStartTime = null;
+        }
+
+        function formatElapsed(ms) {
+            const seconds = Math.floor(ms / 1000);
+            if (seconds < 60) return seconds + 's';
+            const minutes = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return minutes + 'm ' + secs + 's';
         }
 
         function createAiBubble() {
@@ -609,20 +681,70 @@
                     if (currentAiMessageElement) {
                         if (isThinking) {
                             currentAiMessageElement.innerHTML = '';
+                            currentAiMessageElement.dataset.content = '';
                             isThinking = false;
                         }
                         currentAiMessageElement.dataset.content += message.value;
                         currentAiMessageElement.innerHTML = marked.parse(currentAiMessageElement.dataset.content);
-                        // Trigger highlight.js on the new content
                         currentAiMessageElement.querySelectorAll('pre code').forEach((block) => {
                             hljs.highlightElement(block);
                         });
                         scrollToBottom();
                     }
                     break;
+                case 'chatStream':
+                    // Streaming tokens from HTTP API
+                    if (!currentAiMessageElement) {
+                        currentAiMessageElement = createAiBubble();
+                    }
+                    if (isThinking) {
+                        currentAiMessageElement.innerHTML = '';
+                        currentAiMessageElement.dataset.content = '';
+                        isThinking = false;
+                    }
+                    currentAiMessageElement.dataset.content += message.value;
+                    currentAiMessageElement.innerHTML = marked.parse(currentAiMessageElement.dataset.content);
+                    currentAiMessageElement.querySelectorAll('pre code').forEach((block) => {
+                        hljs.highlightElement(block);
+                    });
+                    scrollToBottom();
+                    break;
+                case 'chatStart':
+                    // Backend signals it's starting — ensure thinking bubble exists
+                    if (!currentAiMessageElement) {
+                        currentAiMessageElement = createAiBubble();
+                        isThinking = true;
+                        startChatTimer();
+                    }
+                    showThinkingIndicator('Connecting to AI...');
+                    scrollToBottom();
+                    break;
+                case 'chatStatus':
+                    // Update the thinking indicator with real status text
+                    if (isThinking && currentAiMessageElement) {
+                        showThinkingIndicator(message.value);
+                        scrollToBottom();
+                    }
+                    break;
                 case 'chatDone':
                     isThinking = false;
+                    stopChatTimer();
                     currentAiMessageElement = null;
+                    break;
+                case 'autoError':
+                    // Automatically injected device error — show user bubble + thinking state
+                    if (isThinking) break; // AI already busy
+                    appendMessage('user', message.value);
+                    currentAiMessageElement = document.createElement('div');
+                    currentAiMessageElement.className = 'message assistant';
+                    currentAiMessageElement.dataset.content = '';
+                    currentAiMessageElement.innerHTML = `
+                        <div class="message-label">AI</div>
+                        <div class="message-content thinking-dots">Thinking...</div>
+                    `;
+                    chatContainer.appendChild(currentAiMessageElement);
+                    isThinking = true;
+                    scrollToBottom();
                     break;
                 case 'installProgress':
                     document.getElementById('setup-desc').textContent = message.value;
@@ -638,7 +760,11 @@
                     }
                     break;
                 case 'error':
-                    // Convert to UI toast or inline message in real app
+                    const errorEl = document.getElementById('error-msg');
+                    errorEl.textContent = message.value;
+                    errorEl.style.display = 'block';
+                    setupBtn.disabled = false;
+                    setupBtn.textContent = (statusText.textContent === 'Ollama Offline') ? 'Download Ollama' : 'Retry Initialization';
                     console.error(message.value);
                     break;
             }
@@ -651,18 +777,27 @@
         }
 
         function updateStatus(status) {
+            const errorEl = document.getElementById('error-msg');
+            if (status.connected) errorEl.style.display = 'none';
+
             if (!status.connected) {
                 statusDot.className = 'status-dot offline';
                 statusText.textContent = 'Ollama Offline';
-                showSetup('Ollama Not Found', 'Ollama is required for private AI features. Please install and run it starting.');
+                showSetup('Ollama Not Found', 'Ollama is required for private AI features. Please install and run it to continue.');
                 setupBtn.textContent = 'Download Ollama';
-                setupBtn.onclick = () => window.open('https://ollama.com');
+                setupBtn.disabled = false;
+                setupBtn.onclick = () => {
+                    // Try to open external URL via VS Code
+                    vscode.postMessage({ type: 'openLink', value: 'https://ollama.com' });
+                };
             } else if (!status.installed) {
                 statusDot.className = 'status-dot warning';
                 statusText.textContent = 'Model Missing';
-                showSetup('Initialization Needed', 'We need to prepare the "mycoder" model (approx 2.3GB download).');
+                showSetup('Initialization Needed', 'We need to prepare the specialized "Micropython and Circuitpython" AI Model');
                 setupBtn.textContent = 'Initialize Model';
+                setupBtn.disabled = false;
                 setupBtn.onclick = () => {
+                    errorEl.style.display = 'none';
                     vscode.postMessage({ type: 'installModel' });
                     setupBtn.disabled = true;
                     setupBtn.textContent = 'Installing...';
