@@ -1,14 +1,17 @@
 # mpremotesubpro.py
 import argparse
 import re
+import os
 import subprocess
 import sys
 import struct
 import time
 from pathlib import Path
 from typing import Any, Union
+import tempfile
+import threading
 
-
+from ollama_helper import OllamaHelper
 # ---------------------------------------------------------------------------
 # UI Helpers for Professional Terminal Output
 # ---------------------------------------------------------------------------
@@ -30,6 +33,52 @@ ANSI_STRIP_RE = re.compile(
 
 BOX_WIDTH = 71  # Adjust as needed, must be odd for symmetry
 
+ANSI_RE = re.compile(r'\x1b\[[^a-zA-Z]*[a-zA-Z]|\x1b\][^\x1b]*\x1b\\')
+
+
+def parse_mpremote_output(raw: str) -> dict:
+    """Extract TransportError and device output from mpremote failure."""
+    result = {"error": None, "device_output": None}
+
+    # 1. Capture the TransportError line
+    for line in raw.splitlines():
+        if "TransportError" in line:
+            result["error"] = line.strip()
+            break
+
+    # 2. Extract the raw bytes string (b'...' at the end)
+    match = re.search(r"b'(.+)'", raw, re.DOTALL)
+    if match:
+        raw_bytes = match.group(1)
+        # Unescape: \r\n → newline, \x1b sequences → strip
+        decoded = raw_bytes.encode(
+            'utf-8').decode('unicode_escape', errors='replace')
+        cleaned = ANSI_RE.sub('', decoded)
+        # Remove blank lines and >>> prompts
+        lines = []
+        for line in cleaned.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped == '>>>':
+                continue
+            lines.append(stripped)
+        result["device_output"] = "\n".join(lines)
+
+    return result
+
+
+def clean_output(raw: str) -> str:
+    """Strip ANSI escapes and filter noisy mpremote lines."""
+    lines = []
+    for line in raw.splitlines():
+        line = ANSI_RE.sub('', line)
+        # Skip empty lines and noise
+        if not line.strip():
+            continue
+        if "is mounted at /remote" in line or "Connected to " in line:
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
 
 def print_execution_header(folder_name, port, file_name):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -42,30 +91,30 @@ def print_execution_header(folder_name, port, file_name):
         f"Started: {timestamp}"
     ]
     title = "MicroPython Studio Execution Session"
-    
+
     # Find the longest line (visual length, ignoring ANSI codes if any)
     max_len = max(len(title), max(len(line) for line in lines))
-    
+
     # Optional: add extra padding to make the box wider (e.g., +4)
     extra_padding = 4   # Change this to make box bigger or smaller
     content_width = max_len + extra_padding
-    
+
     # Box width includes: left border (1) + space (1) + content_width + space (1) + right border (1)
     box_width = content_width + 4
-    
+
     # Top border
     print(f"{CLR_CYAN}╔{'═' * (box_width - 2)}╗{CLR_RESET}")
-    
+
     # Title (centered or left-aligned? left-aligned as before)
     print(f"{CLR_CYAN}║{CLR_RESET} {title:<{content_width}} {CLR_CYAN}║{CLR_RESET}")
-    
+
     # Separator
     print(f"{CLR_CYAN}╠{'═' * (box_width - 2)}╣{CLR_RESET}")
-    
+
     # Key-value lines
     for line in lines:
         print(f"{CLR_CYAN}║{CLR_RESET} {line:<{content_width}} {CLR_CYAN}║{CLR_RESET}")
-    
+
     # Bottom border
     print(f"{CLR_CYAN}╚{'═' * (box_width - 2)}╝{CLR_RESET}\n")
 
@@ -85,13 +134,6 @@ def _print_ui_header(port, folder, file_path):
 
     # Modern Box Drawing UI
     print_execution_header(folder_name, port, file_name)
-    # print(f"{CLR_CYAN}╔═══════════════════════════════════════════════════════════════════════════{CLR_RESET} ")
-    # print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_BOLD} MicroPython Studio - Execution Session{CLR_RESET}              ")
-    # print(f"{CLR_CYAN}╠═══════════════════════════════════════════════════════════════════════════{CLR_RESET} ")
-    # print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Project:{CLR_RESET}  {folder_name:<46}{CLR_CYAN}{CLR_RESET}     ")
-    # print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Port:   {CLR_RESET}  {port:<46}     {CLR_CYAN}{CLR_RESET}       ")
-    # print(f"{CLR_CYAN}║{CLR_RESET}  {CLR_DIM} Running:{CLR_RESET}  {file_name:<46}{CLR_CYAN}{CLR_RESET}       ")
-    # print(f"{CLR_CYAN}╚═══════════════════════════════════════════════════════════════════════════{CLR_RESET}\n")
 
 
 # Files/folders to avoid downloading from device to local project
@@ -585,21 +627,45 @@ def _serial_list_remote_files(python_exe: str, port: str, remote_path: str) -> s
     return files
 
 
+def hard_reboot_before_send_cmd(python_exe):
+    """Hard reset"""
+    cmd = [python_exe, '-m', 'mpremote', 'reset']
+    try:
+        subprocess.run(
+            cmd,  # use it here instead of duplicating
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, timeout=2
+        )
+        time.sleep(0.5)
+    except:
+        pass
+
+def readline_with_timeout(proc, timeout=60):
+    result = [None]
+    
+    def read():
+        result[0] = proc.stdout.readline()
+    
+    t = threading.Thread(target=read, daemon=True)
+    t.start()
+    t.join(timeout)
+    
+    if t.is_alive():
+        # Timed out
+        return None
+    return result[0]
+
+
 def run_mpremote(python_exe, args_list, timeout=60):
     """Run mpremote and stream output in real-time with clean Ctrl+C handling"""
     cmd = [python_exe, '-m', 'mpremote'] + args_list
-
+    hard_reboot_before_send_cmd(python_exe)
     proc = None
     try:
-        # On Windows, CREATE_NEW_PROCESS_GROUP isolates the child from the
-        # parent's console group so mpremote's internal Ctrl+C (sent via
-        # serial to the device) does not propagate as KeyboardInterrupt here.
-        # creationflags=0 is the default on all platforms so this is safe.
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE,
             text=True,
             encoding='utf-8',
             errors='replace',
@@ -608,14 +674,16 @@ def run_mpremote(python_exe, args_list, timeout=60):
                 subprocess, 'CREATE_NEW_PROCESS_GROUP', 0) if sys.platform == 'win32' else 0
         )
 
+        output_lines = []
+
         # Stream output line by line
         while True:
             try:
-                line = proc.stdout.readline()  # type: ignore[union-attr]
+                line = proc.stdout.readline()                
                 if line:
-                    # Give a clear hint when a ws: connection is blocked
                     if 'failed to access' in line and args_list and any(a.startswith('ws:') for a in args_list):
                         print(line, end="")
+                        output_lines.append(line)
                         print(
                             "💡 WebREPL tip: only one connection is allowed at a time.\n"
                             "   Close any open browser WebREPL tab (micropython.org/webrepl)\n"
@@ -623,39 +691,55 @@ def run_mpremote(python_exe, args_list, timeout=60):
                             file=sys.stderr
                         )
                     else:
-                        # 🔇 Silence noisy "driver information" (long absolute paths)
-                        # from mpremote to keep the professional look.
                         if "is mounted at /remote" in line or "Connected to " in line:
                             continue
                         print(line, end="")
-                elif proc.poll() is not None:  # EOF and process has exited
+
+                        output_lines.append(line)
+                        
+                elif proc.poll() is not None:
                     break
             except KeyboardInterrupt:
-                # KeyboardInterrupt can fire when mpremote sends \x03 to the
-                # device on Windows even with CREATE_NEW_PROCESS_GROUP.
-                # If mpremote already exited cleanly, treat this as normal completion.
                 if proc.poll() is not None:
-                    break  # process finished — not a real user Ctrl+C
+                    break
                 print("\n\n👋 Ctrl+C detected. Stopping...", file=sys.stderr)
                 break
 
         # Terminate the process gracefully
         if proc.poll() is None:
             print("🔁 Sending soft reset (Ctrl+D) to device...", file=sys.stderr)
-            # Note: mpremote auto-handles soft reset on exit
             proc.terminate()
             try:
                 proc.wait(timeout=3)
-            except:
+            except subprocess.TimeoutExpired:
                 proc.kill()
 
-        return subprocess.CompletedProcess(cmd, proc.returncode or 0, "", "")
+        # --- After streaming mpremote ---
+        captured = "".join(output_lines)
+        parsed = parse_mpremote_output(captured)
+        # Build a human-readable summary for the AI
+        # At the end of run_mpremote, write captured output to a known file
+        with open(os.path.join(tempfile.gettempdir(), 'mpremote-output.txt'), 'w', encoding='utf-8') as f:
+            f.write(''.join(output_lines))
+        device_summary = ""
+        if parsed["error"]:
+            device_summary += f"Error: {parsed['error']}\n"
+        if parsed["device_output"]:
+            device_summary += f"Device output:\n{parsed['device_output']}\n"
+
+        data_output = "\n\n" + device_summary
+
+        return subprocess.CompletedProcess(cmd, proc.returncode or 0, data_output, "")
+        # return subprocess.CompletedProcess(cmd, proc.returncode or 0, captured, "")
 
     except KeyboardInterrupt:
         print("\n\n👋 Script manually interrupted. Exiting cleanly.", file=sys.stderr)
         if proc:
             proc.terminate()
-            proc.kill()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
         return subprocess.CompletedProcess(cmd, 0, "", "")
     except Exception as e:
         print(f"\n💥 Failed to run: {e}", file=sys.stderr)
@@ -692,7 +776,7 @@ def cmd_run(python_exe, port, file_path, folder=None):
     # Pre-interrupt: send Ctrl+C to stop any running code on the device.
     # This prevents "could not enter raw repl" when the device is busy.
     _serial_pre_interrupt(python_exe, port, hard=False)
-
+    time.sleep(1.0)
     # 🔥 Correct command: mount "folder" run "full/file/path"
     args = [
         'connect', port,
@@ -701,7 +785,10 @@ def cmd_run(python_exe, port, file_path, folder=None):
     ]
 
     result = run_mpremote(python_exe, args, timeout=30)
-
+    errors = ['TypeError', 'NameError', 'SyntaxError', 'ImportError', 'Traceback']
+    if any(err in result.stdout for err in errors):
+        sys.exit(result.returncode)
+        
     # Auto-retry once on raw REPL failure (device may need an extra hard kick)
     if result.returncode != 0:
         print("💡 First attempt failed. Trying a hardware reset/kick...",
@@ -741,7 +828,7 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
         import serial
         import time
         # Open with 1s timeout to ensure we don't hang if the port is busy elsewhere
-        s = serial.Serial(port, 115200, timeout=2)
+        s = serial.Serial(port, 115200, timeout=0.1)
 
         if hard:
             # 💡 Hard Reset Sequence (ESP32/ESP8266 logic)

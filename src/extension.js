@@ -10,6 +10,8 @@ const vscode = require('vscode');
 const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs'); // Added fs import
+const os = require('os');
+const EventEmitter = require('events');
 const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
@@ -40,6 +42,8 @@ let deviceStatusBarItem = null;
 let deviceFileExplorer = null;
 let deviceFileTreeView = null;
 
+const captureEmitter = new EventEmitter();
+
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
 
 /**
@@ -52,8 +56,8 @@ async function _buildRunPortOptions() {
 
     const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
     const savedCom = await getConfigValue(cfgPath, 'device', 'port');
-    const enabled  = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
-    const ip       = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
+    const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
+    const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
     const password = await getConfigValue(cfgPath, 'remote', 'webrepl_password');
 
     if (enabled !== 'true' || !ip) return null;
@@ -79,15 +83,68 @@ async function _buildRunPortOptions() {
  * @param {string[]} args - Arguments (no quoting needed)
  * @param {((code:number|null)=>void)} [onComplete] - Called when process exits
  */
+/**
+ * Parse --port and --file from mpremotesubpro.py args array for AI context.
+ * @param {string[]} args
+ */
+function _parseArgContext(args) {
+    const ctx = {};
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--port' && args[i + 1]) ctx.port = args[i + 1];
+        if (args[i] === '--file' && args[i + 1]) ctx.file = path.basename(args[i + 1]);
+    }
+    return ctx;
+}
+
+/**
+ * If mpremote output contains a device error, show a notification and
+ * optionally forward it to the AI chat for automatic investigation.
+ * @param {string} output - Full stdout+stderr from the subprocess
+ * @param {string[]} args  - Subprocess args (used to extract port/file context)
+ */
+async function _notifyAiOnError(output, args) {
+    const errorText = _extractDeviceError(output);
+    if (!errorText || !aiAssistanceProvider) return;
+
+    const action = await vscode.window.showWarningMessage(
+        '⚡ Device error detected. Investigate with AI?',
+        'Investigate', 'Dismiss'
+    );
+    if (action !== 'Investigate') return;
+
+    const ctx = _parseArgContext(args);
+    ctx.firmware = gDeviceFirmware;
+    await aiAssistanceProvider.autoInvestigateError(errorText, ctx);
+}
+
+/** Detect MicroPython/CircuitPython runtime errors in subprocess output */
+function _extractDeviceError(output) {
+    const errorPatterns = [
+        /Traceback \(most recent call last\):/,
+        /\w+Error:/,
+        /SyntaxError/,
+        /MemoryError/,
+        /OSError/,
+    ];
+    if (errorPatterns.some(p => p.test(output))) {
+        // Extract from first error line to end of output (strip emoji/status lines before it)
+        const match = output.match(/(Traceback[\s\S]*|(?:\w+Error|SyntaxError|MemoryError|OSError)[\s\S]*)/);
+        return match ? match[0].trim() : output.trim();
+    }
+    return null;
+}
+
 function runPythonProcess(exe, args, onComplete) {
     const channel = vscode.window.createOutputChannel('MicroPython Studio');
     channel.show(true);
     channel.appendLine('─'.repeat(50));
 
+    let fullOutput = '';
     const proc = spawn(exe, args);
-    proc.stdout.on('data', d => channel.append(d.toString()));
-    proc.stderr.on('data', d => channel.append(d.toString()));
+    proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+    proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
     proc.on('close', code => {
+        _notifyAiOnError(fullOutput, args);
         if (onComplete) onComplete(code);
     });
     proc.on('error', err => {
@@ -107,10 +164,11 @@ function _spawnAsync(exe, args) {
         const channel = vscode.window.createOutputChannel('MicroPython Studio');
         channel.show(true);
         channel.appendLine('─'.repeat(50));
+        let fullOutput = '';
         const proc = spawn(exe, args);
-        proc.stdout.on('data', d => channel.append(d.toString()));
-        proc.stderr.on('data', d => channel.append(d.toString()));
-        proc.on('close', code => resolve(code));
+        proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+        proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+        proc.on('close', code => { _notifyAiOnError(fullOutput, args); resolve(code); });
         proc.on('error', err => {
             channel.appendLine(`❌ Failed to start process: ${err.message}`);
             resolve(null);
@@ -168,14 +226,14 @@ async function _runDownloadQueued(exe, baseArgs) {
         try {
             const msg = JSON.parse(line.trim());
             if (msg.conflicts) { conflicts = msg.conflicts; break; }
-        } catch (_) {}
+        } catch (_) { }
     }
 
     const pick = await vscode.window.showQuickPick([
-        { label: '$(sync)       Overwrite all',       id: 'overwrite' },
-        { label: '$(file-add)   Keep (Rename)',        id: 'rename' },
-        { label: '$(debug-step-over) Skip existing',  id: 'skip' },
-        { label: '$(list-tree)  Choose files',        id: 'choose' }
+        { label: '$(sync)       Overwrite all', id: 'overwrite' },
+        { label: '$(file-add)   Keep (Rename)', id: 'rename' },
+        { label: '$(debug-step-over) Skip existing', id: 'skip' },
+        { label: '$(list-tree)  Choose files', id: 'choose' }
     ], { placeHolder: `${conflicts.length} file(s) already exist locally. What should we do?` });
 
     if (!pick) return;
@@ -257,15 +315,15 @@ function runDownload(exe, baseArgs) {
             try {
                 const msg = JSON.parse(line.trim());
                 if (msg.conflicts) { conflicts = msg.conflicts; break; }
-            } catch (_) {}
+            } catch (_) { }
         }
 
         // Show the conflict resolution options
         const pick = await vscode.window.showQuickPick([
-            { label: '$(sync)       Overwrite all',       id: 'overwrite' },
-            { label: '$(file-add)   Keep (Rename)',        id: 'rename' },
-            { label: '$(debug-step-over) Skip existing',  id: 'skip' },
-            { label: '$(list-tree)  Choose files',        id: 'choose' }
+            { label: '$(sync)       Overwrite all', id: 'overwrite' },
+            { label: '$(file-add)   Keep (Rename)', id: 'rename' },
+            { label: '$(debug-step-over) Skip existing', id: 'skip' },
+            { label: '$(list-tree)  Choose files', id: 'choose' }
         ], { placeHolder: `${conflicts.length} file(s) already exist locally. What should we do?` });
 
         if (!pick) return;
@@ -365,6 +423,7 @@ let aiAssistanceProvider = null;
 
 // ─── Extension Activation ────────────────────────────────────────────────────
 
+
 /**
  * Send a command to a terminal after clearing it for a clean, professional look.
  * @param {vscode.Terminal} terminal
@@ -394,55 +453,62 @@ function activate(context) {
     checkPythonAvailability();
 
     const getAIAssistanceContext = async () => {
+        // 1. Determine the active project root based on the current editor
+        const editor = vscode.window.activeTextEditor;
+        let activeUri = editor ? editor.document.uri : (vscode.workspace.workspaceFolders?.[0]?.uri);
+        let projectRoot = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri)?.uri.fsPath : null;
+
+        // Fallback: If no folder found for active file, try first workspace folder
+        if (!projectRoot && vscode.workspace.workspaceFolders?.length) {
+            projectRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+        }
+
+        // 2. Resolve Python environment dynamically for this workspace
+        const config = vscode.workspace.getConfiguration('micropython-studio', activeUri);
+        const customPython = config.get('pythonPath');
+
         const venvFolder = getVenvPythonPathFolder();
-        const venvPython = getVenvPythonPath(venvFolder);
+        const venvPythonWithFallback = customPython || getVenvPythonPath(venvFolder);
 
         const contextData = {
             port: gRemoteDevicePort || 'Not Connected',
             firmware: gDeviceFirmware || 'Unknown',
-            projectDir: gDeviceCodeDir ? path.dirname(gDeviceCodeDir) : 'Not set',
+            projectDir: projectRoot || 'Not set',
             mcu: 'Unknown',
             sync_folder: 'device_code',
-            root_folder: gDeviceCodeDir ? path.basename(path.dirname(gDeviceCodeDir)) : 'Unknown',
+            root_folder: projectRoot ? path.basename(projectRoot) : 'Unknown',
             project_created: 'Unknown',
             last_sync: 'Unknown',
             deviceId: 'Unknown',
-            ProjectFolder: gDeviceCodeDir ? path.dirname(gDeviceCodeDir) : 'Not set',
-            deviceCodeDir: gDeviceCodeDir || 'Not set',
+            ProjectFolder: projectRoot || 'Not set',
+            deviceCodeDir: 'Not set',
             virtualEnv: venvFolder,
-            virtualPython: venvPython,
+            virtualPython: venvPythonWithFallback,
             config: null,
-            stubsPath: gDeviceFirmware === 'CircuitPython' 
-                ? path.join(process.env.USERPROFILE, '.micropython-studio', 'stubs', 'circuitpython-stubs') 
+            stubsPath: gDeviceFirmware === 'CircuitPython'
+                ? path.join(process.env.USERPROFILE || process.env.HOME || '', '.micropython-studio', 'stubs', 'circuitpython-stubs')
                 : null
         };
 
-        let projectRoot = gDeviceCodeDir ? path.dirname(gDeviceCodeDir) : null;
-        
-        // --- Fallback: Try to find device.cfg in opening workspace folders if no device selected ---
-        if (!projectRoot) {
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (workspaceFolders && workspaceFolders.length > 0) {
-                for (const folder of workspaceFolders) {
-                    const cfgPath = path.join(folder.uri.fsPath, 'device.cfg');
-                    if (fs.existsSync(cfgPath)) {
-                        projectRoot = folder.uri.fsPath;
-                        break;
-                    }
+        if (projectRoot) {
+            // Check for device.cfg in project root or main subfolder
+            let cfgPath = path.join(projectRoot, 'device.cfg');
+            if (!fs.existsSync(cfgPath)) {
+                // Try parent if we are in 'main'
+                const parentCfg = path.join(path.dirname(projectRoot), 'device.cfg');
+                if (fs.existsSync(parentCfg)) {
+                    cfgPath = parentCfg;
+                    projectRoot = path.dirname(projectRoot);
+                    contextData.projectDir = projectRoot;
+                    contextData.ProjectFolder = projectRoot;
                 }
             }
-        }
 
-        if (projectRoot) {
-            contextData.projectDir = projectRoot;
-            contextData.ProjectFolder = projectRoot;
-            
-            const cfgPath = path.join(projectRoot, 'device.cfg');
             if (fs.existsSync(cfgPath)) {
                 try {
                     const rawConfig = fs.readFileSync(cfgPath, 'utf8');
                     contextData.config = rawConfig;
-                    
+
                     const getVal = (key) => {
                         const match = rawConfig.match(new RegExp(`^${key}\\s*=\\s*"?([^"\\r\\n]+)"?`, 'm'));
                         return match ? match[1] : null;
@@ -454,10 +520,19 @@ function activate(context) {
                     contextData.last_sync = getVal('last_sync') || contextData.last_sync;
                     contextData.root_folder = getVal('root_folder') || contextData.root_folder;
                     contextData.sync_folder = getVal('sync_folder') || contextData.sync_folder;
+                    contextData.deviceCodeDir = getVal('deviceCodeDir') || path.join(projectRoot, 'main');
+
+                    // Update firmware if set in cfg
+                    const cfgFirmware = getVal('device_firmware');
+                    if (cfgFirmware) contextData.firmware = cfgFirmware;
 
                 } catch (e) {
                     console.error('Failed to read device.cfg for AI context', e);
                 }
+            } else {
+                // If no cfg found, try to guess deviceCodeDir
+                const mainDir = path.join(projectRoot, 'main');
+                contextData.deviceCodeDir = fs.existsSync(mainDir) ? mainDir : projectRoot;
             }
 
             const settingsPath = path.join(projectRoot, '.vscode', 'settings.json');
@@ -489,7 +564,7 @@ function activate(context) {
     };
 
     // Initial push once provider is ready or on editor switch
-    setTimeout(() => pushAiContextUpdate(), 1000); 
+    setTimeout(() => pushAiContextUpdate(), 1000);
 
     // Listen for editor changes to update AI sidebar status
     context.subscriptions.push(
@@ -636,7 +711,7 @@ function activate(context) {
                     `--port "${runPort}"`,
                     `--file "${filePath}"`
                 ].join(' ');
-                sendCleanCommand(terminal, cpCmd);
+                await sendCleanCommand(terminal, cpCmd);          
                 return;
             }
 
@@ -726,7 +801,7 @@ function activate(context) {
 
         // ── Path 2: Web Workflow (HTTP) ───────────────────────────────────────
         const cfgPath = path.join(path.dirname(localRoot), 'device.cfg');
-        const wwIp  = await getConfigValue(cfgPath, 'remote', 'webworkflow_ip').catch(() => '');
+        const wwIp = await getConfigValue(cfgPath, 'remote', 'webworkflow_ip').catch(() => '');
         const wwPass = await getConfigValue(cfgPath, 'remote', 'webworkflow_password').catch(() => '');
         const wwPort = parseInt(await getConfigValue(cfgPath, 'remote', 'webworkflow_port').catch(() => '80') || '80', 10);
 
@@ -886,7 +961,7 @@ function activate(context) {
                         return;
                     }
                 }
-                
+
                 const allFiles = [];
                 /** @param {string} dir */
                 const walk = (dir) => {
@@ -1040,13 +1115,13 @@ function activate(context) {
                 let localDest = gDeviceCodeDir;
                 if (localDest && /^[A-Za-z]:[/\\]?$/.test(localDest.replace(/[/\\]+$/, '') + '\\')) {
                     const wsFolders = vscode.workspace.workspaceFolders;
-                    const wsPath    = wsFolders && wsFolders.length > 0 ? wsFolders[0].uri.fsPath : null;
-                    const mainPath  = wsPath ? path.join(wsPath, 'main') : null;
+                    const wsPath = wsFolders && wsFolders.length > 0 ? wsFolders[0].uri.fsPath : null;
+                    const mainPath = wsPath ? path.join(wsPath, 'main') : null;
                     localDest = (mainPath && require('fs').existsSync(mainPath)) ? mainPath : wsPath;
                 }
 
-                const autoSync  = vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
-                                        .get('autoSyncAfterInstall', false);
+                const autoSync = vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
+                    .get('autoSyncAfterInstall', false);
 
                 /** Called when circup process exits */
                 const afterInstall = async () => {

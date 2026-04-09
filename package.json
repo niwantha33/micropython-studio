@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and debug - MicroPython and CircuitPython on real hardware",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {
@@ -20,6 +20,10 @@
   },
   "keywords": [
     "micropython",
+    "circuitpython",
+    "micropython studio",
+    "circuitpython studio",
+    "raspberry",
     "raspberry pi pico",
     "esp32",
     "iot",
@@ -404,8 +408,12 @@
     "@vscode/test-electron": "^2.3.9",
     "eslint": "^8.57.0",
     "glob": "^10.3.10",
-    "mocha": "^10.2.0",
+    "mocha": "^7.2.0",
     "typescript": "^5.3.3"
   },
-  "dependencies": {}
+  "dependencies": {
+    "jsdom": "^29.0.2",
+    "node-fetch": "^2.7.0",
+    "pdf-parse": "^1.1.1"
+  }
 }

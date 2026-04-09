@@ -1,148 +1,333 @@
-import requests
+import sys
 import json
 import subprocess
-import sys
 import os
+import shlex
+
+# -------------------------------
+# AUTO-INSTALL REQUESTS
+# -------------------------------
+try:
+    import requests
+except ImportError:
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "requests"])
+        import requests
+    except Exception as e:
+        print(json.dumps({"error": f"Failed to install requests: {str(e)}"}))
+        sys.exit(1)
+
 
 class OllamaHelper:
-    def __init__(self, model="mycoder", base_url="http://localhost:11434"):
+    def __init__(self, base_url="http://127.0.0.1:11434"):
         self.base_url = base_url
-        self.model = model
 
+    # -------------------------------
+    # CONNECTION CHECK
+    # -------------------------------
     def check_connection(self):
-        """Check if Ollama server is running."""
-        try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            return response.status_code == 200
-        except:
-            return False
+        urls = [self.base_url]
 
-    def is_model_installed(self):
-        """Check if our custom model exists."""
-        try:
-            response = requests.get(f"{self.base_url}/api/tags")
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                return any(m.get("name").startswith(self.model) for m in models)
-            return False
-        except:
-            return False
+        if "localhost" in self.base_url:
+            urls.append(self.base_url.replace("localhost", "127.0.0.1"))
+        elif "127.0.0.1" in self.base_url:
+            urls.append(self.base_url.replace("127.0.0.1", "localhost"))
 
-    def create_model(self, modelfile_path):
-        """Create the custom model from a Modelfile."""
-        try:
-            with open(modelfile_path, 'r') as f:
-                modelfile_content = f.read()
+        for url in urls:
+            try:
+                r = requests.get(f"{url}/api/tags", timeout=3)
+                if r.status_code == 200:
+                    self.base_url = url
+                    return True
+            except:
+                continue
+        return False
 
-            response = requests.post(
-                f"{self.base_url}/api/create",
-                json={
-                    "name": self.model,
-                    "modelfile": modelfile_content
-                },
-                stream=True
-            )
-            for line in response.iter_lines():
-                if line:
-                    status_json = line.decode('utf-8')
-                    print(status_json, flush=True) 
-                    status = json.loads(status_json)
-                    if status.get("status") == "success":
-                        return True
-            return False
+    # -------------------------------
+    # STATUS
+    # -------------------------------
+    def get_status(self):
+        if not self.check_connection():
+            return {"connected": False}
+
+        try:
+            r = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            models = r.json().get("models", [])
+
+            names = [m["name"] for m in models]
+
+            has_mpy = any("mycoder-mpy" in n for n in names)
+            has_cpy = any("mycoder-cpy" in n for n in names)
+            return {
+                "connected": True,
+                "installed": has_mpy or has_cpy,
+                "mpy": has_mpy,
+                "cpy": has_cpy
+            }
         except Exception as e:
-            print(f"Error creating model: {e}")
-            return False
+            return {"connected": False, "error": str(e)}
 
-    def pull_model(self, model_name="qwen2.5-coder:3b"):
-        """Pull a base model from Ollama library."""
+    # -------------------------------
+    # DELETE MODEL
+    # -------------------------------
+    def delete_model(self, name):
         try:
-            response = requests.post(
-                f"{self.base_url}/api/pull",
-                json={"name": model_name},
-                stream=True
+            proc = subprocess.run(
+                ["ollama", "rm", name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
             )
-            for line in response.iter_lines():
-                if line:
-                    status_json = line.decode('utf-8')
-                    print(status_json, flush=True) 
-            return True
-        except:
-            return False
-
-    def chat_with_history(self, messages):
-        """Stream a chat response using the chat endpoint (supports history)."""
-        try:
-            # Add a default system prompt if not present
-            if not any(m.get("role") == "system" for m in messages):
-                messages.insert(0, {
-                    "role": "system", 
-                    "content": "You are a professional MicroPython and CircuitPython expert assistant for the MicroPython Studio IDE. Be concise and provide high-quality code snippets."
-                })
-
-            response = requests.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "stream": True,
-                    "options": {
-                        "num_ctx": 8192,
-                        "num_predict": 3072
-                    }
-                },
-                stream=True
-            )
-            for line in response.iter_lines():
-                if line:
-                    chunk = json.loads(line)
-                    if "message" in chunk:
-                        yield chunk["message"].get("content", "")
-                    if chunk.get("done"):
-                        break
+            return proc.returncode == 0
         except Exception as e:
-            yield f"\n❌ Error connecting to Ollama: {str(e)}"
+            return {"error": str(e)}
 
+    # -------------------------------
+    # PULL BASE MODEL
+    # -------------------------------
+    def pull_model(self, name="gemma4:e2b"):
+        try:
+            proc = subprocess.Popen(
+                ["ollama", "pull", name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
+            for line in proc.stdout:
+                text = line.decode(errors="replace").rstrip()
+                if text:
+                    print(json.dumps({"status": text}), flush=True)
+            proc.wait()
+            return proc.returncode == 0
+        except Exception as e:
+            print(json.dumps({"error": str(e)}))
+            return False
+
+    # -------------------------------
+    # CREATE MODEL
+    # -------------------------------
+    def create_model(self, name, modelfile):
+        if not os.path.exists(modelfile):
+            print(json.dumps({"error": f"Modelfile not found: {modelfile}"}))
+            return False
+
+        try:
+            proc = subprocess.Popen(
+                ["ollama", "create", name, "-f", modelfile],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
+            for line in proc.stdout:
+                text = line.decode(errors="replace").rstrip()
+                if text:
+                    print(json.dumps({"status": text}), flush=True)
+            proc.wait()
+            return proc.returncode == 0
+
+        except Exception as e:
+            print(json.dumps({"error": str(e)}))
+            return False
+
+    # -------------------------------
+    # CHAT
+    # -------------------------------
+    # def chat(self, messages, model):
+    #     try:
+    #         r = requests.post(
+    #             f"{self.base_url}/api/chat",
+    #             json={
+    #                 "model": model,
+    #                 "messages": messages,
+    #                 "stream": True,
+    #                 "options": {
+    #                     "temperature": 1,
+    #                     "top_p": 0.96,
+    #                     "top_k": 60,
+    #                     "num_ctx": 8192
+    #                 }
+    #             },
+    #             stream=True,
+    #             timeout=120
+    #         )
+
+    #         # ✅ Check HTTP status
+    #         if r.status_code != 200:
+    #             yield f"\n❌ HTTP Error {r.status_code}: {r.text}"
+    #             return
+
+    #         # ✅ Stream response safely
+    #         for line in r.iter_lines(decode_unicode=True):
+    #             if not line:
+    #                 continue
+
+    #             try:
+    #                 chunk = json.loads(line)
+    #             except json.JSONDecodeError:
+    #                 continue  # skip bad chunks safely
+
+    #             # ✅ Handle Ollama error
+    #             if "error" in chunk:
+    #                 yield f"\n❌ Ollama Error: {chunk['error']}"
+    #                 return
+
+    #             # ✅ Normal token streaming
+    #             if "message" in chunk:
+    #                 yield chunk["message"].get("content", "")
+
+    #             # ✅ End of stream
+    #             if chunk.get("done"):
+    #                 break
+
+    #     except requests.exceptions.ConnectionError:
+    #         yield "\n❌ Cannot connect to Ollama (is it running?)"
+
+    #     except requests.exceptions.Timeout:
+    #         yield "\n❌ Request timed out"
+
+    #     except Exception as e:
+    #         yield f"\n❌ Unexpected Error: {str(e)}"
+
+    def chat(self, messages, model):
+        """
+        Stream chat response using Ollama CLI (faster than HTTP API)
+
+        Args:
+            messages: List of {role, content} dicts
+            model: Model name (e.g., "mycoder-cpy-docs")
+
+        Yields:
+            str: Tokens as they're generated
+        """
+        try:
+            # ── Format messages into a single prompt ──────────────────
+            # Ollama CLI doesn't support multi-turn history natively,
+            # so we concatenate messages with clear role markers.
+            prompt_parts = []
+            for msg in messages:
+                role = msg.get("role", "user").upper()
+                content = msg.get("content", "").strip()
+                if role == "SYSTEM":
+                    prompt_parts.append(f"«SYSTEM»\n{content}\n")
+                elif role == "USER":
+                    prompt_parts.append(f"«USER»\n{content}\n")
+                elif role == "ASSISTANT":
+                    prompt_parts.append(f"«ASSISTANT»\n{content}\n")
+
+            full_prompt = "\n".join(prompt_parts).strip()
+
+            # ── Build CLI command ─────────────────────────────────────
+            # Using --verbose for raw output, --nowordwrap to preserve formatting
+            cmd = [
+                "ollama", "run", model,
+                "--prompt", full_prompt,
+                "--verbose",        # Raw output (no extra formatting)
+                "--nowordwrap"      # Keep code formatting intact
+            ]
+
+            # ── Run with streaming stdout ─────────────────────────────
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,           # Decode bytes to str automatically
+                bufsize=1,           # Line-buffered for real-time streaming
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(
+                    subprocess, 'CREATE_NO_WINDOW') else 0  # Hide console window on Windows
+            )
+
+            # Stream tokens as they arrive
+            for line in proc.stdout:
+                if not line.strip():
+                    continue
+                # Ollama CLI outputs raw text — yield directly
+                yield line.rstrip('\n')
+
+            # Check for errors after completion
+            proc.wait(timeout=120)
+            if proc.returncode != 0:
+                error = proc.stderr.read().strip()
+                if "context window full" in error.lower():
+                    yield "\n❌ Context too long — try shortening your conversation"
+                elif "model not found" in error.lower():
+                    yield f"\n❌ Model '{model}' not found. Run: ollama pull {model}"
+                else:
+                    yield f"\n❌ CLI Error ({proc.returncode}): {error}"
+
+        except FileNotFoundError:
+            yield "\n❌ Ollama CLI not found. Install from https://ollama.com"
+
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            yield "\n❌ Request timed out (120s)"
+
+        except KeyboardInterrupt:
+            proc.kill()
+            yield "\n⚠️ Interrupted by user"
+
+        except Exception as e:
+            yield f"\n❌ Unexpected Error: {type(e).__name__}: {str(e)}"
+
+
+# -------------------------------
+# CLI ENTRY
+# -------------------------------
 if __name__ == "__main__":
     helper = OllamaHelper()
-    
+
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "No command provided"}))
+        print(json.dumps({"error": "No command"}))
         sys.exit(1)
 
     cmd = sys.argv[1]
-    
+
+    # -------------------------------
+    # CHECK
+    # -------------------------------
     if cmd == "check":
-        connected = helper.check_connection()
-        installed = helper.is_model_installed() if connected else False
-        print(json.dumps({"connected": connected, "installed": installed}))
-        sys.stdout.flush()
-    
+        print(json.dumps(helper.get_status()))
+        sys.exit(0)
+
+    # -------------------------------
+    # SETUP BOTH MODELS
+    # -------------------------------
     elif cmd == "setup":
-        modelfile = sys.argv[2] if len(sys.argv) > 2 else "resource/Modelfile"
-        helper.pull_model("qwen2.5-coder:3b")
-        success = helper.create_model(modelfile)
-        print(json.dumps({"success": success}))
-        
+        base = "gemma4:e2b"
+
+        modelfile_arg = sys.argv[2] if len(sys.argv) > 2 else None
+        if modelfile_arg:
+            resource_dir = os.path.dirname(modelfile_arg)
+            mpy_modelfile = os.path.join(resource_dir, "Modelfile-mpy")
+            cpy_modelfile = os.path.join(resource_dir, "Modelfile-cpy")
+        else:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            resource_dir = os.path.join(script_dir, "..", "resource")
+            mpy_modelfile = os.path.join(resource_dir, "Modelfile-mpy")
+            cpy_modelfile = os.path.join(resource_dir, "Modelfile-cpy")
+
+        helper.pull_model(base)
+
+        helper.create_model("mycoder-mpy", mpy_modelfile)
+        helper.create_model("mycoder-cpy", cpy_modelfile)
+
+        print(json.dumps({"success": True}))
+
+    # -------------------------------
+    # DELETE
+    # -------------------------------
+    elif cmd == "delete":
+        name = sys.argv[2]
+        print(json.dumps({"success": helper.delete_model(name)}))
+
+    # -------------------------------
+    # CHAT
+    # -------------------------------
     elif cmd == "chat":
-        # Read JSON messages from STDIN for robustness
-        try:
-            input_data = sys.stdin.read()
-            if not input_data.strip():
-                sys.exit(0)
-            
-            messages = json.loads(input_data)
-            if isinstance(messages, list):
-                for chunk in helper.chat_with_history(messages):
-                    print(chunk, end="", flush=True)
-            else:
-                # Handle single prompt if it's just a string in quotes
-                prompt = str(messages)
-                for chunk in helper.chat_with_history([{"role": "user", "content": prompt}]):
-                    print(chunk, end="", flush=True)
-        except Exception as e:
-            # Fallback to sys.argv[2] if stdin is empty/fails
-            if len(sys.argv) > 2:
-                prompt = sys.argv[2]
-                for chunk in helper.chat_with_history([{"role": "user", "content": prompt}]):
-                    print(chunk, end="", flush=True)
+        model = sys.argv[2] if len(sys.argv) > 2 else "mycoder-mpy"
+
+        data = sys.stdin.read()
+        if not data.strip():
+            sys.exit(0)
+
+        messages = json.loads(data)
+
+        for chunk in helper.chat(messages, model):
+            print(chunk, end="", flush=True)
