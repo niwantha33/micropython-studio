@@ -139,6 +139,15 @@ class AiAssistanceProvider {
                 }
                 const status = JSON.parse(result.trim());
                 this._view.webview.postMessage({ type: 'status', value: status });
+
+                // ── Auto-reinstall if models are outdated ──────────
+                if (status.connected && status.installed) {
+                    const savedVersion = this._context.globalState.get('aiModelVersion', '0.0.0');
+                    if (savedVersion < AiAssistanceProvider.MODEL_VERSION) {
+                        console.log(`[AI] Models outdated (${savedVersion} < ${AiAssistanceProvider.MODEL_VERSION}), auto-reinstalling...`);
+                        this._installModel(true); // force reinstall
+                    }
+                }
             } catch (e) {
                 console.error(`Ollama check failed: ${e.message}`);
                 this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
@@ -154,16 +163,26 @@ class AiAssistanceProvider {
 
     // ─── Model Installation (via Python — terminal speed) ───────
 
-    async _installModel() {
-        this._view.webview.postMessage({ type: 'installProgress', value: 'Pulling base model (2.3GB)...' });
+    // Version that requires model rebuild (bump this when Modelfiles change)
+    static MODEL_VERSION = '0.8.4';
 
+    async _installModel(forceReinstall = false) {
         const pythonPath = this._getPythonPath();
         const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
-        const firmware = this._firmwareOverride || '';
-        const modelfileName = firmware.toLowerCase().includes('circuitpython') ? 'Modelfile-cpy' : 'Modelfile-mpy';
-        const modelfilePath = path.join(this._extensionUri.fsPath, 'resource', modelfileName);
+        const modelfilePath = path.join(this._extensionUri.fsPath, 'resource', 'Modelfile-mpy');
 
-        const proc = spawn(pythonPath, [scriptPath, 'setup', modelfilePath]);
+        let command, args;
+        if (forceReinstall) {
+            this._view.webview.postMessage({ type: 'installProgress', value: 'Updating AI models (fixing code generation)...' });
+            command = 'reinstall';
+            args = [scriptPath, command, modelfilePath];
+        } else {
+            this._view.webview.postMessage({ type: 'installProgress', value: 'Pulling base model (2.3GB)...' });
+            command = 'setup';
+            args = [scriptPath, command, modelfilePath];
+        }
+
+        const proc = spawn(pythonPath, args);
 
         let buffer = '';
         proc.stdout.on('data', (d) => {
@@ -190,6 +209,8 @@ class AiAssistanceProvider {
 
         proc.on('close', (code) => {
             if (code === 0) {
+                // Save the model version so we don't reinstall again
+                this._context.globalState.update('aiModelVersion', AiAssistanceProvider.MODEL_VERSION);
                 this._view.webview.postMessage({ type: 'installSuccess' });
                 this._checkOllamaStatus();
             } else {
@@ -221,7 +242,7 @@ class AiAssistanceProvider {
         const contextData = await this._getContext();
         const firmware = this._firmwareOverride || contextData.firmware;
         const isCircuitPython = typeof firmware === 'string' && firmware.toLowerCase().includes('circuitpython');
-        const modelName = isCircuitPython ? 'mycoder-cpy' : 'mycoder-mpy';
+        const modelName = isCircuitPython ? 'micro_ai-cpy' : 'micro_ai-mpy';
         // const aiFooter = isCircuitPython ? '[CircuitPython Studio AI]' : '[MicroPython Studio AI]';
 
         // -------------------------------

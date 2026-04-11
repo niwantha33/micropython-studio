@@ -235,6 +235,10 @@ The extension contributes the following settings:
 - **Improved**: Greeting/non-code queries now receive a proper reply instead of being silently passed.
 - **Milestone**: 🎉 **200+ downloads** on VS Code Marketplace — thank you to all users!
 
+### 0.8.4 (AI Model Hotfix)
+- **Fixed**: Resolved a bug where AI code generation would abruptly stop halfway through. Increased the `num_predict` token limit from 512 to 2048 and `num_ctx` to 4096 in both MicroPython and CircuitPython models to allow for complete, longer code responses.
+- **Improved**: Renamed AI models from `mycoder` to `micro_ai` (`micro_ai-mpy` and `micro_ai-cpy`) for better branding. Added automatic model re-installation logic so updates apply seamlessly.
+
 ---
 
 ## Working with MicroPython Studio

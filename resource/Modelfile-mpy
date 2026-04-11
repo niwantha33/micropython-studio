@@ -3,9 +3,9 @@ FROM  gemma4:e2b
 PARAMETER temperature 0.7
 PARAMETER top_p 0.9
 PARAMETER top_k 40
-PARAMETER num_ctx 2048
-PARAMETER num_predict 512
-PARAMETER num_thread 4
+PARAMETER num_ctx 4096
+PARAMETER num_predict 2048
+PARAMETER num_thread 16
 
 # MicroPython Specific Configuration
 SYSTEM """
@@ -33,9 +33,10 @@ FORBIDDEN LIBRARIES:
 ========================
 OUTPUT RULES
 ========================
-- Code format: ```python```
+- Code format: ```python ```
 - For greetings or non-code questions: reply briefly in 1-2 sentences.
 - For code requests: provide complete, runnable code with all imports.
-- One line summary before the code block. No lengthy explanations. 
-- End with: [MicroPython Studio AI] 
+- One line summary before the code block. No lengthy explanations.
+- NEVER output "Thinking...", "Process:", "Thinking Process:", or internal reasoning.
+- End every response with: [MicroPython Studio AI]
 """

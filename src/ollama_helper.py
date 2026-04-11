@@ -57,8 +57,8 @@ class OllamaHelper:
 
             names = [m["name"] for m in models]
 
-            has_mpy = any("mycoder-mpy" in n for n in names)
-            has_cpy = any("mycoder-cpy" in n for n in names)
+            has_mpy = any("micro_ai-mpy" in n for n in names)
+            has_cpy = any("micro_ai-cpy" in n for n in names)
             return {
                 "connected": True,
                 "installed": has_mpy or has_cpy,
@@ -192,7 +192,7 @@ class OllamaHelper:
 
         Args:
             messages: List of {role, content} dicts
-            model: Model name (e.g., "mycoder-cpy-docs")
+            model: Model name (e.g., "micro_ai-cpy-docs")
 
         Yields:
             str: Tokens as they're generated
@@ -305,8 +305,8 @@ if __name__ == "__main__":
 
         helper.pull_model(base)
 
-        helper.create_model("mycoder-mpy", mpy_modelfile)
-        helper.create_model("mycoder-cpy", cpy_modelfile)
+        helper.create_model("micro_ai-mpy", mpy_modelfile)
+        helper.create_model("micro_ai-cpy", cpy_modelfile)
 
         print(json.dumps({"success": True}))
 
@@ -318,10 +318,42 @@ if __name__ == "__main__":
         print(json.dumps({"success": helper.delete_model(name)}))
 
     # -------------------------------
+    # REINSTALL (delete + recreate both models)
+    # -------------------------------
+    elif cmd == "reinstall":
+        modelfile_arg = sys.argv[2] if len(sys.argv) > 2 else None
+        if modelfile_arg:
+            resource_dir = os.path.dirname(modelfile_arg)
+        else:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            resource_dir = os.path.join(script_dir, "..", "resource")
+
+        mpy_modelfile = os.path.join(resource_dir, "Modelfile-mpy")
+        cpy_modelfile = os.path.join(resource_dir, "Modelfile-cpy")
+
+        # Clean up legacy mycoder models if they exist
+        helper.delete_model("mycoder-mpy")
+        helper.delete_model("mycoder-cpy")
+
+        # Delete existing micro_ai models (ignore errors if not found)
+        print(json.dumps({"status": "Removing old micro_ai-mpy..."}), flush=True)
+        helper.delete_model("micro_ai-mpy")
+        print(json.dumps({"status": "Removing old micro_ai-cpy..."}), flush=True)
+        helper.delete_model("micro_ai-cpy")
+
+        # Recreate from updated Modelfiles
+        print(json.dumps({"status": "Creating micro_ai-mpy..."}), flush=True)
+        helper.create_model("micro_ai-mpy", mpy_modelfile)
+        print(json.dumps({"status": "Creating micro_ai-cpy..."}), flush=True)
+        helper.create_model("micro_ai-cpy", cpy_modelfile)
+
+        print(json.dumps({"success": True}))
+
+    # -------------------------------
     # CHAT
     # -------------------------------
     elif cmd == "chat":
-        model = sys.argv[2] if len(sys.argv) > 2 else "mycoder-mpy"
+        model = sys.argv[2] if len(sys.argv) > 2 else "micro_ai-mpy"
 
         data = sys.stdin.read()
         if not data.strip():
