@@ -1,35 +1,34 @@
-# Attempt to connect to the internet using the network module
-import network
+import uasyncio
 import time
 
-# --- Configuration ---
-SSID = "Your_WiFi_SSID"      # Replace with your actual network SSID
-PASSWORD = "Your_WiFi_Password"  # Replace with your actual network password
+async def task_one():
+    """Simulates the work of the first task."""
+    print("Task One: Starting work.")
+    await uasyncio.sleep(2)
+    print("Task One: Finished work.")
+    return "Result from Task 1"
 
-def connect_to_wifi():
-    print("Starting Wi-Fi connection attempt...")
-    
-    # Create an interface object
-    wlan = network.WLAN(network.STA)
-    
-    if not wlan.isconnected():
-        print(f"Scanning for networks...")
-        wlan.active(True)
-        
-        # Wait for the network to find networks (this part is highly variable in MicroPython)
-        time.sleep(5) 
-        
-        if wlan.isconnected():
-            print("Wi-Fi connection established!")
-            print("IP Address:", wlan.ifconfig()[0])
-        else:
-            print("Failed to connect to Wi-Fi. Check SSID and credentials.")
-    else:
-        print("Already connected to a network.")
+async def task_two():
+    """Simulates the work of the second task."""
+    print("Task Two: Starting work.")
+    await uasyncio.sleep(3)
+    print("Task Two: Finished work.")
+    return "Result from Task 2"
 
-try:
-    connect_to_wifi()
-except Exception as e:
-    print(f"An error occurred during connection: {e}")
+async def main():
+    """Main function to run tasks concurrently and handle the callback."""
+    print("Main: Scheduling tasks.")
 
-[MicroPython Studio AI]
+    # Create tasks and gather them to wait for both to complete
+    results = await uasyncio.gather(task_one(), task_two())
+
+    # Callback on completion
+    print("\n--- Callback Notification ---")
+    print("All tasks have completed.")
+    print(f"Received results: {results}")
+
+if __name__ == "__main__":
+    try:
+        uasyncio.run(main())
+    except KeyboardInterrupt:
+        print("Program interrupted.")

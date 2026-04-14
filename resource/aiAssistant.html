@@ -357,6 +357,14 @@
             font-family: 'Cascadia Code', 'Consolas', monospace;
         }
 
+        .stream-status {
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--accent-color);
+            font-family: 'Cascadia Code', 'Consolas', monospace;
+            transition: opacity 0.2s;
+        }
+
         /* Legacy compat */
         .thinking {
             display: flex;
@@ -462,6 +470,9 @@
                 <span id="current-file">No file open</span>
             </div>
             <div class="status-item">
+                <span id="stream-status" class="stream-status" style="display:none;"></span>
+            </div>
+            <div class="status-item">
                 <div id="firmware-toggle" class="status-pill" title="Click to manually override">...</div>
             </div>
         </div>
@@ -497,6 +508,9 @@
         let currentFirmware = 'MicroPython';
         let chatTimerInterval = null;
         let chatStartTime = null;
+        let renderScheduled = false;
+        let tokenCount = 0;
+        let firstTokenTime = null;
 
         // --- Event Listeners ---
         firmwareToggle.addEventListener('click', () => {
@@ -567,11 +581,16 @@
             userInput.value = '';
             userInput.style.height = 'auto';
             
+            // Reset streaming state
+            tokenCount = 0;
+            firstTokenTime = null;
+
             // Create thinking indicator with status
             currentAiMessageElement = createAiBubble();
             showThinkingIndicator('Sending message...');
             isThinking = true;
             startChatTimer();
+            showStreamStatusText('Sending...');
             scrollToBottom();
         }
 
@@ -661,6 +680,47 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
+        function scheduleRender() {
+            if (renderScheduled) return;
+            renderScheduled = true;
+            requestAnimationFrame(() => {
+                renderScheduled = false;
+                if (!currentAiMessageElement) return;
+                currentAiMessageElement.innerHTML = marked.parse(currentAiMessageElement.dataset.content);
+                currentAiMessageElement.querySelectorAll('pre code:not([data-highlighted])').forEach((block) => {
+                    hljs.highlightElement(block);
+                    block.setAttribute('data-highlighted', 'true');
+                });
+                scrollToBottom();
+            });
+        }
+
+        function updateStreamStatus() {
+            const el = document.getElementById('stream-status');
+            if (!el || !firstTokenTime) return;
+            const elapsed = (Date.now() - firstTokenTime) / 1000;
+            if (elapsed < 0.3) return;
+            const rate = Math.round(tokenCount / elapsed);
+            const totalTime = chatStartTime ? formatElapsed(Date.now() - chatStartTime) : '';
+            el.textContent = rate + ' tok/s' + (totalTime ? ' \u00b7 ' + totalTime : '');
+            el.style.display = '';
+        }
+
+        function showStreamStatusText(text) {
+            const el = document.getElementById('stream-status');
+            if (!el) return;
+            el.textContent = text;
+            el.style.display = '';
+        }
+
+        function hideStreamStatus() {
+            const el = document.getElementById('stream-status');
+            if (el) {
+                el.style.display = 'none';
+                el.textContent = '';
+            }
+        }
+
         window.addEventListener('message', event => {
             const message = event.data;
             switch (message.type) {
@@ -685,15 +745,11 @@
                             isThinking = false;
                         }
                         currentAiMessageElement.dataset.content += message.value;
-                        currentAiMessageElement.innerHTML = marked.parse(currentAiMessageElement.dataset.content);
-                        currentAiMessageElement.querySelectorAll('pre code').forEach((block) => {
-                            hljs.highlightElement(block);
-                        });
-                        scrollToBottom();
+                        scheduleRender();
                     }
                     break;
                 case 'chatStream':
-                    // Streaming tokens from HTTP API
+                    // Streaming tokens from HTTP API (debounced rendering)
                     if (!currentAiMessageElement) {
                         currentAiMessageElement = createAiBubble();
                     }
@@ -703,11 +759,10 @@
                         isThinking = false;
                     }
                     currentAiMessageElement.dataset.content += message.value;
-                    currentAiMessageElement.innerHTML = marked.parse(currentAiMessageElement.dataset.content);
-                    currentAiMessageElement.querySelectorAll('pre code').forEach((block) => {
-                        hljs.highlightElement(block);
-                    });
-                    scrollToBottom();
+                    tokenCount++;
+                    if (!firstTokenTime) firstTokenTime = Date.now();
+                    scheduleRender();
+                    updateStreamStatus();
                     break;
                 case 'chatStart':
                     // Backend signals it's starting — ensure thinking bubble exists
@@ -716,19 +771,41 @@
                         isThinking = true;
                         startChatTimer();
                     }
-                    showThinkingIndicator('Connecting to AI...');
+                    showThinkingIndicator('Sending context...');
+                    showStreamStatusText('Sending context...');
                     scrollToBottom();
                     break;
                 case 'chatStatus':
-                    // Update the thinking indicator with real status text
+                    // Update thinking bubble + bottom status bar
                     if (isThinking && currentAiMessageElement) {
                         showThinkingIndicator(message.value);
                         scrollToBottom();
                     }
+                    showStreamStatusText(message.value);
                     break;
                 case 'chatDone':
                     isThinking = false;
                     stopChatTimer();
+                    // Final render pass to catch any batched tokens
+                    if (currentAiMessageElement && currentAiMessageElement.dataset.content) {
+                        currentAiMessageElement.innerHTML = marked.parse(currentAiMessageElement.dataset.content);
+                        currentAiMessageElement.querySelectorAll('pre code:not([data-highlighted])').forEach((block) => {
+                            hljs.highlightElement(block);
+                            block.setAttribute('data-highlighted', 'true');
+                        });
+                        scrollToBottom();
+                    }
+                    // Show completion summary briefly
+                    if (firstTokenTime && tokenCount > 0) {
+                        const elapsed = (Date.now() - firstTokenTime) / 1000;
+                        const rate = Math.round(tokenCount / elapsed);
+                        showStreamStatusText('Done \u00b7 ' + tokenCount + ' tokens \u00b7 ' + rate + ' tok/s');
+                        setTimeout(hideStreamStatus, 4000);
+                    } else {
+                        hideStreamStatus();
+                    }
+                    tokenCount = 0;
+                    firstTokenTime = null;
                     currentAiMessageElement = null;
                     break;
                 case 'autoError':

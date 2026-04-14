@@ -188,83 +188,63 @@ class OllamaHelper:
 
     def chat(self, messages, model):
         """
-        Stream chat response using Ollama CLI (faster than HTTP API)
+        Stream chat response using Ollama HTTP API (token-level streaming).
 
         Args:
             messages: List of {role, content} dicts
-            model: Model name (e.g., "micro_ai-cpy-docs")
+            model: Model name (e.g., "micro_ai-mpy")
 
         Yields:
             str: Tokens as they're generated
         """
         try:
-            # ── Format messages into a single prompt ──────────────────
-            # Ollama CLI doesn't support multi-turn history natively,
-            # so we concatenate messages with clear role markers.
-            prompt_parts = []
-            for msg in messages:
-                role = msg.get("role", "user").upper()
-                content = msg.get("content", "").strip()
-                if role == "SYSTEM":
-                    prompt_parts.append(f"«SYSTEM»\n{content}\n")
-                elif role == "USER":
-                    prompt_parts.append(f"«USER»\n{content}\n")
-                elif role == "ASSISTANT":
-                    prompt_parts.append(f"«ASSISTANT»\n{content}\n")
-
-            full_prompt = "\n".join(prompt_parts).strip()
-
-            # ── Build CLI command ─────────────────────────────────────
-            # Using --verbose for raw output, --nowordwrap to preserve formatting
-            cmd = [
-                "ollama", "run", model,
-                "--prompt", full_prompt,
-                "--verbose",        # Raw output (no extra formatting)
-                "--nowordwrap"      # Keep code formatting intact
-            ]
-
-            # ── Run with streaming stdout ─────────────────────────────
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,           # Decode bytes to str automatically
-                bufsize=1,           # Line-buffered for real-time streaming
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(
-                    subprocess, 'CREATE_NO_WINDOW') else 0  # Hide console window on Windows
+            r = requests.post(
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": True,
+                    "options": {
+                        "temperature": 1,
+                        "top_p": 0.96,
+                        "top_k": 60,
+                        "num_ctx": 4096
+                    }
+                },
+                stream=True,
+                timeout=120
             )
 
-            # Stream tokens as they arrive
-            for line in proc.stdout:
-                if not line.strip():
+            if r.status_code != 200:
+                yield f"\n\u274c HTTP Error {r.status_code}: {r.text}"
+                return
+
+            for line in r.iter_lines(decode_unicode=True):
+                if not line:
                     continue
-                # Ollama CLI outputs raw text — yield directly
-                yield line.rstrip('\n')
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-            # Check for errors after completion
-            proc.wait(timeout=120)
-            if proc.returncode != 0:
-                error = proc.stderr.read().strip()
-                if "context window full" in error.lower():
-                    yield "\n❌ Context too long — try shortening your conversation"
-                elif "model not found" in error.lower():
-                    yield f"\n❌ Model '{model}' not found. Run: ollama pull {model}"
-                else:
-                    yield f"\n❌ CLI Error ({proc.returncode}): {error}"
+                if "error" in chunk:
+                    yield f"\n\u274c Ollama Error: {chunk['error']}"
+                    return
 
-        except FileNotFoundError:
-            yield "\n❌ Ollama CLI not found. Install from https://ollama.com"
+                if "message" in chunk:
+                    yield chunk["message"].get("content", "")
 
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            yield "\n❌ Request timed out (120s)"
+                if chunk.get("done"):
+                    break
 
-        except KeyboardInterrupt:
-            proc.kill()
-            yield "\n⚠️ Interrupted by user"
+        except requests.exceptions.ConnectionError:
+            yield "\n\u274c Cannot connect to Ollama (is it running?)"
+
+        except requests.exceptions.Timeout:
+            yield "\n\u274c Request timed out (120s)"
 
         except Exception as e:
-            yield f"\n❌ Unexpected Error: {type(e).__name__}: {str(e)}"
+            yield f"\n\u274c Unexpected Error: {type(e).__name__}: {str(e)}"
 
 
 # -------------------------------
