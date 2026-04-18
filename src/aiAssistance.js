@@ -128,7 +128,9 @@ class AiAssistanceProvider {
 
         const timeout = setTimeout(() => {
             proc.kill();
-            this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
+            if (this._view) {
+                this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
+            }
         }, 8000);
 
         proc.on('close', (code) => {
@@ -138,32 +140,61 @@ class AiAssistanceProvider {
                     throw new Error(errorOutput || 'No output from check script');
                 }
                 const status = JSON.parse(result.trim());
-                this._view.webview.postMessage({ type: 'status', value: status });
+                if (this._view) {
+                    this._view.webview.postMessage({ type: 'status', value: status });
+                }
+
+                // ── Auto-reinstall if models are outdated ──────────
+                if (status.connected && status.installed) {
+                    const savedVersion = this._context.globalState.get('aiModelVersion', '0.0.0');
+                    if (savedVersion < AiAssistanceProvider.MODEL_VERSION) {
+                        console.log(`[AI] Models outdated (${savedVersion} < ${AiAssistanceProvider.MODEL_VERSION}), auto-reinstalling...`);
+                        this._installModel(true); // force reinstall
+                    }
+                }
             } catch (e) {
                 console.error(`Ollama check failed: ${e.message}`);
-                this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
+                if (this._view) {
+                    this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
+                }
             }
         });
 
         proc.on('error', (err) => {
             clearTimeout(timeout);
             console.error(`Spawn error: ${err.message}`);
-            this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
+            if (this._view) {
+                this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
+            }
         });
     }
 
     // ─── Model Installation (via Python — terminal speed) ───────
 
-    async _installModel() {
-        this._view.webview.postMessage({ type: 'installProgress', value: 'Pulling base model (2.3GB)...' });
+    // Version that requires model rebuild (bump this when Modelfiles change)
+    static MODEL_VERSION = '0.8.4';
 
+    async _installModel(forceReinstall = false) {
         const pythonPath = this._getPythonPath();
         const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
-        const firmware = this._firmwareOverride || '';
-        const modelfileName = firmware.toLowerCase().includes('circuitpython') ? 'Modelfile-cpy' : 'Modelfile-mpy';
-        const modelfilePath = path.join(this._extensionUri.fsPath, 'resource', modelfileName);
+        const modelfilePath = path.join(this._extensionUri.fsPath, 'resource', 'Modelfile-mpy');
 
-        const proc = spawn(pythonPath, [scriptPath, 'setup', modelfilePath]);
+        let command, args;
+        if (forceReinstall) {
+            if (this._view) {
+                this._view.webview.postMessage({ type: 'installProgress', value: 'Updating AI models (fixing code generation)...' });
+            }
+            command = 'reinstall';
+            args = [scriptPath, command, modelfilePath];
+        } else {
+            if (this._view) {
+                this._view.webview.postMessage({ type: 'installProgress', value: 'Pulling base model (2.3GB)...' });
+            }
+            command = 'setup';
+            args = [scriptPath, command, modelfilePath];
+        }
+
+        const proc = spawn(pythonPath, args);
 
         let buffer = '';
         proc.stdout.on('data', (d) => {
@@ -180,7 +211,9 @@ class AiAssistanceProvider {
                             const percent = Math.round((status.completed / status.total) * 100);
                             msg += `: ${percent}%`;
                         }
-                        this._view.webview.postMessage({ type: 'installProgress', value: msg });
+                        if (this._view) {
+                            this._view.webview.postMessage({ type: 'installProgress', value: msg });
+                        }
                     }
                 } catch (e) {
                     // Not JSON or partial, ignore
@@ -190,10 +223,16 @@ class AiAssistanceProvider {
 
         proc.on('close', (code) => {
             if (code === 0) {
-                this._view.webview.postMessage({ type: 'installSuccess' });
+                // Save the model version so we don't reinstall again
+                this._context.globalState.update('aiModelVersion', AiAssistanceProvider.MODEL_VERSION);
+                if (this._view) {
+                    this._view.webview.postMessage({ type: 'installSuccess' });
+                }
                 this._checkOllamaStatus();
             } else {
-                this._view.webview.postMessage({ type: 'error', value: 'Model installation failed.' });
+                if (this._view) {
+                    this._view.webview.postMessage({ type: 'error', value: 'Model installation failed.' });
+                }
             }
         });
     }
@@ -221,7 +260,7 @@ class AiAssistanceProvider {
         const contextData = await this._getContext();
         const firmware = this._firmwareOverride || contextData.firmware;
         const isCircuitPython = typeof firmware === 'string' && firmware.toLowerCase().includes('circuitpython');
-        const modelName = isCircuitPython ? 'mycoder-cpy' : 'mycoder-mpy';
+        const modelName = isCircuitPython ? 'micro_ai-cpy' : 'micro_ai-mpy';
         // const aiFooter = isCircuitPython ? '[CircuitPython Studio AI]' : '[MicroPython Studio AI]';
 
         // -------------------------------
@@ -268,17 +307,20 @@ projectDir = "${contextData.projectDir}"
 
         // Signal UI to start loading
         this._view.webview.postMessage({ type: 'chatStart' });
-        this._view.webview.postMessage({ type: 'chatStatus', value: `Connecting to ${modelName}...` });
+        this._view.webview.postMessage({ type: 'chatStatus', value: `Sending context to ${modelName}...` });
 
         // -------------------------------
         // 7. STREAM via Ollama HTTP API
+        // Accumulate-then-diff: collects all tokens (including <think> blocks),
+        // strips thinking via regex on the full text, sends only visible deltas.
+        // This handles </think> split across tokens correctly.
         // -------------------------------
-        let fullResponse = '';
-        let insideThinking = false;   // Track thinking block state
-        let firstTokenReceived = false;
+        let rawAccumulated = '';
+        let sentLength = 0;
+        let statusState = 'init'; // 'init' | 'thinking' | 'generating'
 
         try {
-            this._view.webview.postMessage({ type: 'chatStatus', value: `Waiting for Micro AI to respond...` });
+            this._view.webview.postMessage({ type: 'chatStatus', value: `AI is thinking...` });
 
             await this._ollamaStream('/api/chat', {
                 model: modelName,
@@ -300,48 +342,49 @@ projectDir = "${contextData.projectDir}"
                     return;
                 }
 
-                // Stream token to webview (filter out thinking blocks)
                 if (chunk.message && chunk.message.content) {
-                    let token = chunk.message.content;
+                    rawAccumulated += chunk.message.content;
 
-                    // Detect thinking block boundaries
-                    if (token.includes('Thinking...') || token.includes('Thinking Process:') || token.includes('<think>')) {
-                        insideThinking = true;
+                    // Strip completed <think>...</think> blocks from full accumulated text
+                    let visible = rawAccumulated.replace(/<think>[\s\S]*?<\/think>/g, '');
+
+                    // Check for unclosed <think> block (model still reasoning)
+                    const unclosedIdx = visible.lastIndexOf('<think>');
+                    const isThinking = unclosedIdx !== -1;
+                    if (isThinking) {
+                        visible = visible.substring(0, unclosedIdx);
+                    }
+
+                    // Update status on state transitions
+                    if (isThinking && statusState !== 'thinking') {
+                        statusState = 'thinking';
                         this._view.webview.postMessage({ type: 'chatStatus', value: 'AI is thinking...' });
-                        return;
-                    }
-                    if (token.includes('...done thinking.') || token.includes('</think>')) {
-                        insideThinking = false;
-                        this._view.webview.postMessage({ type: 'chatStatus', value: 'Generating response...' });
-                        return;
-                    }
-                    // Skip tokens while inside thinking block
-                    if (insideThinking) return;
-
-                    // Signal first real token
-                    if (!firstTokenReceived) {
-                        firstTokenReceived = true;
-                        this._view.webview.postMessage({ type: 'chatStatus', value: 'Generating response...' });
                     }
 
-                    fullResponse += token;
-                    this._view.webview.postMessage({ type: 'chatStream', value: token });
+                    // Send new visible content to webview
+                    if (visible.length > sentLength) {
+                        if (statusState !== 'generating') {
+                            statusState = 'generating';
+                            this._view.webview.postMessage({ type: 'chatStatus', value: 'Generating response...' });
+                        }
+                        const delta = visible.substring(sentLength);
+                        sentLength = visible.length;
+                        this._view.webview.postMessage({ type: 'chatStream', value: delta });
+                    }
                 }
             });
 
-            // Post-process: clean up & save to history
-            if (fullResponse.trim()) {
-                let clean = fullResponse
-                    .replace(/\n{4,}/g, '\n\n\n')               // Fix excessive blank lines
-                    .replace(/\s*\[.*Studio AI\].*$/i, '')      // Remove old footer if present
-                    .trim();
+            // Post-process: clean visible response for history
+            let fullResponse = rawAccumulated
+                .replace(/<think>[\s\S]*?<\/think>/g, '')
+                .replace(/<think>[\s\S]*$/, '')
+                .replace(/\n{4,}/g, '\n\n\n')
+                .replace(/\s*\[.*Studio AI\].*$/i, '')
+                .trim();
 
-                if (fullResponse) {
-                    // const finalResponse = `${clean}\n\n${aiFooter}`;
-                    const finalResponse = `${fullResponse}\n\n`;
-                    this._history.push({ role: 'assistant', content: finalResponse });
-                    this._context.workspaceState.update('aiChatHistory', this._history);
-                }
+            if (fullResponse) {
+                this._history.push({ role: 'assistant', content: `${fullResponse}\n\n` });
+                this._context.workspaceState.update('aiChatHistory', this._history);
             }
             this._view.webview.postMessage({ type: 'chatDone' });
 

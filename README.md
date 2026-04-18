@@ -1,8 +1,9 @@
 # 🚀 MicroPython Studio - VS Code Extension
-### ✨ Supporting MicroPython & CircuitPython Platforms - Local Private AI Assistant ✨
+### ✨ Supporting MicroPython, CircuitPython & XBee - Local Private AI Assistant ✨
 
 [![MicroPython](https://img.shields.io/badge/MicroPython-v1.20%2B-blue?logo=micropython&logoColor=white)](https://micropython.org)
 [![CircuitPython](https://img.shields.io/badge/CircuitPython-v10.x-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
+[![XBee](https://img.shields.io/badge/XBee-MicroPython-orange)](https://www.digi.com/xbee)
 [![VS Marketplace Downloads](https://img.shields.io/visual-studio-marketplace/d/niwantha33.micropython-studio?label=downloads&color=brightgreen)](https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio)
 [![VS Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/niwantha33.micropython-studio?label=version)](https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio)
 
@@ -19,6 +20,8 @@
 </p>
 
 ---
+
+> **🐝 Now with full Digi XBee MicroPython support!** Create projects, upload files, and run scripts on XBee3 modules — Zigbee, DigiMesh, Cellular, Wi-SUN, and BLU — all from VS Code.
 
 A powerful IDE extension for MicroPython development with hardware integration, device management, and seamless workflow tools.
 
@@ -144,6 +147,7 @@ The extension contributes the following settings:
   - ESP32 series
   - Raspberry Pi Pico (RP2040)
   - STM32 boards
+  - XBee 3 Modules
 
 ### 0.5.0
 
@@ -235,6 +239,17 @@ The extension contributes the following settings:
 - **Improved**: Greeting/non-code queries now receive a proper reply instead of being silently passed.
 - **Milestone**: 🎉 **200+ downloads** on VS Code Marketplace — thank you to all users!
 
+### 0.8.4 (AI Model Hotfix)
+- **Fixed**: Resolved a bug where AI code generation would abruptly stop halfway through. Increased the `num_predict` token limit from 512 to 2048 and `num_ctx` to 4096 in both MicroPython and CircuitPython models to allow for complete, longer code responses.
+- **Improved**: Renamed AI models from `mycoder` to `micro_ai` (`micro_ai-mpy` and `micro_ai-cpy`) for better branding. Added automatic model re-installation logic so updates apply seamlessly.
+
+### 0.8.6 (XBee MicroPython Support)
+- **New**: Full **Digi XBee MicroPython** support — create, upload, and run on XBee3 modules (Zigbee, DigiMesh, Cellular, Wi-SUN, BLU).
+- **Fixed**: XBee file upload — resolved `EEXIST` errors caused by XBee's restricted flash filesystem. Small files now upload in a single raw-REPL call; larger files use a robust delete-then-write strategy with flash-flush delays.
+- **Fixed**: XBee uploads now bypass `mpremote cp` entirely (XBee lacks `os.stat`), going straight to reliable serial transport.
+- **Fixed**: COM port labels — FTDI and CP210x chips no longer incorrectly labeled as "ESP32". Now shows actual chip type (FTDI Serial, CP210x Serial, CH340 Serial, etc.).
+- **Improved**: XBee project creation — dedicated board picker with all XBee3 variants, auto-configured stubs, and `/flash` filesystem routing.
+
 ---
 
 ## Working with MicroPython Studio
@@ -280,6 +295,7 @@ MicroPython Studio is open source (MIT License) and builds on the following open
 | [circup](https://github.com/adafruit/circup) | Adafruit Industries | MIT | CircuitPython package management and library installation |
 | [adafruit-ampy](https://github.com/scientifichackers/ampy) | Scientific Hackers / Adafruit | MIT | CircuitPython file execution via serial REPL |
 | [CircuitPython Web Workflow](https://docs.circuitpython.org/en/latest/docs/workflows.html) | Adafruit Industries | MIT | Wi-Fi file access and REPL via HTTP/WebSocket API |
+| [xbee-micropython](https://github.com/digidotcom/xbee-micropython) | Digi International | MIT | XBee MicroPython typehints, stubs, and libraries |
 | [esptool](https://github.com/espressif/esptool) | Espressif Systems | GPL-2.0 | ESP32 firmware flashing |
 | [pyserial](https://github.com/pyserial/pyserial) | pyserial contributors | BSD | Serial port communication and device detection |
 
@@ -303,4 +319,14 @@ Have a question, found a bug, or need help getting started?
 - **Email:** niwantha33@gmail.com
 - **GitHub Issues:** [github.com/niwantha33/micropython-studio/issues](https://github.com/niwantha33/micropython-studio/issues)
 
-**Enjoy developing with MicroPython! and CircuitPython!** 🚀
+**Enjoy developing with MicroPython, CircuitPython and XBee!** 🚀
+
+---
+
+## License
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+
+This project is licensed under the **MIT License** — see [LICENSE.md](LICENSE.md) for full details.
+
+XBee MicroPython typehints and libraries are sourced from [Digi International's xbee-micropython](https://github.com/digidotcom/xbee-micropython) repository, also under the MIT License. All third-party dependencies retain their original licenses as listed in the [Acknowledgements](#acknowledgements) section above.

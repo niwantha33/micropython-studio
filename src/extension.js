@@ -573,6 +573,27 @@ function activate(context) {
         })
     );
 
+    // Auto-update AI models when Modelfiles in resource dir are edited
+    const resourceDirDir = vscode.Uri.file(path.join(context.extensionUri.fsPath, 'resource'));
+    const modelfileWatcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(resourceDirDir, 'Modelfile-*')
+    );
+    context.subscriptions.push(modelfileWatcher);
+
+    const onModelfileChanged = async (uri) => {
+        const fileName = path.basename(uri.fsPath);
+        if (fileName === 'Modelfile-mpy' || fileName === 'Modelfile-cpy') {
+            if (aiAssistanceProvider) {
+                vscode.window.showInformationMessage(`AI Modelfile updated (${fileName}). Reinstalling models...`);
+                // Bump the version dynamically or just let it reinstall
+                await aiAssistanceProvider._installModel(true);
+            }
+        }
+    };
+
+    context.subscriptions.push(modelfileWatcher.onDidChange(onModelfileChanged));
+    context.subscriptions.push(modelfileWatcher.onDidCreate(onModelfileChanged));
+
     // ── Create Status Bar ────────────────────────────────────────────────
 
     createStatusBar(context);
@@ -720,9 +741,9 @@ function activate(context) {
             const isWireless = runPort.startsWith('ws:');
             let cmd;
 
-            if (!isMpy && !isWireless && currentTarget === 'Host') {
+            if (!isMpy && !isWireless && !isXBeeDevice() && currentTarget === 'Host') {
                 // Run on Host — mount project folder to device via USB, then run from host FS
-                // .mpy files and wireless (ws:) connections cannot use mount+run; always run_mcu
+                // .mpy files, XBee, and wireless (ws:) connections cannot use mount+run; always run_mcu
                 if (gDeviceCodeDir && !isFileInProjectFolder(filePath, gDeviceCodeDir)) {
                     const choice = await vscode.window.showWarningMessage(
                         `File "${fileName}" is not in the main project folder.`,
@@ -850,6 +871,25 @@ function activate(context) {
         return path.dirname(targetPath);
     }
 
+    /**
+     * Check if the current connected MCU is an XBee module.
+     */
+    function isXBeeDevice() {
+        try {
+            if (gDeviceCodeDir) {
+                const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                if (require('fs').existsSync(cfgPath)) {
+                    const rawConfig = require('fs').readFileSync(cfgPath, 'utf8');
+                    const match = rawConfig.match(/^mcu\s*=\s*"?([^"\r\n]+)"?/m);
+                    if (match && match[1].toLowerCase().includes('xbee')) {
+                        return true;
+                    }
+                }
+            }
+        } catch (e) {}
+        return false;
+    }
+
     // Upload current file to device root
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.uploadFileToDevice', async (uri) => {
@@ -873,7 +913,8 @@ function activate(context) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
-            const uploadArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', filePath, '--dest', ''];
+            const baseDest = isXBeeDevice() ? '/flash' : '';
+            const uploadArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', filePath, '--dest', baseDest];
             const onDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
             if (gRemoteDevicePort.startsWith('ws:')) {
@@ -924,7 +965,8 @@ function activate(context) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
-            const folderArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', folderPath, '--dest', dest];
+            const baseDest = isXBeeDevice() ? `/flash/${dest}` : dest;
+            const folderArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', folderPath, '--dest', baseDest];
             const onFolderDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
             if (gRemoteDevicePort.startsWith('ws:')) {
@@ -985,7 +1027,8 @@ function activate(context) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
-            const projArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', ''];
+            const baseDest = isXBeeDevice() ? '/flash' : '';
+            const projArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', baseDest];
             const onProjDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
             if (gRemoteDevicePort.startsWith('ws:')) {

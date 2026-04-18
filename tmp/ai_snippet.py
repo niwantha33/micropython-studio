@@ -1,21 +1,34 @@
-import asyncio
+import uasyncio
+import time
 
-import digitalio
+async def task_one():
+    """Simulates the work of the first task."""
+    print("Task One: Starting work.")
+    await uasyncio.sleep(2)
+    print("Task One: Finished work.")
+    return "Result from Task 1"
 
+async def task_two():
+    """Simulates the work of the second task."""
+    print("Task Two: Starting work.")
+    await uasyncio.sleep(3)
+    print("Task Two: Finished work.")
+    return "Result from Task 2"
 
-async def blink_led():
-    # Assuming LED pin number 13 for CircuitPython on RP2350
-    led = digitalio.DigitalInOut(board.LED)
+async def main():
+    """Main function to run tasks concurrently and handle the callback."""
+    print("Main: Scheduling tasks.")
 
-    led.direction = digitalio.Direction.OUTPUT
+    # Create tasks and gather them to wait for both to complete
+    results = await uasyncio.gather(task_one(), task_two())
 
-    while True:
-        led.value = False
-        await asyncio.sleep(0.5)
-        led.value = True
-        print("LED is ON")  # Print message when LED turns on
-        await asyncio.sleep(0.5)
-
+    # Callback on completion
+    print("\n--- Callback Notification ---")
+    print("All tasks have completed.")
+    print(f"Received results: {results}")
 
 if __name__ == "__main__":
-    asyncio.run(blink_led())
+    try:
+        uasyncio.run(main())
+    except KeyboardInterrupt:
+        print("Program interrupted.")

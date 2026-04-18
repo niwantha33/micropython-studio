@@ -27,6 +27,29 @@ function fetchPackageIndex() {
 }
 
 /**
+ * Fetch the list of libraries available in the Digi XBee MicroPython repository
+ * @returns {Promise<Array<{name: string, description: string, isDigi: boolean}>>}
+ */
+async function fetchXBeePackageIndex() {
+    try {
+        const url = 'https://api.github.com/repos/digidotcom/xbee-micropython/contents/lib';
+        const data = await _fetchJSON(url);
+        if (!Array.isArray(data)) return [];
+
+        return data
+            .filter(item => item.type === 'dir')
+            .map(item => ({
+                name: item.name,
+                description: `Official Digi XBee library: ${item.name}`,
+                isDigi: true
+            }));
+    } catch (err) {
+        console.error('Failed to fetch XBee package index:', err);
+        return [];
+    }
+}
+
+/**
  * Opens a QuickPick UI allowing the user to search and select a package to install
  * @param {vscode.ExtensionContext} context 
  * @param {string} currentDevicePort The currently connected COM port (e.g. COM3)
@@ -45,28 +68,40 @@ async function openPackageManager(context, currentDevicePort, terminal) {
 
     try {
         // Show busy indicator while fetching
-        const packages = await vscode.window.withProgress({
+        const [standardPackages, xbeePackages] = await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
             title: "MicroPython Package Manager",
             cancellable: false
         }, async (progress) => {
-            progress.report({ message: "Fetching package list from micropython.org..." });
-            return await fetchPackageIndex();
+            progress.report({ message: "Fetching package lists..." });
+            return await Promise.all([
+                fetchPackageIndex().catch(() => []),
+                fetchXBeePackageIndex().catch(() => [])
+            ]);
         });
 
-        if (packages.length === 0) {
-            vscode.window.showInformationMessage('No packages found in the remote index.');
+        if (standardPackages.length === 0 && xbeePackages.length === 0) {
+            vscode.window.showInformationMessage('No packages found in remote indices.');
             return;
         }
 
         // Map list to QuickPick items
-        const items = packages.map(pkg => ({
-            label: `$(package) ${pkg.name}`,
-            description: `v${pkg.version || '1.0.0'}`,
-            // Provide a default description if it's missing
-            detail: pkg.description || `Official micropython-lib package: ${pkg.name}`,
-            pkgName: pkg.name
-        }));
+        const items = [
+            ...xbeePackages.map(pkg => ({
+                label: `$(package) ${pkg.name}`,
+                description: `[XBee] Official`,
+                detail: pkg.description,
+                pkgName: pkg.name,
+                isDigi: true
+            })),
+            ...standardPackages.map(pkg => ({
+                label: `$(package) ${pkg.name}`,
+                description: `v${pkg.version || '1.0.0'}`,
+                detail: pkg.description || `Official micropython-lib package: ${pkg.name}`,
+                pkgName: pkg.name,
+                isDigi: false
+            }))
+        ];
 
         const selected = await vscode.window.showQuickPick(items, {
             placeHolder: 'Search for a MicroPython package to install (e.g. umqtt.simple, aioble)',
@@ -90,7 +125,13 @@ async function openPackageManager(context, currentDevicePort, terminal) {
             if (answer !== 'Install Now') return;
 
             // Command: mpremote connect <port> mip install <pkg>
-            const installCmd = `"${venvPython}" -m mpremote connect ${currentDevicePort} mip install ${selected.pkgName}`;
+            let installCmd;
+            if (selected.isDigi) {
+                // Install from Digi GitHub: mpremote connect <port> mip install github:digidotcom/xbee-micropython/lib/<pkg>
+                installCmd = `"${venvPython}" -m mpremote connect ${currentDevicePort} mip install github:digidotcom/xbee-micropython/lib/${selected.pkgName}`;
+            } else {
+                installCmd = `"${venvPython}" -m mpremote connect ${currentDevicePort} mip install ${selected.pkgName}`;
+            }
 
             terminal.show();
             terminal.sendText(installCmd);
