@@ -309,6 +309,8 @@ All bundled files retain their original license headers.
 
 - [MicroPython Documentation](https://docs.micropython.org/)
 - [Extension GitHub Repository](https://github.com/niwantha33/micropython-studio)
+- [Contributing Guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Submit Issues](https://github.com/niwantha33/micropython-studio/issues)
 - [MicroPython Community Forum](https://forum.micropython.org/)
 
