@@ -5,7 +5,7 @@ PARAMETER top_p 0.9
 PARAMETER top_k 40
 PARAMETER num_ctx 4096
 PARAMETER num_predict 2048
-PARAMETER num_thread 16
+PARAMETER num_thread 6
 
 # MicroPython Specific Configuration
 SYSTEM """

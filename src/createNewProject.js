@@ -15,7 +15,7 @@ const { runCommand } = require('./runCommand');
 const {
     languageOption, mcuOptions_MP,
     rpBoards_MP, espBoards_MP, stmBoards_MP,
-    samBoards_MP, nrfBoards_MP, raBoards_MP, mix_MP,
+    samBoards_MP, nrfBoards_MP, raBoards_MP, xbeeBoards_MP, mix_MP,
     mcuOptions_CP,
     rpBoards_CP, espBoards_CP, samBoards_CP, nrfBoards_CP
 } = require('./mcuOption');
@@ -31,6 +31,7 @@ const BOARD_MAP = {
     'SAM': samBoards_MP,
     'NRF': nrfBoards_MP,
     'RA': raBoards_MP,
+    'XBee': xbeeBoards_MP,
     'Any': mix_MP
 };
 
@@ -51,6 +52,7 @@ function getStubPackageForBoard(mcuTarget, mcuFamily, isCircuitPython) {
     if (mcuTarget.startsWith('rp2') || mcuFamily === 'RP2') return 'micropython-rp2-stubs';
     if (mcuTarget.startsWith('stm32') || mcuFamily === 'STM') return 'micropython-stm32-stubs';
     if (mcuFamily === 'SAM') return 'micropython-samd-stubs';
+    if (mcuFamily === 'XBee') return 'xbee-stubs';
     return 'micropython-stubber'; // Generic fallback
 }
 
@@ -174,8 +176,12 @@ async function detectAndSelectDevice(config) {
 
                 let mcuType = 'Unknown';
                 if (vidpid === '2e8a:0005') mcuType = config.selectedMcuTarget;
-                else if (vidpid.includes('10c4') || vidpid.includes('0403')) mcuType = 'ESP32';
+                else if (vidpid.includes('0403')) mcuType = 'FTDI Serial';
+                else if (vidpid.includes('10c4')) mcuType = 'CP210x Serial';
+                else if (vidpid.includes('1a86')) mcuType = 'CH340 Serial';
+                else if (vidpid.includes('303a')) mcuType = 'Espressif USB';
                 else if (vidpid.includes('0483')) mcuType = 'STM32';
+                else if (vidpid.includes('239a')) mcuType = 'Adafruit';
 
                 return { label: port, description: mcuType, vidpid };
             });
@@ -230,6 +236,8 @@ async function createNewProject(context) {
             cpDrive = await findCircuitPythonDrive();
             if (cpDrive) {
                 config.deviceCodeDir = cpDrive;
+                // Create lib folder (ignore error if it exists or drive is locked)
+                await fs.mkdir(path.join(cpDrive, 'lib'), { recursive: true }).catch(() => { });
                 // Write code.py directly to the device drive
                 await fs.writeFile(
                     path.join(cpDrive, 'code.py'),
@@ -256,6 +264,8 @@ async function createNewProject(context) {
         } else {
             // MicroPython: create local main/ folder as usual
             await fs.mkdir(config.deviceCodeDir, { recursive: true });
+            // Create lib folder inside main/ for MicroPython packages
+            await fs.mkdir(path.join(config.deviceCodeDir, 'lib'), { recursive: true });
             await fs.writeFile(
                 path.join(config.deviceCodeDir, 'main.py'),
                 `# MicroPython Project: ${config.projectName}\n` +
@@ -331,9 +341,13 @@ async function createNewProject(context) {
         // Quietly install the stubs in the background if they don't exist
         fs.access(stubsDir).catch(async () => {
             try {
-                // We use a dummy output channel since this is background process
                 const dummyChannel = { appendLine: () => { }, append: () => { } };
-                await runCommand(dummyChannel, venvPython, ['-m', 'pip', 'install', '--target', stubsDir, stubPackage], getMicropythonStudioPath());
+                if (stubPackage === 'xbee-stubs') {
+                    const scriptPath = path.join(__dirname, '..', 'scripts', 'fetch_xbee_stubs.py');
+                    await runCommand(dummyChannel, venvPython, [scriptPath, stubsDir], getMicropythonStudioPath());
+                } else {
+                    await runCommand(dummyChannel, venvPython, ['-m', 'pip', 'install', '--target', stubsDir, stubPackage], getMicropythonStudioPath());
+                }
             } catch (err) {
                 console.error(`Failed to install stubs ${stubPackage}:`, err);
             }
@@ -350,8 +364,8 @@ async function createNewProject(context) {
             'python.languageServer': 'Pylance',
             'python.analysis.typeCheckingMode': 'basic',
             // Point Pylance at the board-specific stubs folder
-            'python.analysis.extraPaths': [stubsDir, sitePackagesPath],
-            'python.autoComplete.extraPaths': [stubsDir, sitePackagesPath],
+            'python.analysis.extraPaths': stubPackage === 'xbee-stubs' ? [stubsDir, path.join(stubsDir, 'common'), sitePackagesPath] : [stubsDir, sitePackagesPath],
+            'python.autoComplete.extraPaths': stubPackage === 'xbee-stubs' ? [stubsDir, path.join(stubsDir, 'common'), sitePackagesPath] : [stubsDir, sitePackagesPath],
             'python.defaultInterpreterPath': venvPython,
             'python.analysis.useLibraryCodeForTypes': true,
             'python.analysis.diagnosticSeverityOverrides': {

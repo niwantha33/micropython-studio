@@ -504,7 +504,13 @@ except: pass
         return self.exec_code(code)
 
     def put_file(self, source_path: Path, remote_path: str):
-        """Upload a file using hex-encoding chunk by chunk."""
+        """Upload a file using hex-encoding chunk by chunk.
+
+        Handles restricted filesystems (e.g. Digi XBee) that:
+        - Raise EEXIST on open('wb') if the file already exists
+        - Don't have os.stat()
+        - Need a flash-flush delay after os.remove()
+        """
         import binascii
         data = source_path.read_bytes()
         dest = remote_path.replace('\\', '/')
@@ -512,10 +518,52 @@ except: pass
         print(
             f"📤 Robust upload: {source_path.name} -> {dest} ({len(data)} bytes)", file=sys.stderr)
 
-        # 1. Initialize file
-        self.exec_code(f"f=open({dest!r},'wb')\nf.close()")
+        # ── Strategy A: Small files — write everything in ONE exec_code call ──
+        # This avoids the fragile init/append dance entirely.
+        if len(data) <= 512:
+            hex_str = binascii.hexlify(data).decode()
+            one_shot_code = (
+                f"import binascii\n"
+                f"try:\n"
+                f" import os\n"
+                f" try: os.remove({dest!r})\n"
+                f" except: pass\n"
+                f"except: pass\n"
+                f"import time\n"
+                f"try: time.sleep(0.2)\n"
+                f"except: pass\n"
+                f"f=open({dest!r},'wb')\n"
+                f"f.write(binascii.unhexlify({hex_str!r}))\n"
+                f"f.close()\n"
+                f"print('OK')\n"
+            )
+            rc = self.exec_code(one_shot_code)
+            if rc == 0:
+                return 0
+            # If one-shot failed, fall through to chunked strategy
+            print("   ⚠️ One-shot write failed, trying chunked fallback...", file=sys.stderr)
 
-        # 2. Append hex-encoded chunks (safe-sized chunks for ESP/Pico buffers)
+        # ── Strategy B: Chunked upload for larger files ───────────────────────
+        # 1. Delete the existing file with multiple fallback strategies
+        #    XBee needs a delay after remove() for flash to finish erasing
+        delete_code = (
+            f"try:\n"
+            f" import os\n"
+            f" try: os.remove({dest!r})\n"
+            f" except OSError: pass\n"
+            f" except AttributeError: pass\n"
+            f"except ImportError: pass\n"
+            f"import time\n"
+            f"try: time.sleep(0.3)\n"
+            f"except: pass\n"
+        )
+        self.exec_code(delete_code)
+
+        # 2. Create the empty file (separate exec to isolate errors)
+        create_code = f"f=open({dest!r},'wb')\nf.close()"
+        self.exec_code(create_code)
+
+        # 3. Append hex-encoded chunks (safe-sized chunks for ESP/Pico buffers)
         chunk_size = 120  # 60 bytes of binary
         hex_data = binascii.hexlify(data).decode()
 
@@ -1073,18 +1121,29 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
         sys.exit(rc)
 
     # ── Serial path — use mpremote ───────────────────────────────────────────
+    # XBee devices (dest starts with /flash) don't support mpremote's fs cp
+    # because their os module lacks stat(). Skip straight to robust serial.
+    _is_xbee_dest = dest.startswith('/flash')
+
     if source.is_file():
         remote = dest.rstrip('/') + '/' + source.name
         print(f"📤 Uploading {source.name} -> {remote}", file=sys.stderr)
         # 💡 Safety delay to prevent port conflict
         time.sleep(0.5)
-        result = run_mpremote(python_exe, ['connect', port, 'fs', 'cp', str(
-            source), f':{remote}'], timeout=30)
+
+        if _is_xbee_dest:
+            # XBee: go straight to robust serial (mpremote cp will fail on os.stat)
+            print("📡 XBee detected — using direct serial upload", file=sys.stderr)
+            result = subprocess.CompletedProcess([], 1)  # force fallback
+        else:
+            result = run_mpremote(python_exe, ['connect', port, 'fs', 'cp', str(
+                source), f':{remote}'], timeout=30)
 
         # Robust Fallback
         if result.returncode != 0:
-            print("💡 mpremote failed. Trying robust serial fallback...",
-                  file=sys.stderr)
+            if not _is_xbee_dest:
+                print("💡 mpremote failed. Trying robust serial fallback...",
+                      file=sys.stderr)
             conn = SerialConnection(port)
             try:
                 conn.connect()
@@ -1102,25 +1161,26 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
         print("⚠️ Source folder is empty, nothing to upload.", file=sys.stderr)
         sys.exit(0)
 
-    # Check for conflicts before touching the device
-    existing = _serial_list_remote_files(python_exe, port, dest)
-    if existing:
-        uploading_names = {
-            str(f.relative_to(source)).replace('\\', '/')
-            for f in files
-        }
-        conflicts = existing & uploading_names
-        if conflicts:
-            print(
-                f"⚠️  These files already exist in {dest} on the device:", file=sys.stderr)
-            for c in sorted(conflicts):
-                print(f"   • {c}", file=sys.stderr)
-            if not overwrite:
-                # Exit code 3 signals the extension to show a confirmation dialog
-                # and re-run with --overwrite if the user confirms.
-                print("CONFLICTS_FOUND", flush=True)
-                sys.exit(3)
-            print("⚠️  Overwriting existing files...", file=sys.stderr)
+    # Check for conflicts before touching the device (skip for XBee — no os.stat)
+    if not _is_xbee_dest:
+        existing = _serial_list_remote_files(python_exe, port, dest)
+        if existing:
+            uploading_names = {
+                str(f.relative_to(source)).replace('\\', '/')
+                for f in files
+            }
+            conflicts = existing & uploading_names
+            if conflicts:
+                print(
+                    f"⚠️  These files already exist in {dest} on the device:", file=sys.stderr)
+                for c in sorted(conflicts):
+                    print(f"   • {c}", file=sys.stderr)
+                if not overwrite:
+                    # Exit code 3 signals the extension to show a confirmation dialog
+                    # and re-run with --overwrite if the user confirms.
+                    print("CONFLICTS_FOUND", flush=True)
+                    sys.exit(3)
+                print("⚠️  Overwriting existing files...", file=sys.stderr)
 
     dirs_to_create = sorted(set(
         str(f.relative_to(source).parent).replace('\\', '/')
@@ -1132,15 +1192,30 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
     print("-" * 50, file=sys.stderr)
 
     # Create dest directory first (if not root), then any subdirectories inside it
-    if dest != '/':
-        print(f"📁 mkdir {dest}", file=sys.stderr)
-        run_mpremote(python_exe, ['connect', port,
-                     'fs', 'mkdir', dest], timeout=15)
-    for d in dirs_to_create:
-        remote_dir = dest.rstrip('/') + '/' + d
-        print(f"📁 mkdir {remote_dir}", file=sys.stderr)
-        run_mpremote(python_exe, ['connect', port,
-                     'fs', 'mkdir', remote_dir], timeout=15)
+    if _is_xbee_dest:
+        # XBee: create directories via raw REPL (mpremote fs mkdir uses os.stat)
+        _xbee_conn = SerialConnection(port)
+        try:
+            _xbee_conn.connect()
+            if dest != '/':
+                print(f"📁 mkdir {dest}", file=sys.stderr)
+                _xbee_conn.exec_code(f"import os\ntry: os.mkdir({dest!r})\nexcept: pass")
+            for d in dirs_to_create:
+                remote_dir = dest.rstrip('/') + '/' + d
+                print(f"📁 mkdir {remote_dir}", file=sys.stderr)
+                _xbee_conn.exec_code(f"import os\ntry: os.mkdir({remote_dir!r})\nexcept: pass")
+        finally:
+            _xbee_conn.close()
+    else:
+        if dest != '/':
+            print(f"📁 mkdir {dest}", file=sys.stderr)
+            run_mpremote(python_exe, ['connect', port,
+                         'fs', 'mkdir', dest], timeout=15)
+        for d in dirs_to_create:
+            remote_dir = dest.rstrip('/') + '/' + d
+            print(f"📁 mkdir {remote_dir}", file=sys.stderr)
+            run_mpremote(python_exe, ['connect', port,
+                         'fs', 'mkdir', remote_dir], timeout=15)
 
     for i, f in enumerate(files, 1):
         rel = str(f.relative_to(source)).replace('\\', '/')
@@ -1148,13 +1223,19 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
         print(f"[{i}/{len(files)}] {rel}", file=sys.stderr)
 
         time.sleep(0.5)  # Port safety delay
-        result = run_mpremote(
-            python_exe, ['connect', port, 'fs', 'cp', str(f), f':{remote}'], timeout=30)
+
+        if _is_xbee_dest:
+            # XBee: go straight to robust serial (mpremote cp will fail on os.stat)
+            result = subprocess.CompletedProcess([], 1)
+        else:
+            result = run_mpremote(
+                python_exe, ['connect', port, 'fs', 'cp', str(f), f':{remote}'], timeout=30)
 
         # Robust Fallback per file
         if result.returncode != 0:
-            print(
-                f"💡 mpremote failed for {rel}. Trying robust fallback...", file=sys.stderr)
+            if not _is_xbee_dest:
+                print(
+                    f"💡 mpremote failed for {rel}. Trying robust fallback...", file=sys.stderr)
             conn = SerialConnection(port)
             try:
                 conn.connect()

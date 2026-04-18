@@ -74,7 +74,15 @@ else:
 # 3. Flash
 print("---FLASH---")
 try:
-    s=os.statvfs('/') if os else None
+    s=None
+    if os and hasattr(os, 'statvfs'):
+        try:
+            s=os.statvfs('/')
+        except:
+            try:
+                s=os.statvfs('/flash')
+            except:
+                pass
     if s:
         print(s[0]*s[2])
         print(s[0]*s[3])
@@ -140,10 +148,24 @@ except:
   try {
     fs.writeFileSync(tempScriptPath, pythonScript, "utf8");
 
+    // Detect XBee from device.cfg — XBee needs mpremotesubpro.py (no os.stat for mpremote)
+    let isXBee = false;
+    try {
+      const cfgPath = path.join(workspaceFolder, "device.cfg");
+      if (fs.existsSync(cfgPath)) {
+        const rawCfg = fs.readFileSync(cfgPath, "utf8");
+        const mcuMatch = rawCfg.match(/^mcu\s*=\s*"?([^"\r\n]+)"?/m);
+        if (mcuMatch && mcuMatch[1].toLowerCase().includes("xbee")) {
+          isXBee = true;
+        }
+      }
+    } catch (_) {}
+
     // Run the script on the device
-    // ws: ports need mpremotesubpro.py (mpremote has no WebSocket transport)
+    // ws: ports and XBee need mpremotesubpro.py (mpremote uses os.stat which XBee lacks)
     let rawOutput;
-    if (devicePort && devicePort.startsWith("ws:")) {
+    const useSubpro = (devicePort && devicePort.startsWith("ws:")) || isXBee;
+    if (useSubpro) {
       const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
       const subpro = path.join(__dirname, "mpremotesubpro.py");
       rawOutput = await new Promise((resolve) => {

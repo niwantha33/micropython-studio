@@ -1,7 +1,7 @@
 {
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
-  "description": "MicroPython Studio for VS Code — write, deploy, and debug - MicroPython and CircuitPython on real hardware",
+  "description": "MicroPython Studio for VS Code — write, deploy, and debug - MicroPython, CircuitPython, and XBee on real hardware",
   "version": "0.8.6",
   "publisher": "niwantha33",
   "license": "MIT",
@@ -23,6 +23,7 @@
     "circuitpython",
     "micropython studio",
     "circuitpython studio",
+    "xbee",
     "raspberry",
     "raspberry pi pico",
     "esp32",
