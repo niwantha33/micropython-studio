@@ -185,7 +185,7 @@ class DeviceFileExplorerProvider {
         }
 
         const lsOp = async () => {
-            const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
+            const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
             const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" ls --port "${this._port}" --path "${dirPath}"`;
 
             let attempts = 0;
@@ -370,13 +370,13 @@ class DeviceFileExplorerProvider {
 
     /**
      * Move a single file on the device using os.rename().
-     * Routes WS ports through mpremotesubpro.py mv to avoid mpremote WS limitation.
-     * Routes all ports through mpremotesubpro.py mv to avoid mpremote WS limitation and DTR resets.
+     * Routes WS ports through mps_backend.py mv to avoid mpremote WS limitation.
+     * Routes all ports through mps_backend.py mv to avoid mpremote WS limitation and DTR resets.
      */
     _moveFileOnDevice(srcPath, destPath) {
         return new Promise((resolve, reject) => {
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-            const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
+            const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
             const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" mv --port "${this._port}" --src "${srcPath}" --dest "${destPath}"`;
 
             const moveOp = () => new Promise((res, rej) => {
@@ -414,8 +414,8 @@ async function readDeviceFile(port, deviceFilePath) {
             cancellable: false
         },
         async () => {
-            // Use mpremotesubpro.py for all ports, bypassing native mpremote errors and DTR resets
-            const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
+            // Use mps_backend.py for all ports, bypassing native mpremote errors and DTR resets
+            const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
             const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" cat --port "${port}" --path "${deviceFilePath}"`;
             try {
                 const execOp = () => execAsync(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 });
@@ -466,7 +466,7 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
 
     const venvFolder = getVenvPythonPathFolder();
     const venvPython = getVenvPythonPath(venvFolder);
-    const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
+    const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
 
     const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFilePath}"`;
 
@@ -519,7 +519,7 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
 
     const venvFolder = getVenvPythonPathFolder();
     const venvPython = getVenvPythonPath(venvFolder);
-    const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
+    const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
 
     const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFolderPath}" --recursive`;
 
@@ -539,10 +539,106 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
     return wsQueue.run(rmTreeOp);
 }
 
+/**
+ * Rename a file or folder on the device.
+ */
+async function renameDeviceFile(port, oldPath, provider) {
+    if (!port) return;
+
+    const newName = await vscode.window.showInputBox({
+        prompt: `Enter new name for ${oldPath.split('/').pop()}`,
+        value: oldPath.split('/').pop()
+    });
+
+    if (!newName) return;
+
+    const parent = oldPath.split('/').slice(0, -1).join('/') || '/';
+    const newPath = parent === '/' ? `/${newName}` : `${parent}/${newName}`;
+
+    const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+    const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
+    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rename --port "${port}" --src "${oldPath}" --dest "${newPath}"`;
+
+    await wsQueue.run(() => new Promise((resolve) => {
+        exec(cmd, (error) => {
+            if (error) {
+                vscode.window.showErrorMessage(`Rename failed: ${error.message}`);
+            } else {
+                provider.refresh();
+            }
+            resolve();
+        });
+    }));
+}
+
+/**
+ * Upload a file from PC directly into a specific folder on the device.
+ */
+async function uploadToDeviceFolder(port, targetFolder, provider) {
+    if (!port) return;
+
+    const files = await vscode.window.showOpenDialog({
+        canSelectMany: true,
+        openLabel: 'Upload to Device'
+    });
+
+    if (!files || files.length === 0) return;
+
+    const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+    const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
+
+    for (const file of files) {
+        const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" upload --port "${port}" --source "${file.fsPath}" --dest "${targetFolder}" --overwrite`;
+        await wsQueue.run(() => new Promise((resolve) => {
+            exec(cmd, (error) => {
+                if (error) {
+                    vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
+                }
+                resolve();
+            });
+        }));
+    }
+    provider.refresh();
+}
+
+/**
+ * Create a new folder on the device.
+ */
+async function newDeviceFolder(port, parentPath, provider) {
+    if (!port) return;
+
+    const folderName = await vscode.window.showInputBox({
+        prompt: `New folder name in ${parentPath}`,
+        placeHolder: 'folder_name'
+    });
+
+    if (!folderName) return;
+
+    const newPath = parentPath === '/' ? `/${folderName}` : `${parentPath}/${folderName}`;
+
+    const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+    const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
+    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" mkdir --port "${port}" --path "${newPath}"`;
+
+    await wsQueue.run(() => new Promise((resolve) => {
+        exec(cmd, (error) => {
+            if (error) {
+                vscode.window.showErrorMessage(`Failed to create folder: ${error.message}`);
+            } else {
+                provider.refresh();
+            }
+            resolve();
+        });
+    }));
+}
+
 module.exports = {
     DeviceFileExplorerProvider,
     DeviceFileItem,
     readDeviceFile,
     deleteDeviceFile,
-    deleteDeviceFolder
+    deleteDeviceFolder,
+    renameDeviceFile,
+    uploadToDeviceFolder,
+    newDeviceFolder
 };

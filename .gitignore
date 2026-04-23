@@ -1,6 +1,68 @@
-node_modules
-.vscode-test/
+# MicroPython Studio
+node_modules/
+dist/
+out/
 *.vsix
+.vscode-test/
+.history/
+.DS_Store
+Thumbs.db
+
+# VS Code / IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.ipynb_checkpoints
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Logs and databases
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+sqlite3.db
 .env
-.claude 
-.micropython-venv
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Device/Temporary files
+.claude/
+.gemini/
+output.bin
+output.txt
+mpremotesubpro.py.tmp
+_mps_ls.py
+device.cfg
+.python_history

@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and debug - MicroPython, CircuitPython, and XBee on real hardware",
-  "version": "0.8.7",
+  "version": "0.9.0",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {
@@ -230,6 +230,24 @@
         "title": "MicroPython: Download Files from Device",
         "category": "MicroPython Studio",
         "icon": "$(cloud-download)"
+      },
+      {
+        "command": "micropython-ide.renameDeviceFile",
+        "title": "MicroPython: Rename",
+        "category": "MicroPython Studio",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "micropython-ide.uploadToDeviceFolder",
+        "title": "MicroPython: Upload to This Folder",
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "micropython-ide.newDeviceFolder",
+        "title": "MicroPython: New Folder",
+        "category": "MicroPython Studio",
+        "icon": "$(new-folder)"
       }
     ],
     "menus": {
@@ -382,6 +400,21 @@
           "command": "micropython-ide.deleteDeviceFolder",
           "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
           "group": "context"
+        },
+        {
+          "command": "micropython-ide.renameDeviceFile",
+          "when": "view == micropython-ide-device-files && (viewItem == deviceFile || viewItem == deviceFolder)",
+          "group": "micropython@1"
+        },
+        {
+          "command": "micropython-ide.uploadToDeviceFolder",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
+          "group": "micropython@2"
+        },
+        {
+          "command": "micropython-ide.newDeviceFolder",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
+          "group": "micropython@3"
         }
       ]
     }

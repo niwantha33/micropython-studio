@@ -15,7 +15,7 @@ const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
 const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent } = require('./commonFxn');
-const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder } = require('./deviceFileExplorer');
+const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
 const { openDeviceDashboard } = require('./deviceDashboard');
@@ -81,7 +81,7 @@ async function _buildRunPortOptions() {
  * @param {((code:number|null)=>void)} [onComplete] - Called when process exits
  */
 /**
- * Parse --port and --file from mpremotesubpro.py args array for AI context.
+ * Parse --port and --file from mps_backend.py args array for AI context.
  * @param {string[]} args
  */
 function _parseArgContext(args) {
@@ -210,7 +210,14 @@ async function _runDownloadQueued(exe, baseArgs) {
         channel.show(true);
         channel.appendLine('─'.repeat(50));
         const proc = spawn(exe, baseArgs);
-        proc.stdout.on('data', d => { buf += d.toString(); channel.append(d.toString()); });
+        proc.stdout.on('data', d => {
+            const str = d.toString();
+            buf += str;
+            // Only append to the channel if it's NOT the machine-readable conflict JSON
+            if (!str.trim().startsWith('{"conflicts":')) {
+                channel.append(str);
+            }
+        });
         proc.stderr.on('data', d => channel.append(d.toString()));
         proc.on('error', err => channel.appendLine(`❌ ${err.message}`));
         proc.on('close', c => resolve({ code: c, stdoutBuf: buf }));
@@ -594,7 +601,7 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
 
             const terminal = getMpremoteTerminal();
-            const helperPy = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const helperPy = path.join(context.extensionPath, 'src', 'mps_backend.py');
             sendCleanCommand(terminal, `"${venvPython}" "${helperPy}" --python "${venvPython}" shell --port ${gRemoteDevicePort}`);
         })
     );
@@ -631,7 +638,7 @@ function activate(context) {
             const isCpDrive = gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\');
             const isCircuitPython = gDeviceFirmware === 'CircuitPython' || isCpDrive;
             if (isCircuitPython) {
-                const scriptPath2 = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+                const scriptPath2 = path.join(context.extensionPath, 'src', 'mps_backend.py');
                 const cpCmd = [
                     `"${venvPython}"`, `"${scriptPath2}"`,
                     `--python "${venvPython}"`,
@@ -643,7 +650,7 @@ function activate(context) {
                 return;
             }
 
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const isMpy = filePath.endsWith('.mpy');
             const isWireless = runPort.startsWith('ws:');
             let cmd;
@@ -819,7 +826,7 @@ function activate(context) {
             }
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const baseDest = isXBeeDevice() ? '/flash' : '';
             const uploadArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', filePath, '--dest', baseDest];
             const onDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
@@ -862,12 +869,12 @@ function activate(context) {
 
             // Use folder name as dest — no leading slash to avoid MSYS2/Git Bash
             // path conversion (which turns /foo into C:/Program Files/Git/foo).
-            // _normalize_dest() in mpremotesubpro.py adds the leading slash.
+            // _normalize_dest() in mps_backend.py adds the leading slash.
             const dest = path.basename(folderPath);
 
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const baseDest = isXBeeDevice() ? `/flash/${dest}` : dest;
             const folderArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', folderPath, '--dest', baseDest];
             const onFolderDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
@@ -925,7 +932,7 @@ function activate(context) {
 
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const baseDest = isXBeeDevice() ? '/flash' : '';
             const projArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', baseDest];
             const onProjDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
@@ -1215,7 +1222,7 @@ function activate(context) {
             }
 
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const dlArgs = [scriptPath, '--python', venvPython, 'download', '--port', gRemoteDevicePort, '--dest', dest];
 
             _runDownloadQueued(venvPython, dlArgs);
@@ -1327,6 +1334,31 @@ function activate(context) {
         })
     );
 
+    // Rename a file or folder on the device
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.renameDeviceFile', async (item) => {
+            if (item && item.devicePath) {
+                await renameDeviceFile(gRemoteDevicePort, item.devicePath, deviceFileExplorer);
+            }
+        })
+    );
+
+    // Upload files directly to a folder
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.uploadToDeviceFolder', async (item) => {
+            const path = item ? item.devicePath : '/';
+            await uploadToDeviceFolder(gRemoteDevicePort, path, deviceFileExplorer);
+        })
+    );
+
+    // Create a new folder
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.newDeviceFolder', async (item) => {
+            const path = item ? item.devicePath : '/';
+            await newDeviceFolder(gRemoteDevicePort, path, deviceFileExplorer);
+        })
+    );
+
     // ── Listen for terminal close events ─────────────────────────────────
 
     context.subscriptions.push(
@@ -1353,7 +1385,7 @@ function activate(context) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const terminal = getMpremoteTerminal();
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
 
             const cmd = [
                 `"${venvPython}"`, `"${scriptPath}"`,

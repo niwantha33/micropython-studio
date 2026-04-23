@@ -122,7 +122,7 @@ async function openPackageManager(context, currentDevicePort, runProcess) {
             );
             if (answer !== 'Install Now') return;
 
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             let mipArgs;
             if (selected.isDigi) {
                 const pkgPath = `github:digidotcom/xbee-micropython/lib/${selected.pkgName}`;

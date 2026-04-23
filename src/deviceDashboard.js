@@ -155,7 +155,7 @@ except:
       const useSubpro = !!devicePort;
       if (useSubpro) {
         const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-        const subpro = path.join(__dirname, "mpremotesubpro.py");
+        const subpro = path.join(__dirname, "mps_backend.py");
         rawOutput = await new Promise((resolve) => {
           execFile(
             venvPython,
@@ -169,15 +169,15 @@ except:
               "--file",
               tempScriptPath,
               "--no-reset",
+              "--quiet",
             ],
-            { timeout: 30000 },
+            { timeout: 60000 },
             (err, stdout, stderr) => {
-              if (err || stderr) {
-                const combined = (stdout || "") + (stderr || "");
-                if (combined.includes("is BUSY")) {
-                   vscode.window.showWarningMessage("Dashboard: Device port is busy. Please close the shell/terminal and refresh.");
-                }
-                resolve(stdout || "");
+              console.log("[Dashboard Debug] rawOutput:", stdout);
+              if (err || (stderr && stderr.includes("failed"))) {
+                outputChannel.appendLine(`[Dashboard Error] ${err || stderr}`);
+                vscode.window.showErrorMessage(`Dashboard: Failed to gather metrics. ${stderr || err}`);
+                resolve("");
               } else {
                 resolve(stdout || "");
               }
@@ -1684,10 +1684,10 @@ async function runDeviceScript(
   try {
     fs.writeFileSync(tempPath, scriptContent, "utf8");
 
-    // Use mpremotesubpro.py for both stability and WebSocket support
+    // Use mps_backend.py for both stability and WebSocket support
     if (devicePort) {
       const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-      const subpro = path.join(__dirname, "mpremotesubpro.py");
+      const subpro = path.join(__dirname, "mps_backend.py");
       return await new Promise((resolve) => {
         execFile(
           venvPython,
@@ -1702,8 +1702,17 @@ async function runDeviceScript(
             tempPath,
             "--no-reset",
           ],
-          { timeout: 30000 },
-          (_err, stdout) => resolve(stdout || ""),
+          { timeout: 60000 },
+          (err, stdout, stderr) => {
+            if (err || stderr) {
+              outputChannel.appendLine(`[Dashboard Error] ${err || stderr}`);
+            }
+            if (stdout) {
+               // Log first 100 chars of stdout for debugging
+               outputChannel.appendLine(`[Dashboard Debug] raw output: ${stdout.substring(0, 100).replace(/\n/g, "\\n")}...`);
+            }
+            resolve(stdout || "");
+          },
         );
       });
     }
@@ -1741,7 +1750,7 @@ async function openDeviceDashboard(
 
   const panel = vscode.window.createWebviewPanel(
     "deviceDashboard",
-    `Device: ${currentDevicePort}`,
+    `Device Dashboard & Telemetry: ${currentDevicePort}`,
     vscode.ViewColumn.One,
     { enableScripts: true },
   );

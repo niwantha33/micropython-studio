@@ -1,4 +1,4 @@
-# mpremotesubpro.py
+# mps_backend.py
 import argparse
 import re
 import os
@@ -84,8 +84,6 @@ def clean_output(raw: str) -> str:
 
 def print_execution_header(folder_name, port, file_name):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-
-    # Content lines (without any extra spaces)
     lines = [
         f"Project: {folder_name}",
         f"Port:    {port}",
@@ -93,35 +91,61 @@ def print_execution_header(folder_name, port, file_name):
         f"Started: {timestamp}"
     ]
     title = "MicroPython Studio Execution Session"
-
-    # Find the longest line (visual length, ignoring ANSI codes if any)
     max_len = max(len(title), max(len(line) for line in lines))
-
-    # Optional: add extra padding to make the box wider (e.g., +4)
-    extra_padding = 4   # Change this to make box bigger or smaller
+    extra_padding = 4
     content_width = max_len + extra_padding
-
-    # Box width includes: left border (1) + space (1) + content_width + space (1) + right border (1)
     box_width = content_width + 4
 
-    # Top border
-    print(f"{CLR_CYAN}╔{'═' * (box_width - 2)}╗{CLR_RESET}")
+    # Use ASCII for maximum compatibility on Windows
+    def _write_ui(msg):
+        sys.stderr.write(msg + "\n")
 
-    # Title (centered or left-aligned? left-aligned as before)
-    print(f"{CLR_CYAN}║{CLR_RESET} {title:<{content_width}} {CLR_CYAN}║{CLR_RESET}")
-
-    # Separator
-    print(f"{CLR_CYAN}╠{'═' * (box_width - 2)}╣{CLR_RESET}")
-
-    # Key-value lines
+    _write_ui(f"{CLR_CYAN}+{'-' * (box_width - 2)}+{CLR_RESET}")
+    _write_ui(f"{CLR_CYAN}|{CLR_RESET} {title:<{content_width}} {CLR_CYAN}|{CLR_RESET}")
+    _write_ui(f"{CLR_CYAN}+{'-' * (box_width - 2)}+{CLR_RESET}")
     for line in lines:
-        print(f"{CLR_CYAN}║{CLR_RESET} {line:<{content_width}} {CLR_CYAN}║{CLR_RESET}")
-
-    # Bottom border
-    print(f"{CLR_CYAN}╚{'═' * (box_width - 2)}╝{CLR_RESET}\n")
+        _write_ui(f"{CLR_CYAN}|{CLR_RESET} {line:<{content_width}} {CLR_CYAN}|{CLR_RESET}")
+    _write_ui(f"{CLR_CYAN}+{'-' * (box_width - 2)}+{CLR_RESET}\n")
 
 # Usage example:
 # print_execution_header("MyProject", "COM3", "main.py")
+
+
+# ----------------------------
+# Command: mkdir
+# ----------------------------
+
+def cmd_mkdir(python_exe: str, port: str, path: str):
+    """Create a directory on the device."""
+    conn = SerialConnection(port)
+    try:
+        conn.connect()
+        code = f"import os\ntry: os.mkdir({path!r})\nexcept: pass"
+        conn.exec_code(code, stream_stdout=False)
+        sys.exit(0)
+    except Exception as e:
+        sys.stderr.write(f"   Failed to create directory: {e}\n")
+        sys.exit(1)
+    finally:
+        conn.close()
+
+# ----------------------------
+# Command: rename
+# ----------------------------
+
+def cmd_rename(python_exe: str, port: str, src: str, dest: str):
+    """Rename a file or directory on the device."""
+    conn = SerialConnection(port)
+    try:
+        conn.connect()
+        code = f"import os\nos.rename({src!r}, {dest!r})"
+        conn.exec_code(code, stream_stdout=False)
+        sys.exit(0)
+    except Exception as e:
+        sys.stderr.write(f"   Failed to rename: {e}\n")
+        sys.exit(1)
+    finally:
+        conn.close()
 
 
 def _strip_ansi(data: bytes) -> bytes:
@@ -130,14 +154,17 @@ def _strip_ansi(data: bytes) -> bytes:
 
 
 def _write_bytes_stdout(data: bytes):
-    """Safely write bytes to sys.stdout even if it is redirected to a StringIO text buffer."""
+    """Write bytes to stdout (used for data and streaming output)."""
     try:
         sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
-    except AttributeError:
-        # sys.stdout is likely redirected to a text stream (e.g. io.StringIO in cmd_mip)
-        sys.stdout.write(data.decode('utf-8', errors='replace'))
-        sys.stdout.flush()
+    except (AttributeError, io.UnsupportedOperation):
+        # Fallback for environments where buffer is not available
+        try:
+            sys.stdout.write(data.decode('utf-8', errors='replace'))
+            sys.stdout.flush()
+        except:
+            pass
 
 
 def _print_ui_header(port, folder, file_path):
@@ -267,9 +294,9 @@ class WebReplConnection:
         while self._ws_recv(0.3):
             pass
 
-    def exec_code(self, code: 'Union[str, bytes]', timeout: float = 30) -> int:
+    def exec_code(self, code: 'Union[str, bytes]', timeout: float = 30, stream_stdout: bool = True) -> tuple:
         """
-        Execute code via raw REPL. Streams stdout to sys.stdout.
+        Execute code via raw REPL. Returns (rc, stdout_bytes, stderr_bytes).
         Raw REPL response format after Ctrl+D:  OK<stdout>\x04<stderr>\x04>
         Returns 0 on success, 1 if there was stderr output.
         """
@@ -281,8 +308,6 @@ class WebReplConnection:
         while offset < len(code_buf):
             self._ws_send(code_buf[offset:offset + self.CHUNK])
             offset += self.CHUNK
-            # Minimal sleep to allow small device buffers to catch up if needed
-            # but much less than the original 0.02s
             time.sleep(0.001)
 
         self._ws_send('\x04')  # Ctrl+D to execute
@@ -291,13 +316,12 @@ class WebReplConnection:
         buf = bytearray()
         deadline = time.time() + timeout
         while time.time() < deadline:
-            chunk = self._ws_recv(1)  # short timeout for chunks
+            chunk = self._ws_recv(1)
             if chunk:
                 buf.extend(chunk)
                 if buf.endswith(b'\x04>'):
                     break
             else:
-                # No data yet, wait a bit
                 time.sleep(0.01)
 
         self._exit_raw_repl()
@@ -307,18 +331,17 @@ class WebReplConnection:
         if raw.startswith(b'OK'):
             raw = raw[2:]
 
-        # Split on \x04 — [stdout, stderr, '>']
         parts = bytes(raw).split(b'\x04')
         stdout_data = parts[0] if len(parts) > 0 else b''
         stderr_data = parts[1].strip(b'>').strip() if len(parts) > 1 else b''
 
-        if stdout_data:
+        if stdout_data and stream_stdout:
             _write_bytes_stdout(stdout_data)
 
         if stderr_data:
             sys.stderr.write(stderr_data.decode('utf-8', errors='replace'))
-            return 1
-        return 0
+            return 1, stdout_data, stderr_data
+        return 0, stdout_data, stderr_data
 
     def run_file(self, file_path):
         """Read a local .py file and execute it on the device via raw REPL."""
@@ -445,13 +468,11 @@ class SerialConnection:
 
     def enter_raw_repl(self, soft_reset=True):
         """Aggressively enter raw REPL mode with firmware-aware synchronization."""
-        sys.stderr.write(f"DEBUG: [SerialConnection] Entering raw REPL (soft_reset={soft_reset})\n")
         # 1. Break any running code with multiple interrupts
         self.serial.write(b'\r\x03\x03\x03\x03\x03')
-        time.sleep(0.4) # Slightly longer for XBee stability
+        time.sleep(0.4) 
 
         if soft_reset:
-            sys.stderr.write("DEBUG: [SerialConnection] Sending soft reset (Ctrl-D)\n")
             # 2. Trigger soft reboot
             self.serial.write(b'\x04')
 
@@ -478,7 +499,6 @@ class SerialConnection:
                         time.sleep(0.1)
 
             if not rebooted:
-                sys.stderr.write("DEBUG: [SerialConnection] Soft reboot message not detected (timed out or quiet firmware)\n")
                 time.sleep(0.5)
 
             # 4. Break again to catch the board before main.py takes over
@@ -487,7 +507,6 @@ class SerialConnection:
         self._drain()
 
         # 5. Enter raw REPL mode (Ctrl-A)
-        sys.stderr.write("DEBUG: [SerialConnection] Sending Ctrl-A to enter raw REPL\n")
         self.serial.write(b'\x01')
         time.sleep(0.3)
 
@@ -498,21 +517,18 @@ class SerialConnection:
             if self.in_waiting_safe:
                 data += self.serial.read(self.in_waiting_safe)
                 if b'>' in _strip_ansi(data):
-                    sys.stderr.write("DEBUG: [SerialConnection] Raw REPL prompt '>' detected.\n")
                     return True
             else:
                 b = self.serial.read(1)
                 if b:
                     data += b
                     if b'>' in _strip_ansi(data):
-                        sys.stderr.write("DEBUG: [SerialConnection] Raw REPL prompt '>' detected via read(1).\n")
                         return True
                 else:
                     time.sleep(0.1)
-        sys.stderr.write(f"DEBUG: [SerialConnection] FAILED to detect raw REPL prompt. Buffer: {data!r}\n")
         return False
 
-    def _exec_raw_no_exit(self, code: Union[str, bytes], timeout=30):
+    def _exec_raw_no_exit(self, code: Union[str, bytes], timeout=30, stream_stdout=True):
         """Execute code on device and return (rc, stdout_bytes, stderr_bytes), but STAY in raw REPL mode."""
         self._drain()
         code_buf = code.encode() if isinstance(code, str) else code
@@ -526,50 +542,88 @@ class SerialConnection:
         self.serial.write(b'\x04')  # Ctrl-D
 
         # Read: OK<stdout>\x04<stderr>\x04>
-        # We want to stream <stdout> in real-time
-        buf = bytearray()
-        deadline = time.time() + timeout
-        
-        # 1. Wait for 'OK'
-        while time.time() < deadline:
-            b = self.serial.read(1)
-            if b:
-                buf.extend(b)
-                if buf.endswith(b'OK'):
-                    break
-            else:
-                time.sleep(0.01)
-        
-        # 2. Stream until \x04
+        # We use a state machine to parse the response as it arrives
+        # States: 0=wait OK, 1=wait stdout \x04, 2=wait stderr \x04, 3=wait >
+        state = 0
         stdout_buf = bytearray()
-        while time.time() < deadline:
-            b = self.serial.read(1)
-            if b:
-                if b == b'\x04':
-                    break
-                stdout_buf.extend(b)
-                _write_bytes_stdout(b) # Real-time stream to IDE console
-            else:
-                time.sleep(0.01)
-        
-        # 3. Stream stderr until \x04
         stderr_buf = bytearray()
-        while time.time() < deadline:
-            b = self.serial.read(1)
-            if b:
-                if b == b'\x04':
-                    break
-                stderr_buf.extend(b)
-                sys.stderr.write(b.decode('utf-8', errors='replace'))
-            else:
-                time.sleep(0.01)
         
-        # 4. Final prompt
-        self.serial.read_until(b'>')
+        deadline = time.time() + timeout
+        buf = bytearray()
+        
+        while state < 4 and time.time() < deadline:
+            wait = self.in_waiting_safe
+            if wait > 0:
+                chunk = self.serial.read(wait)
+            else:
+                chunk = self.serial.read(1)
+            
+            if not chunk:
+                time.sleep(0.01)
+                continue
+                
+            buf.extend(chunk)
+            
+            while len(buf) > 0:
+                if state == 0: # Wait for 'OK'
+                    idx = buf.find(b'OK')
+                    if idx >= 0:
+                        # Found OK, discard it and anything before it
+                        buf = buf[idx+2:]
+                        state = 1
+                    else:
+                        # Keep only the last byte to check for 'OK' across chunks
+                        if len(buf) > 1:
+                            buf = buf[-1:]
+                        break # Need more data
+                
+                elif state == 1: # Wait for stdout \x04
+                    idx = buf.find(b'\x04')
+                    if idx >= 0:
+                        out = buf[:idx]
+                        stdout_buf.extend(out)
+                        if stream_stdout:
+                            _write_bytes_stdout(out)
+                        buf = buf[idx+1:]
+                        state = 2
+                    else:
+                        # Stream everything we have so far
+                        stdout_buf.extend(buf)
+                        if stream_stdout:
+                            _write_bytes_stdout(buf)
+                        buf = bytearray()
+                        break
+                
+                elif state == 2: # Wait for stderr \x04
+                    idx = buf.find(b'\x04')
+                    if idx >= 0:
+                        err = buf[:idx]
+                        stderr_buf.extend(err)
+                        if err:
+                            sys.stderr.write(err.decode('utf-8', errors='replace'))
+                        buf = buf[idx+1:]
+                        state = 3
+                    else:
+                        # Accumulate stderr
+                        stderr_buf.extend(buf)
+                        # We don't stream stderr in real-time to avoid intermingling?
+                        # Actually, better to stream it.
+                        sys.stderr.write(buf.decode('utf-8', errors='replace'))
+                        buf = bytearray()
+                        break
+                
+                elif state == 3: # Wait for '>'
+                    idx = buf.find(b'>')
+                    if idx >= 0:
+                        buf = buf[idx+1:]
+                        state = 4
+                    else:
+                        # Just wait
+                        break
         
         return (0 if not stderr_buf else 1), bytes(stdout_buf), bytes(stderr_buf)
 
-    def exec_code(self, code: Union[str, bytes], timeout=30, soft_reset=False):
+    def exec_code(self, code: Union[str, bytes], timeout=30, soft_reset=False, stream_stdout=True):
         """Execute code on device and return (rc, stdout_bytes, stderr_bytes)."""
         if soft_reset:
             if not self.enter_raw_repl(soft_reset=True):
@@ -580,12 +634,8 @@ class SerialConnection:
                     raise Exception("Could not enter raw REPL via serial")
 
         try:
-            rc, stdout, stderr = self._exec_raw_no_exit(code, timeout)
-            # For general execution, we still want to show progress to the user
-            if stdout:
-                _write_bytes_stdout(stdout)
-            if stderr:
-                sys.stderr.write(stderr.decode('utf-8', errors='replace'))
+            rc, stdout, stderr = self._exec_raw_no_exit(code, timeout, stream_stdout=stream_stdout)
+            # Output is already streamed by _exec_raw_no_exit
             return rc, stdout, stderr
         finally:
             # Exit raw REPL
@@ -603,7 +653,7 @@ def l():
     except: pass
 l()
 """
-        return self.exec_code(code)
+        return self.exec_code(code, stream_stdout=False)
 
     def put_file(self, source_path: Path, remote_path: str):
         """Upload a file using hex-encoding chunk by chunk (optimized persistent session)."""
@@ -633,7 +683,8 @@ l()
                     f"f.write(binascii.unhexlify({hex_str!r}))\n"
                     f"f.close()"
                 )
-                return self._exec_raw_no_exit(one_shot_code)
+                rc, _, _ = self._exec_raw_no_exit(one_shot_code)
+                return rc
 
             # Strategy B: Chunked upload for larger files
             # Initial cleanup and open
@@ -664,7 +715,7 @@ l()
 
             # Finalize
             self._exec_raw_no_exit("_f.close()")
-            sys.stderr.write(f"\nDEBUG: Upload of {source_path.name} finalized.\n")
+            sys.stderr.write(f"\n   Upload of {source_path.name} finalized.\n")
             return 0
         finally:
             self.serial.write(b'\x02')  # Exit raw REPL
@@ -738,25 +789,23 @@ l()
         self._exec_raw_no_exit("_f.close()")
 
     def get_file(self, remote_path: str, local_path: Path):
-        """Download a file using hex-encoding via stdout."""
+        """Download a file using hex-encoding via return buffer."""
         dest = remote_path.replace('\\', '/')
         code = f"import binascii; f=open({dest!r},'rb'); print(binascii.hexlify(f.read()).decode()); f.close()"
 
-        import io as _io
-        import binascii as _ba
-        buf = _io.BytesIO()
-        old_stdout = sys.stdout
-        sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
-        try:
-            rc = self.exec_code(code)
-            sys.stdout.flush()
-        finally:
-            sys.stdout = old_stdout
-
-        if rc == 0:
-            hex_str = buf.getvalue().decode('utf-8', errors='ignore').strip()
-            local_path.write_bytes(_ba.unhexlify(hex_str))
-            return 0
+        rc, stdout, stderr = self.exec_code(code, stream_stdout=False)
+        if rc == 0 and stdout:
+            import binascii as _ba
+            try:
+                # Find the hex string in stdout (it might have extra noise)
+                lines = stdout.decode('utf-8', errors='ignore').strip().splitlines()
+                # The last non-empty line should be our hex string
+                hex_str = [l.strip() for l in lines if l.strip()][-1]
+                local_path.write_bytes(_ba.unhexlify(hex_str))
+                return 0
+            except Exception as e:
+                sys.stderr.write(f"   Failed to parse hex data for {remote_path}: {e}\n")
+                return 1
         return 1
 
 # ---------------------------------------------------------------------------
@@ -796,8 +845,8 @@ class LocalTransport:
 
 def cmd_mip(python_exe: str, port: str, package: str, index: str = None):
     """Install a package on-device, falling back to PC-side download if needed."""
-    sys.stderr.write(f"DEBUG: Starting mip installation for '{package}' on {port}\n")
-    print(f"Installing '{package}' on device via mip...", file=sys.stderr)
+    sys.stderr.write(f"   Starting mip installation for '{package}' on {port}\n")
+    sys.stderr.write(f"Installing '{package}' on device via mip...\n")
     
     mip_code = f"""
 import sys, os
@@ -854,7 +903,7 @@ except Exception as e:
     # directly over Wi-Fi/Cellular for arbitrary GitHub URLs.
     # If the package is from the Digi repo, skip on-device and go straight to PC.
     if "digidotcom" in package.lower():
-        sys.stderr.write(f"DEBUG: Digi/XBee package detected. Skipping on-device mip and forcing PC-side fallback.\n")
+        sys.stderr.write(f"   Digi/XBee package detected. Using PC-side fallback...\n")
         is_network_error = True # Force fallback
     else:
         rc, is_network_error, is_success = _run_on_device()
@@ -919,7 +968,7 @@ except Exception as e:
             elif (target_dir / "lib").is_dir():
                 actual_source = target_dir / "lib"
             
-            sys.stderr.write(f"DEBUG: Finalizing upload from {actual_source} to /lib\n")
+            sys.stderr.write(f"   Finalizing upload from {actual_source} to /lib\n")
             conn.put_directory(actual_source, "/lib")
             print(f"Package '{package}' installed successfully via PC fallback.")
             sys.exit(0)
@@ -1271,10 +1320,10 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
             s.rts = False
             s.open()
 
-            # 💡 Hard Reset Sequence (ESP32/ESP8266 logic)
+            # Hard Reset Sequence (ESP32/ESP8266 logic)
             # RTS pulls EN low (Reset), DTR pulls GPIO0 low (Boot)
             print(
-                f"{CLR_YELLOW}🔌 Performing Hardware Reset (DTR/RTS) on {port}...{CLR_RESET}", file=sys.stderr)
+                f"{CLR_YELLOW} [RESET] Performing Hardware Reset (DTR/RTS) on {port}...{CLR_RESET}", file=sys.stderr)
             s.setRTS(True)
             s.setDTR(False)
             time.sleep(0.1)
@@ -1282,8 +1331,8 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
             time.sleep(0.5)  # Wait for boot
             s.close()
 
-        # 💡 Ultimate Kick: Deliberate Sync without soft-rebooting
-        print(f"{CLR_DIM}⚡ Synchronizing with device...{CLR_RESET}",
+        # Ultimate Kick: Deliberate Sync without soft-rebooting
+        print(f"{CLR_DIM} [SYNC] Synchronizing with device...{CLR_RESET}",
               file=sys.stderr)
 
         conn = SerialConnection(port)
@@ -1318,13 +1367,14 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
 # ----------------------------
 
 
-def cmd_run_mcu(python_exe: str, port: str, file_path: str, soft_reset: bool = True):
+def cmd_run_mcu(python_exe: str, port: str, file_path: str, soft_reset: bool = True, quiet: bool = False):
     file_path = Path(file_path).resolve()
     if not file_path.is_file():
-        print(f"❌ File not found: {file_path}", file=sys.stderr)
+        sys.stderr.write(f"   [ERROR] File not found: {file_path}\n")
         sys.exit(1)
 
-    _print_ui_header(port, None, file_path)
+    if not quiet:
+        _print_ui_header(port, None, file_path)
 
     # WebSocket: mpremote has no ws: transport — use our own WebREPL implementation
     if _is_ws_port(port):
@@ -1332,27 +1382,27 @@ def cmd_run_mcu(python_exe: str, port: str, file_path: str, soft_reset: bool = T
         conn = WebReplConnection(host, password)
         try:
             conn.connect()
-            rc = conn.run_file(file_path)
+            rc, stdout, stderr = conn.exec_code(Path(file_path).read_bytes())
         except ConnectionError as e:
-            print(f"❌ WebREPL connection failed: {e}", file=sys.stderr)
+            sys.stderr.write(f"   [ERROR] WebREPL connection failed: {e}\n")
             rc = 1
         except Exception as e:
-            print(f"❌ WebREPL error: {e}", file=sys.stderr)
+            sys.stderr.write(f"   [ERROR] WebREPL error: {e}\n")
             rc = 1
         finally:
             conn.close()
         sys.exit(rc)
 
     # Serial: Execute natively using pure PySerial
-    print(f"{CLR_DIM}⚡ Executing directly via pure serial...{CLR_RESET}", file=sys.stderr)
+    sys.stderr.write(f"{CLR_DIM} [EXEC] Executing directly via pure serial...{CLR_RESET}\n")
     conn = SerialConnection(port)
     try:
         conn.connect()
         code = Path(file_path).read_bytes()
-        rc = conn.exec_code(code, soft_reset=soft_reset)
+        rc, stdout, stderr = conn.exec_code(code, soft_reset=soft_reset, stream_stdout=True)
         sys.exit(rc)
     except Exception as e:
-        print(f"❌ Pure serial execution failed: {e}", file=sys.stderr)
+        sys.stderr.write(f"❌ Pure serial execution failed: {e}\n")
         sys.exit(1)
     finally:
         conn.close()
@@ -1414,7 +1464,8 @@ def _ws_upload_file_legacy(conn: WebReplConnection, source: Path, remote: str) -
         lines.append(f"_f.write(binascii.unhexlify({chunk!r}))")
     lines.append('_f.close()')
     lines.append("print('OK')")
-    return conn.exec_code('\n'.join(lines))
+    rc, stdout, stderr = conn.exec_code('\n'.join(lines))
+    return rc
 
 
 def _ws_upload_file(conn: WebReplConnection, source: Path, remote: str) -> int:
@@ -1441,18 +1492,18 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
                 _ws_mkdir_p(conn, dest)
                 remote = dest.rstrip('/') + '/' + source.name
                 print(
-                    f"📤 Uploading {source.name} -> {remote}", file=sys.stderr)
+                    f"   Uploading {source.name} -> {remote}", file=sys.stderr)
                 rc = _ws_upload_file(conn, source, remote)
                 if rc == 0:
-                    print(f"✅ Upload complete", file=sys.stderr)
+                    print(f"   Upload complete", file=sys.stderr)
             else:
                 files = sorted(f for f in source.rglob('*') if f.is_file())
                 if not files:
-                    print("⚠️ Source folder is empty.", file=sys.stderr)
+                    print("   [WARN] Source folder is empty.", file=sys.stderr)
                     sys.exit(0)
                 print(
-                    f"📁 Uploading {len(files)} file(s) from {source}", file=sys.stderr)
-                print(f"🔌 Port: {port}", file=sys.stderr)
+                    f"   Uploading {len(files)} file(s) from {source}", file=sys.stderr)
+                print(f"   Port: {port}", file=sys.stderr)
                 print("-" * 50, file=sys.stderr)
                 # Create dest and all subdirectories first
                 _ws_mkdir_p(conn, dest)
@@ -1469,19 +1520,19 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
                     print(f"[{i}/{len(files)}] {rel}", file=sys.stderr)
                     rc = _ws_upload_file(conn, f, remote)
                     if rc != 0:
-                        print(f"❌ Failed: {rel}", file=sys.stderr)
+                        print(f"   [FAILED] {rel}", file=sys.stderr)
                         break
                     # Brief pause between files so the device can finish
                     # writing to flash before the next transfer starts.
                     time.sleep(0.1)
                 if rc == 0:
                     print(
-                        f"\n✅ Upload complete ({len(files)} file(s))", file=sys.stderr)
+                        f"\n   Upload complete ({len(files)} file(s))", file=sys.stderr)
         except ConnectionError as e:
-            print(f"❌ WebREPL connection failed: {e}", file=sys.stderr)
+            print(f"   [ERROR] WebREPL connection failed: {e}", file=sys.stderr)
             rc = 1
         except Exception as e:
-            print(f"❌ WebREPL upload error: {e}", file=sys.stderr)
+            print(f"   [ERROR] WebREPL upload error: {e}", file=sys.stderr)
             rc = 1
         finally:
             conn.close()
@@ -1491,13 +1542,15 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
     if source.is_file():
         remote = dest.rstrip('/') + '/' + source.name
         print(f"Uploading {source.name} -> {remote}", file=sys.stderr)
-        # 💡 Safety delay to prevent port conflict
+        # Safety delay to prevent port conflict
         time.sleep(0.1)
 
         conn = SerialConnection(port)
         try:
             conn.connect()
             rc = conn.put_file(source, remote)
+            if rc == 0:
+                print(f"   Upload complete", file=sys.stderr)
             sys.exit(rc)
         except Exception as e:
             print(f"Upload failed: {e}", file=sys.stderr)
@@ -1522,7 +1575,7 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
             print(
                 f"These files already exist in {dest} on the device:", file=sys.stderr)
             for c in sorted(conflicts):
-                print(f"   • {c}", file=sys.stderr)
+                sys.stderr.write(f"   * {c}\n")
             if not overwrite:
                 print("CONFLICTS_FOUND", flush=True)
                 sys.exit(3)
@@ -1564,19 +1617,17 @@ def _get_device_files(python_exe: str, port: str) -> 'list[str]':
 
     # Script that walks the device filesystem and prints a JSON list of file paths
     walk_code = (
-        "import os,json\n"
-        "def _w(p,r):\n"
+        "import os\n"
+        "def _w(p):\n"
         " try:\n"
         "  for e in os.listdir(p):\n"
         "   f=(p+'/'+e).replace('//','/') \n"
         "   try:\n"
-        "    if os.stat(f)[0]&0x4000:_w(f,r)\n"
-        "    else:r.append(f)\n"
+        "    if os.stat(f)[0]&0x4000:_w(f)\n"
+        "    else:print('FILE:'+f)\n"
         "   except:pass\n"
         " except:pass\n"
-        "r=[]\n"
-        "_w('/',r)\n"
-        "print(json.dumps(r))\n"
+        "_w('/')\n"
     )
 
     tmp = Path(sys.executable).parent / '_mps_ls.py'
@@ -1588,30 +1639,18 @@ def _get_device_files(python_exe: str, port: str) -> 'list[str]':
             conn = WebReplConnection(host, password)
             try:
                 conn.connect()
-                import io as _io
-                _buf = _io.BytesIO()
-                old_stdout = sys.stdout
-                sys.stdout = _io.TextIOWrapper(_buf, encoding='utf-8')
-                conn.exec_code(walk_code)
-                sys.stdout.flush()
-                sys.stdout = old_stdout
-                output = _buf.getvalue().decode('utf-8', errors='ignore')
+                rc, stdout_bytes, stderr_bytes = conn.exec_code(walk_code, stream_stdout=False)
+                output = stdout_bytes.decode('utf-8', errors='ignore')
             finally:
                 conn.close()
         else:
-            import io as _io
             conn = SerialConnection(port)
             try:
                 conn.connect()
-                _buf = _io.BytesIO()
-                old_stdout = sys.stdout
-                sys.stdout = _io.TextIOWrapper(_buf, encoding='utf-8')
-                conn.exec_code(walk_code)
-                sys.stdout.flush()
-                sys.stdout = old_stdout
-                output = _buf.getvalue().decode('utf-8', errors='ignore')
+                rc, stdout_bytes, stderr_bytes = conn.exec_code(walk_code, stream_stdout=False)
+                output = stdout_bytes.decode('utf-8', errors='ignore')
             except Exception as e:
-                # Silently catch so that it returns empty list normally.
+                sys.stderr.write(f"   Error walking device files: {e}\n")
                 pass
             finally:
                 conn.close()
@@ -1621,14 +1660,12 @@ def _get_device_files(python_exe: str, port: str) -> 'list[str]':
         except Exception:
             pass
 
+    files = []
     for line in output.splitlines():
         line = line.strip()
-        if line.startswith('['):
-            try:
-                return _json.loads(line)
-            except Exception:
-                pass
-    return []
+        if line.startswith('FILE:'):
+            files.append(line[5:])
+    return files
 
 
 def cmd_download(python_exe: str, port: str, dest_dir: str,
@@ -1641,14 +1678,14 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
     dest = Path(dest_dir).resolve()
     dest.mkdir(parents=True, exist_ok=True)
 
-    print("🔍 Reading device filesystem...", file=sys.stderr)
+    sys.stderr.write("   Reading device filesystem...\n")
     device_files = _get_device_files(python_exe, port)
 
     if not device_files:
-        print("⚠️  No files found on device.", file=sys.stderr)
+        sys.stderr.write("   No files found on device.\n")
         sys.exit(0)
 
-    print(f"📋 Found {len(device_files)} file(s) on device.", file=sys.stderr)
+    sys.stderr.write(f"   Found {len(device_files)} file(s) on device.\n")
 
     # Filter out excluded files/folders
     filtered_files = []
@@ -1664,7 +1701,7 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
 
     if len(filtered_files) < len(device_files):
         diff = len(device_files) - len(filtered_files)
-        print(f"🧹 Ignored {diff} system/junk file(s).", file=sys.stderr)
+        sys.stderr.write(f"   Ignored {diff} system/junk file(s).\n")
         device_files = filtered_files
 
     # Detect conflicts (files that already exist locally)
@@ -1674,107 +1711,73 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
     ]
 
     if conflicts and not overwrite and not skip and not rename and overwrite_files is None:
-        # Signal the extension: print conflict list as JSON then exit 3
+        sys.stderr.write("   The following files already exist on your PC:\n")
         for c in conflicts:
-            print(f"   * {c}", file=sys.stderr)
+            sys.stderr.write(f"   * {c}\n")
+        # Machine-readable output for the extension
+        # We print this to stdout so the extension can capture it, but it should be hidden from UI
         print(_json.dumps({'conflicts': conflicts}), flush=True)
         sys.exit(3)
 
-    print(f"📥 Downloading to: {dest}", file=sys.stderr)
-    print("-" * 50, file=sys.stderr)
+    sys.stderr.write(f"   Downloading to: {dest}\n")
+    sys.stderr.write("-" * 50 + "\n")
 
     downloaded = 0
     skipped = 0
 
-    for remote_path in device_files:
-        rel = remote_path.lstrip('/')
-        local_path = dest / rel
+    conn = None
+    if _is_ws_port(port):
+        host, password = _parse_ws_port(port)
+        conn = WebReplConnection(host, password)
+    else:
+        conn = SerialConnection(port)
 
-        # Decide: overwrite / skip / selective / rename
-        if local_path.exists():
-            if skip:
-                print(f"⏭  Skipped:  {rel}", file=sys.stderr)
-                skipped += 1
-                continue
-            if rename:
-                base = local_path.stem
-                ext = local_path.suffix
-                counter = 1
-                new_local = local_path.parent / f"{base}_{counter}{ext}"
-                while new_local.exists():
-                    counter += 1
-                    new_local = local_path.parent / f"{base}_{counter}{ext}"
-                local_path = new_local
-                rel = str(local_path.relative_to(dest)).replace('\\', '/')
-            else:
-                # type: ignore[assignment]
-                _owf: 'list[str]' = overwrite_files or []
-                if overwrite_files is not None and remote_path not in _owf:
-                    print(f"⏭  Skipped:  {rel}", file=sys.stderr)
+    try:
+        conn.connect()
+        for remote_path in device_files:
+            rel = remote_path.lstrip('/')
+            local_path = dest / rel
+
+            if local_path.exists():
+                if skip:
+                    sys.stderr.write(f"   Skipped:  {rel}\n")
                     skipped += 1
                     continue
-            # fall through → download (either to original name if overwrite, or new name if renamed)
+                if rename:
+                    base = local_path.stem
+                    ext = local_path.suffix
+                    counter = 1
+                    new_local = local_path.parent / f"{base}_{counter}{ext}"
+                    while new_local.exists():
+                        counter += 1
+                        new_local = local_path.parent / f"{base}_{counter}{ext}"
+                    local_path = new_local
+                    rel = str(local_path.relative_to(dest)).replace('\\', '/')
+                else:
+                    _owf: 'list[str]' = overwrite_files or []
+                    if overwrite_files is not None and remote_path not in _owf:
+                        sys.stderr.write(f"   Skipped:  {rel}\n")
+                        skipped += 1
+                        continue
 
-        # Create parent directories locally
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-
-        print(f"⬇  {remote_path}  →  {rel}", file=sys.stderr)
-
-        if _is_ws_port(port):
-            host, password = _parse_ws_port(port)
-            conn = WebReplConnection(host, password)
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            sys.stderr.write(f"   {remote_path}  ->  {rel}\n")
+            
             try:
-                conn.connect()
-                # Read file via exec_code, capture output
-                read_code = (
-                    f"import binascii\n"
-                    f"with open({remote_path!r},'rb') as _f:\n"
-                    f"    print(binascii.hexlify(_f.read()).decode())\n"
-                )
-                import io as _io
-                buf = _io.BytesIO()
-                old = sys.stdout
-                sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
-                conn.exec_code(read_code)
-                sys.stdout.flush()
-                sys.stdout = old
-                hex_str = buf.getvalue().decode('utf-8', errors='ignore').strip()
-                import binascii as _ba
-                local_path.write_bytes(_ba.unhexlify(hex_str))
-            finally:
-                conn.close()
-        else:
-            time.sleep(0.5)  # Port safety delay
-            conn = SerialConnection(port)
-            try:
-                conn.connect()
-                # Read file via exec_code, capture output exactly like WebREPL
-                read_code = (
-                    f"import binascii\n"
-                    f"with open({remote_path!r},'rb') as _f:\n"
-                    f"    print(binascii.hexlify(_f.read()).decode())\n"
-                )
-                import io as _io
-                buf = _io.BytesIO()
-                old = sys.stdout
-                sys.stdout = _io.TextIOWrapper(buf, encoding='utf-8')
-                conn.exec_code(read_code)
-                sys.stdout.flush()
-                sys.stdout = old
-                hex_str = buf.getvalue().decode('utf-8', errors='ignore').strip()
-                import binascii as _ba
-                local_path.write_bytes(_ba.unhexlify(hex_str))
+                res = conn.get_file(remote_path, local_path)
+                if res == 0:
+                    downloaded += 1
+                else:
+                    sys.stderr.write(f"   Failed: {remote_path} (Backend error)\n")
             except Exception as e:
-                print(f"❌ Failed: {remote_path}: {e}", file=sys.stderr)
+                sys.stderr.write(f"   Failed: {remote_path}: {e}\n")
                 continue
-            finally:
-                conn.close()
+    finally:
+        if conn:
+            conn.close()
 
-        downloaded += 1
-
-    print("-" * 50, file=sys.stderr)
-    print(
-        f"✅ Download complete: {downloaded} downloaded, {skipped} skipped.", file=sys.stderr)
+    sys.stderr.write("-" * 50 + "\n")
+    sys.stderr.write(f"   Download complete: {downloaded} downloaded, {skipped} skipped.\n")
 
 
 # ----------------------------
@@ -1791,12 +1794,12 @@ def cmd_kick(python_exe, port):
 
 def cmd_hard_reset(python_exe, port):
     """Force a reboot using hardware toggles and soft commands."""
-    print(f"🔥 Performing hard reset on {port}...", file=sys.stderr)
+    sys.stderr.write(f"   Performing hard reset on {port}...\n")
     _serial_pre_interrupt(python_exe, port, hard=True)
     # Attempt to send software reset command if we can connect now
     args = ['connect', port, 'exec', 'import machine; machine.reset()']
     run_mpremote(python_exe, args, timeout=5)
-    print("✅ Reset signal sent.", file=sys.stderr)
+    sys.stderr.write("   Reset signal sent.\n")
     sys.exit(0)
 
 
@@ -1858,7 +1861,7 @@ except Exception as _e:
     try:
         conn.connect()
         # list_files calls exec_code internally
-        rc, stdout, stderr = conn.list_files(path)
+        rc, stdout, stderr = conn.list_files(path) # list_files uses exec_code(stream_stdout=True) by default, but we want it False
         output = stdout.decode('utf-8', errors='ignore').strip()
         
         # Parse the custom pipe-separated format: name|is_dir|size
@@ -1910,7 +1913,7 @@ except Exception as _e:
         rc, stdout, stderr = conn.exec_code(code)
         # Output is already printed by exec_code
     except Exception as e:
-        print(f"Serial cat failed: {e}", file=sys.stderr)
+        sys.stderr.write(f"   Serial cat failed: {e}\n")
         sys.exit(1)
     finally:
         conn.close()
@@ -2024,7 +2027,7 @@ def cmd_exec(python_exe, port, code):
     conn = SerialConnection(port)
     try:
         conn.connect()
-        rc = conn.exec_code(code)
+        rc, stdout, stderr = conn.exec_code(code)
         sys.exit(rc)
     except Exception as e:
         print(f"❌ Pure serial execution failed: {e}", file=sys.stderr)
@@ -2067,6 +2070,8 @@ def main():
                            help='Full path to the .py file to run')
     run_mcu_p.add_argument('--no-reset', action='store_true',
                            help='Do not trigger soft reset (Ctrl-D) before running')
+    run_mcu_p.add_argument('--quiet', action='store_true',
+                           help='Suppress UI header')
 
     # Upload
     upload_p = subparsers.add_parser(
@@ -2095,6 +2100,19 @@ def main():
                       help='Keep both by renaming the incoming file')
     dl_p.add_argument('--overwrite-files', default='',
                       help='Pipe-separated list of specific files to overwrite')
+
+    # Mkdir
+    mkdir_p = subparsers.add_parser(
+        'mkdir', help='Create a directory on the device')
+    mkdir_p.add_argument('--port', required=True, help='Serial port')
+    mkdir_p.add_argument('--path', required=True, help='Directory path')
+
+    # Rename
+    rename_p = subparsers.add_parser(
+        'rename', help='Rename a file or directory on the device')
+    rename_p.add_argument('--port', required=True, help='Serial port')
+    rename_p.add_argument('--src', required=True, help='Source path')
+    rename_p.add_argument('--dest', required=True, help='Destination path')
 
     # Exec
     exec_p = subparsers.add_parser('exec', help='Execute code on device')
@@ -2166,7 +2184,8 @@ def main():
     elif args.command == 'run_mcu':
         # Default to soft-resetting unless --no-reset provided
         soft_reset = not getattr(args, 'no_reset', False)
-        cmd_run_mcu(args.python, args.port, args.file, soft_reset=soft_reset)
+        cmd_run_mcu(args.python, args.port, args.file, 
+                    soft_reset=soft_reset, quiet=args.quiet)
     elif args.command == 'mount':
         cmd_mount(args.python, args.port, args.folder)
     elif args.command == 'shell':
@@ -2197,6 +2216,10 @@ def main():
         cmd_hard_reset(args.python, args.port)
     elif args.command == 'mip':
         cmd_mip(args.python, args.port, args.package, args.index)
+    elif args.command == 'mkdir':
+        cmd_mkdir(args.python, args.port, args.path)
+    elif args.command == 'rename':
+        cmd_rename(args.python, args.port, args.src, args.dest)
 
 
 if __name__ == '__main__':
