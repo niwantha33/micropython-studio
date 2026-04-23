@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { execFile } = require("child_process");
 const { runMpremote } = require("./runCommand");
+const wsQueue = require("./wsQueue");
 const {
   updateCfgComponent,
   getVenvPythonPath,
@@ -32,8 +33,9 @@ async function gatherDeviceMetrics(outputChannel, workspaceFolder, devicePort) {
     bootLog: { hasLog: false, status: "none", ip: "", detail: "" },
   };
 
-  // The single python script to fetch all metrics at once
-  const pythonScript = `import sys
+  return wsQueue.run(async () => {
+    // The single python script to fetch all metrics at once
+    const pythonScript = `import sys
 try:
     import gc
 except ImportError:
@@ -146,161 +148,150 @@ except:
   // Save script locally to a safe temp spot in the workspace
   const tempScriptPath = path.join(workspaceFolder, "_dashboard_metrics.py");
   try {
-    fs.writeFileSync(tempScriptPath, pythonScript, "utf8");
+      fs.writeFileSync(tempScriptPath, pythonScript, "utf8");
 
-    // Detect XBee from device.cfg — XBee needs mpremotesubpro.py (no os.stat for mpremote)
-    let isXBee = false;
-    try {
-      const cfgPath = path.join(workspaceFolder, "device.cfg");
-      if (fs.existsSync(cfgPath)) {
-        const rawCfg = fs.readFileSync(cfgPath, "utf8");
-        const mcuMatch = rawCfg.match(/^mcu\s*=\s*"?([^"\r\n]+)"?/m);
-        if (mcuMatch && mcuMatch[1].toLowerCase().includes("xbee")) {
-          isXBee = true;
+      // Run the script on the device
+      let rawOutput;
+      const useSubpro = !!devicePort;
+      if (useSubpro) {
+        const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+        const subpro = path.join(__dirname, "mpremotesubpro.py");
+        rawOutput = await new Promise((resolve) => {
+          execFile(
+            venvPython,
+            [
+              subpro,
+              "--python",
+              venvPython,
+              "run_mcu",
+              "--port",
+              devicePort,
+              "--file",
+              tempScriptPath,
+              "--no-reset",
+            ],
+            { timeout: 30000 },
+            (err, stdout, stderr) => {
+              if (err || stderr) {
+                const combined = (stdout || "") + (stderr || "");
+                if (combined.includes("is BUSY")) {
+                   vscode.window.showWarningMessage("Dashboard: Device port is busy. Please close the shell/terminal and refresh.");
+                }
+                resolve(stdout || "");
+              } else {
+                resolve(stdout || "");
+              }
+            },
+          );
+        });
+      } else {
+        const mpArgs = ["run", `"${tempScriptPath}"`];
+        rawOutput = await runMpremote(outputChannel, mpArgs);
+      }
+
+      const lines = rawOutput
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+
+      let currentSection = "";
+      let sysLines = [];
+      let ramLines = [];
+      let flashLines = [];
+      let wifiLines = [];
+      let bootLogLines = [];
+
+      for (const line of lines) {
+        if (line === "---SYS---") {
+          currentSection = "SYS";
+          continue;
+        }
+        if (line === "---RAM---") {
+          currentSection = "RAM";
+          continue;
+        }
+        if (line === "---FLASH---") {
+          currentSection = "FLASH";
+          continue;
+        }
+        if (line === "---WIFI---") {
+          currentSection = "WIFI";
+          continue;
+        }
+        if (line === "---BOOTLOG---") {
+          currentSection = "BOOTLOG";
+          continue;
+        }
+
+        if (currentSection === "SYS") sysLines.push(line);
+        else if (currentSection === "RAM") ramLines.push(line);
+        else if (currentSection === "FLASH") flashLines.push(line);
+        else if (currentSection === "WIFI") wifiLines.push(line);
+        else if (currentSection === "BOOTLOG") bootLogLines.push(line);
+      }
+
+      if (sysLines.length >= 4) {
+        const rawSysVersion = sysLines[0].toLowerCase();
+        metrics.firmware = rawSysVersion.includes("circuitpython")
+          ? "CircuitPython"
+          : "MicroPython";
+        metrics.platform = sysLines[1];
+        metrics.version = sysLines[2];
+        const freqHz = parseInt(sysLines[3], 10);
+        metrics.cpuFreqHtml =
+          freqHz > 0
+            ? `${(freqHz / 1000000).toFixed(0)} <span class="unit">MHz</span>`
+            : "Unknown";
+      }
+
+      if (ramLines.length >= 2) {
+        metrics.ramUsed = parseInt(ramLines[0], 10) || 0;
+        metrics.ramFree = parseInt(ramLines[1], 10) || 0;
+        metrics.ramTotal = metrics.ramUsed + metrics.ramFree;
+      }
+
+      if (flashLines.length >= 2) {
+        metrics.flashTotal = parseInt(flashLines[0], 10) || 0;
+        metrics.flashFree = parseInt(flashLines[1], 10) || 0;
+        metrics.flashUsed = metrics.flashTotal - metrics.flashFree;
+      }
+
+      if (wifiLines.length > 0 && wifiLines[0] !== "NO_WIFI") {
+        metrics.wifi.supported = true;
+        metrics.wifi.connected = wifiLines[0] === "1";
+        metrics.wifi.ip = wifiLines[1] || "";
+        metrics.wifi.ssid = wifiLines[2] || "";
+      } else if (wifiLines[0] === "NO_WIFI") {
+        metrics.wifi.supported = false;
+      }
+
+      const rawLog = bootLogLines.join("").trim();
+      if (rawLog && rawLog !== "NO_LOG") {
+        metrics.bootLog.hasLog = true;
+        if (rawLog.startsWith("OK:")) {
+          metrics.bootLog.status = "ok";
+          metrics.bootLog.ip = rawLog.slice(3);
+          metrics.bootLog.detail = `Remote access active — ${metrics.bootLog.ip}`;
+        } else if (rawLog.startsWith("WIFI_TIMEOUT:")) {
+          metrics.bootLog.status = "timeout";
+          metrics.bootLog.detail = "Wi-Fi not available — USB mode only";
+        } else if (rawLog.startsWith("ERROR:")) {
+          metrics.bootLog.status = "error";
+          metrics.bootLog.detail = `Boot error: ${rawLog.slice(6)}`;
+        } else {
+          metrics.bootLog.status = "unknown";
+          metrics.bootLog.detail = rawLog;
         }
       }
-    } catch (_) {}
-
-    // Run the script on the device
-    // ws: ports and XBee need mpremotesubpro.py (mpremote uses os.stat which XBee lacks)
-    let rawOutput;
-    const useSubpro = (devicePort && devicePort.startsWith("ws:")) || isXBee;
-    if (useSubpro) {
-      const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-      const subpro = path.join(__dirname, "mpremotesubpro.py");
-      rawOutput = await new Promise((resolve) => {
-        execFile(
-          venvPython,
-          [
-            subpro,
-            "--python",
-            venvPython,
-            "run_mcu",
-            "--port",
-            devicePort,
-            "--file",
-            tempScriptPath,
-          ],
-          { timeout: 30000 },
-          (_err, stdout) => resolve(stdout || ""),
-        );
-      });
-    } else {
-      const mpArgs = devicePort
-        ? ["connect", devicePort, "run", `"${tempScriptPath}"`]
-        : ["run", `"${tempScriptPath}"`];
-      rawOutput = await runMpremote(outputChannel, mpArgs);
-    }
-
-    // Parse the block output
-    const lines = rawOutput
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    let currentSection = "";
-    let sysLines = [];
-    let ramLines = [];
-    let flashLines = [];
-    let wifiLines = [];
-    let bootLogLines = [];
-
-    for (const line of lines) {
-      if (line === "---SYS---") {
-        currentSection = "SYS";
-        continue;
-      }
-      if (line === "---RAM---") {
-        currentSection = "RAM";
-        continue;
-      }
-      if (line === "---FLASH---") {
-        currentSection = "FLASH";
-        continue;
-      }
-      if (line === "---WIFI---") {
-        currentSection = "WIFI";
-        continue;
-      }
-      if (line === "---BOOTLOG---") {
-        currentSection = "BOOTLOG";
-        continue;
-      }
-
-      if (currentSection === "SYS") sysLines.push(line);
-      else if (currentSection === "RAM") ramLines.push(line);
-      else if (currentSection === "FLASH") flashLines.push(line);
-      else if (currentSection === "WIFI") wifiLines.push(line);
-      else if (currentSection === "BOOTLOG") bootLogLines.push(line);
-    }
-
-    // Apply SYS metrics
-    if (sysLines.length >= 4) {
-      const rawSysVersion = sysLines[0].toLowerCase();
-      metrics.firmware = rawSysVersion.includes("circuitpython")
-        ? "CircuitPython"
-        : "MicroPython";
-      metrics.platform = sysLines[1];
-      metrics.version = sysLines[2];
-      const freqHz = parseInt(sysLines[3], 10);
-      metrics.cpuFreqHtml =
-        freqHz > 0
-          ? `${(freqHz / 1000000).toFixed(0)} <span class="unit">MHz</span>`
-          : "Unknown";
-    }
-
-    // Apply RAM metrics
-    if (ramLines.length >= 2) {
-      metrics.ramUsed = parseInt(ramLines[0], 10) || 0;
-      metrics.ramFree = parseInt(ramLines[1], 10) || 0;
-      metrics.ramTotal = metrics.ramUsed + metrics.ramFree;
-    }
-
-    // Apply Flash metrics
-    if (flashLines.length >= 2) {
-      metrics.flashTotal = parseInt(flashLines[0], 10) || 0;
-      metrics.flashFree = parseInt(flashLines[1], 10) || 0;
-      metrics.flashUsed = metrics.flashTotal - metrics.flashFree;
-    }
-
-    // Apply Wi-Fi metrics
-    if (wifiLines.length > 0 && wifiLines[0] !== "NO_WIFI") {
-      metrics.wifi.supported = true;
-      metrics.wifi.connected = wifiLines[0] === "1";
-      metrics.wifi.ip = wifiLines[1] || "";
-      metrics.wifi.ssid = wifiLines[2] || "";
-    } else if (wifiLines[0] === "NO_WIFI") {
-      metrics.wifi.supported = false;
-    }
-
-    // Apply Boot Log — written by safe boot.py on each reboot
-    const rawLog = bootLogLines.join("").trim();
-    if (rawLog && rawLog !== "NO_LOG") {
-      metrics.bootLog.hasLog = true;
-      if (rawLog.startsWith("OK:")) {
-        metrics.bootLog.status = "ok";
-        metrics.bootLog.ip = rawLog.slice(3);
-        metrics.bootLog.detail = `Remote access active — ${metrics.bootLog.ip}`;
-      } else if (rawLog.startsWith("WIFI_TIMEOUT:")) {
-        metrics.bootLog.status = "timeout";
-        metrics.bootLog.detail = "Wi-Fi not available — USB mode only";
-      } else if (rawLog.startsWith("ERROR:")) {
-        metrics.bootLog.status = "error";
-        metrics.bootLog.detail = `Boot error: ${rawLog.slice(6)}`;
-      } else {
-        metrics.bootLog.status = "unknown";
-        metrics.bootLog.detail = rawLog;
+    } catch (err) {
+      console.error("Failed to gather metrics:", err);
+    } finally {
+      if (fs.existsSync(tempScriptPath)) {
+        fs.unlinkSync(tempScriptPath);
       }
     }
-  } catch (err) {
-    console.error("Failed to gather metrics:", err);
-  } finally {
-    if (fs.existsSync(tempScriptPath)) {
-      fs.unlinkSync(tempScriptPath);
-    }
-  }
-
-  return metrics;
+    return metrics;
+  });
 }
 
 /**
@@ -1693,8 +1684,8 @@ async function runDeviceScript(
   try {
     fs.writeFileSync(tempPath, scriptContent, "utf8");
 
-    // ws: ports need mpremotesubpro.py — mpremote has no WebSocket transport
-    if (devicePort && devicePort.startsWith("ws:")) {
+    // Use mpremotesubpro.py for both stability and WebSocket support
+    if (devicePort) {
       const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
       const subpro = path.join(__dirname, "mpremotesubpro.py");
       return await new Promise((resolve) => {
@@ -1709,6 +1700,7 @@ async function runDeviceScript(
             devicePort,
             "--file",
             tempPath,
+            "--no-reset",
           ],
           { timeout: 30000 },
           (_err, stdout) => resolve(stdout || ""),
@@ -1716,9 +1708,8 @@ async function runDeviceScript(
       });
     }
 
-    const args = devicePort
-      ? ["connect", devicePort, "run", `"${tempPath}"`]
-      : ["run", `"${tempPath}"`];
+    // Fallback logic (no port)
+    const args = ["run", `"${tempPath}"`];
     return await runMpremote(outputChannel, args);
   } finally {
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);

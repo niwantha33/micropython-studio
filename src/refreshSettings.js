@@ -101,35 +101,44 @@ async function getValidDevicePort(resource) {
     console.log('Connected devices:', devices);
 
     if (devices.length > 0) {
-        for (const device of devices) {
-            const devicePort = device.port;
-            const vidpid = device.vidpid;
+        // Step 1: Priority check — is the savedPort still available and matching the deviceId?
+        // This is critical for Dual-CDC devices where multiple ports share the same VID:PID.
+        const exactMatch = devices.find(d => d.port === savedPort && d.vidpid === devId);
+        
+        if (exactMatch) {
+            gRemoteDevicePort = savedPort;
+            console.log(`Matched saved port: ${savedPort}`);
+        } else {
+            // Step 2: Fallback — find ANY device that matches the deviceId
+            for (const device of devices) {
+                const devicePort = device.port;
+                const vidpid = device.vidpid;
 
-            if (devId && devId !== 'undefined' && devId === vidpid) {
-                // Exact match by device ID — update port if it moved to a new COM port
-                gRemoteDevicePort = devicePort;
-                if (savedPort !== devicePort) {
-                    await updateCfgComponent(configPath, 'device', 'port', devicePort);
-                }
-                vscode.window.showInformationMessage(`Device found: ${devicePort}`);
-                break;
-            } else if (!devId || devId === 'undefined') {
-                // No saved device ID — ask user to confirm
-                if (vidpid !== '0000:0000') {
-                    const confirm = await vscode.window.showInformationMessage(
-                        `Found device at ${devicePort} (ID: ${vidpid}). Use this device?`,
-                        'Yes', 'No', 'Skip All'
-                    );
-
-                    if (confirm === 'Yes') {
-                        gRemoteDevicePort = devicePort;
-                        await updateCfgComponent(configPath, 'device', 'deviceId', vidpid);
+                if (devId && devId !== 'undefined' && devId === vidpid) {
+                    // Match by device ID — update port if it transitioned to a new COM port
+                    gRemoteDevicePort = devicePort;
+                    if (savedPort !== devicePort) {
+                        console.log(`Device ID match found at new port: ${devicePort}`);
                         await updateCfgComponent(configPath, 'device', 'port', devicePort);
-                        break;
-                    } else if (confirm === 'Skip All') {
-                        break;
                     }
-                    // If "No", continue to next device
+                    break;
+                } else if (!devId || devId === 'undefined') {
+                    // No saved device ID — ask user to confirm
+                    if (vidpid !== '0000:0000') {
+                        const confirm = await vscode.window.showInformationMessage(
+                            `Found device at ${devicePort} (ID: ${vidpid}). Use this device?`,
+                            'Yes', 'No', 'Skip All'
+                        );
+
+                        if (confirm === 'Yes') {
+                            gRemoteDevicePort = devicePort;
+                            await updateCfgComponent(configPath, 'device', 'deviceId', vidpid);
+                            await updateCfgComponent(configPath, 'device', 'port', devicePort);
+                            break;
+                        } else if (confirm === 'Skip All') {
+                            break;
+                        }
+                    }
                 }
             }
         }

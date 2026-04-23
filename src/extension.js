@@ -10,20 +10,18 @@ const vscode = require('vscode');
 const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs'); // Added fs import
-const os = require('os');
-const EventEmitter = require('events');
 const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
-const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue } = require('./commonFxn');
+const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
-const { updateCfgComponent } = require('./commonFxn');
 const { openDeviceDashboard } = require('./deviceDashboard');
 const { openWebReplTerminal } = require('./webReplTerminal');
 const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive } = require('./circuitpyDrive');
+const { getConnectedDevices } = require('./runCommand');
 const { AiAssistanceProvider } = require('./aiAssistance');
 
 // ─── Global State ────────────────────────────────────────────────────────────
@@ -42,7 +40,6 @@ let deviceStatusBarItem = null;
 let deviceFileExplorer = null;
 let deviceFileTreeView = null;
 
-const captureEmitter = new EventEmitter();
 
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
 
@@ -261,97 +258,6 @@ async function _runDownloadQueued(exe, baseArgs) {
     }
 }
 
-/**
- * Run an upload command. If the script exits with code 3 (conflicts found),
- * show a VSCode confirmation dialog and re-run with --overwrite.
- * @param {string} exe
- * @param {string[]} baseArgs - args WITHOUT --overwrite
- * @param {()=>void} [onDone]
- */
-function runUpload(exe, baseArgs, onDone) {
-    runPythonProcess(exe, baseArgs, async (code) => {
-        if (code === 3) {
-            const answer = await vscode.window.showWarningMessage(
-                'Some files already exist on the device. Overwrite them?',
-                { modal: true },
-                'Overwrite',
-                'Cancel'
-            );
-            if (answer === 'Overwrite') {
-                runPythonProcess(exe, [...baseArgs, '--overwrite'], onDone);
-            }
-        } else {
-            if (onDone) onDone();
-        }
-    });
-}
-
-/**
- * Run a download command. Captures stdout to detect conflict JSON (exit code 3),
- * then shows a QuickPick with Overwrite all / Skip existing / Choose files options.
- * @param {string} exe
- * @param {string[]} baseArgs - args WITHOUT --overwrite / --skip / --overwrite-files
- */
-function runDownload(exe, baseArgs) {
-    let stdoutBuf = '';
-    const channel = vscode.window.createOutputChannel('MicroPython Studio');
-    channel.show(true);
-    channel.appendLine('─'.repeat(50));
-
-    const proc = spawn(exe, baseArgs);
-    proc.stdout.on('data', d => {
-        stdoutBuf += d.toString();
-        channel.append(d.toString());
-    });
-    proc.stderr.on('data', d => channel.append(d.toString()));
-    proc.on('error', err => channel.appendLine(`❌ ${err.message}`));
-
-    proc.on('close', async (code) => {
-        if (code !== 3) return;
-
-        // Parse conflict list from stdout JSON line
-        let conflicts = [];
-        for (const line of stdoutBuf.split('\n')) {
-            try {
-                const msg = JSON.parse(line.trim());
-                if (msg.conflicts) { conflicts = msg.conflicts; break; }
-            } catch (_) { }
-        }
-
-        // Show the conflict resolution options
-        const pick = await vscode.window.showQuickPick([
-            { label: '$(sync)       Overwrite all', id: 'overwrite' },
-            { label: '$(file-add)   Keep (Rename)', id: 'rename' },
-            { label: '$(debug-step-over) Skip existing', id: 'skip' },
-            { label: '$(list-tree)  Choose files', id: 'choose' }
-        ], { placeHolder: `${conflicts.length} file(s) already exist locally. What should we do?` });
-
-        if (!pick) return;
-
-        const pickId = /** @type {any} */(pick).id;
-        if (pickId === 'overwrite') {
-            runPythonProcess(exe, [...baseArgs, '--overwrite'], undefined);
-        } else if (pickId === 'rename') {
-            runPythonProcess(exe, [...baseArgs, '--rename'], undefined);
-        } else if (pickId === 'skip') {
-            runPythonProcess(exe, [...baseArgs, '--skip'], undefined);
-        } else if (pickId === 'choose') {
-            // Choose files: show multi-select of conflicting files
-            const items = /** @type {vscode.QuickPickItem[]} */ (
-                conflicts.map(f => ({ label: /** @type {string} */ (f), picked: true }))
-            );
-            const chosen = /** @type {vscode.QuickPickItem[] | undefined} */ (
-                await vscode.window.showQuickPick(items, {
-                    placeHolder: 'Select files to overwrite (unchecked = skip)',
-                    canPickMany: true
-                })
-            );
-            if (!chosen || chosen.length === 0) return;
-            const owf = chosen.map(i => i.label).join('|');
-            runPythonProcess(exe, [...baseArgs, '--overwrite-files', owf], undefined);
-        }
-    });
-}
 
 function getMpremoteTerminal() {
     if (!gMpremoteTerminal || gMpremoteTerminal.exitStatus) {
@@ -688,7 +594,8 @@ function activate(context) {
             const venvPython = getVenvPythonPath(venvFolder);
 
             const terminal = getMpremoteTerminal();
-            sendCleanCommand(terminal, `"${venvPython}" -m mpremote connect ${gRemoteDevicePort} resume repl`);
+            const helperPy = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            sendCleanCommand(terminal, `"${venvPython}" "${helperPy}" --python "${venvPython}" shell --port ${gRemoteDevicePort}`);
         })
     );
 
@@ -917,11 +824,7 @@ function activate(context) {
             const uploadArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', filePath, '--dest', baseDest];
             const onDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
-            if (gRemoteDevicePort.startsWith('ws:')) {
-                _runUploadQueued(venvPython, uploadArgs, onDone);
-            } else {
-                runPythonProcess(venvPython, uploadArgs, onDone);
-            }
+            _runUploadQueued(venvPython, uploadArgs, onDone);
         })
     );
 
@@ -969,11 +872,7 @@ function activate(context) {
             const folderArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', folderPath, '--dest', baseDest];
             const onFolderDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
-            if (gRemoteDevicePort.startsWith('ws:')) {
-                _runUploadQueued(venvPython, folderArgs, onFolderDone);
-            } else {
-                runUpload(venvPython, folderArgs, onFolderDone);
-            }
+            _runUploadQueued(venvPython, folderArgs, onFolderDone);
         })
     );
 
@@ -1031,11 +930,7 @@ function activate(context) {
             const projArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', baseDest];
             const onProjDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
-            if (gRemoteDevicePort.startsWith('ws:')) {
-                _runUploadQueued(venvPython, projArgs, onProjDone);
-            } else {
-                runUpload(venvPython, projArgs, onProjDone);
-            }
+            _runUploadQueued(venvPython, projArgs, onProjDone);
         })
     );
 
@@ -1082,7 +977,22 @@ function activate(context) {
                 placeHolder: 'Choose run transport'
             });
             if (!pick) return;
-            gRemoteDevicePort = /** @type {any} */ (pick).port;
+            const newPort = /** @type {any} */ (pick).port;
+            gRemoteDevicePort = newPort;
+            
+            // Persist to device.cfg if we have a project
+            if (gDeviceCodeDir) {
+                const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                await updateCfgComponent(cfgPath, 'device', 'port', newPort);
+
+                // Also update deviceId (VID:PID) so getValidDevicePort doesn't flip it back
+                const devices = await getConnectedDevices();
+                const matched = devices.find(d => d.port === newPort);
+                if (matched && matched.vidpid && matched.vidpid !== '0000:0000') {
+                    await updateCfgComponent(cfgPath, 'device', 'deviceId', matched.vidpid);
+                }
+            }
+
             updateDeviceStatusBar();
             if (deviceFileExplorer) {
                 const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
@@ -1110,7 +1020,25 @@ function activate(context) {
             });
             if (port) {
                 gRemoteDevicePort = port;
+
+                // Persist to device.cfg if we have a project
+                if (gDeviceCodeDir) {
+                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                    await updateCfgComponent(cfgPath, 'device', 'port', port);
+
+                    // Also update deviceId (VID:PID) to prevent snap-back to old port
+                    const devices = await getConnectedDevices();
+                    const matched = devices.find(d => d.port === port);
+                    if (matched && matched.vidpid && matched.vidpid !== '0000:0000') {
+                        await updateCfgComponent(cfgPath, 'device', 'deviceId', matched.vidpid);
+                    }
+                }
+
                 updateDeviceStatusBar();
+                if (deviceFileExplorer) {
+                    const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
+                    deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
+                }
                 vscode.window.showInformationMessage(`Device port set to: ${port}`);
             }
         })
@@ -1209,8 +1137,7 @@ function activate(context) {
                     afterInstall
                 );
             } else {
-                const terminal = getMpremoteTerminal();
-                await openPackageManager(context, gRemoteDevicePort, terminal);
+                await openPackageManager(context, gRemoteDevicePort, runPythonProcess);
             }
             setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 5000);
         })
@@ -1242,11 +1169,17 @@ function activate(context) {
         })
     );
 
-    // Open Device Dashboard Webview Panel
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.openDeviceDashboard', async () => {
-            await openDeviceDashboard(context, outputChannel, gRemoteDevicePort, (newPort) => {
+            await openDeviceDashboard(context, outputChannel, gRemoteDevicePort, async (newPort) => {
                 gRemoteDevicePort = newPort;
+
+                // Persist to device.cfg if we have a project
+                if (gDeviceCodeDir) {
+                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                    await updateCfgComponent(cfgPath, 'device', 'port', newPort);
+                }
+
                 updateDeviceStatusBar();
                 if (deviceFileExplorer) {
                     const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
@@ -1285,11 +1218,7 @@ function activate(context) {
             const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
             const dlArgs = [scriptPath, '--python', venvPython, 'download', '--port', gRemoteDevicePort, '--dest', dest];
 
-            if (gRemoteDevicePort.startsWith('ws:')) {
-                _runDownloadQueued(venvPython, dlArgs);
-            } else {
-                runDownload(venvPython, dlArgs);
-            }
+            _runDownloadQueued(venvPython, dlArgs);
         })
     );
 

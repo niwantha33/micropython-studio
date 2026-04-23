@@ -7,10 +7,10 @@
  * @author  Niwantha Meepage
  */
 
+
 const vscode = require('vscode');
 const { exec } = require('child_process');
 const { promisify } = require('util');
-const os = require('os');
 const fs = require('fs');
 const pathMod = require('path');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
@@ -184,31 +184,53 @@ class DeviceFileExplorerProvider {
             }
         }
 
-        const lsOp = () => new Promise((resolve) => {
+        const lsOp = async () => {
             const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
             const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" ls --port "${this._port}" --path "${dirPath}"`;
 
-            exec(cmd, { timeout: 15000 }, (error, stdout) => {
-                if (error) {
-                    console.error(`Device ls error: ${error.message}`);
-                    const errItem = new vscode.TreeItem(
-                        '$(warning) Failed to read device files',
-                        vscode.TreeItemCollapsibleState.None
-                    );
-                    errItem.tooltip = error.message;
-                    resolve([/** @type {any} */ (errItem)]);
-                    return;
+            let attempts = 0;
+            const maxAttempts = 3;
+
+            while (attempts < maxAttempts) {
+                const result = await new Promise((resolve) => {
+                    exec(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+                        if (error) {
+                            const errStr = stderr || error.message;
+                            if (errStr.includes('BUSY') && attempts < maxAttempts - 1) {
+                                resolve({ retry: true });
+                            } else {
+                                resolve({ error: errStr });
+                            }
+                        } else {
+                            resolve({ success: true, stdout });
+                        }
+                    });
+                });
+
+                if (result.success) {
+                    const items = this._parseListOutput(result.stdout, dirPath);
+                    if (items.length === 0 && result.stdout.trim().length > 0) {
+                        const warnItem = new vscode.TreeItem('$(error) Parse error (see log)', vscode.TreeItemCollapsibleState.None);
+                        warnItem.tooltip = `Raw output: ${result.stdout}`;
+                        return [/** @type {any} */ (warnItem)];
+                    }
+                    this._cache.set(dirPath, items);
+                    return items;
+                } else if (result.retry) {
+                    attempts++;
+                    console.warn(`Port ${this._port} is busy. Retry ${attempts}/${maxAttempts} in 1s...`);
+                    await new Promise(r => setTimeout(r, 1000));
+                    continue;
+                } else {
+                    console.error(`Device ls error: ${result.error}`);
+                    const errItem = new vscode.TreeItem('$(warning) Failed to read device files', vscode.TreeItemCollapsibleState.None);
+                    errItem.tooltip = result.error;
+                    return [/** @type {any} */ (errItem)];
                 }
+            }
+        };
 
-                const items = this._parseListOutput(stdout, dirPath);
-                this._cache.set(dirPath, items);
-                resolve(items);
-            });
-        });
-
-        return this._port && this._port.startsWith('ws:')
-            ? wsQueue.run(lsOp)
-            : lsOp();
+        return wsQueue.run(lsOp);
     }
 
     /**
@@ -229,17 +251,19 @@ class DeviceFileExplorerProvider {
 
         for (const line of lines) {
             const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith('ls')) continue;
+            // Skip headers, empty lines, and noisy prompts
+            if (!trimmed || trimmed.startsWith('ls') || trimmed === '>>>') continue;
 
-            // Match: "  136 boot.py" or "  0 lib/"
-            const match = trimmed.match(/^\s*(\d+)\s+(.+)$/);
+            // Robust Matcher: handles "   136 boot.py" or " 0 lib/" or "1024 data.bin"
+            // Captures digits (size), then whitespace, then everything else (name)
+            const match = trimmed.match(/^(\d+)\s+(.+)$/);
             if (match) {
                 const size = parseInt(match[1], 10);
                 let name = match[2].trim();
                 const isDir = name.endsWith('/');
 
                 if (isDir) {
-                    name = name.slice(0, -1); // remove trailing /
+                    name = name.slice(0, -1);
                 }
 
                 // Build full device path
@@ -347,31 +371,16 @@ class DeviceFileExplorerProvider {
     /**
      * Move a single file on the device using os.rename().
      * Routes WS ports through mpremotesubpro.py mv to avoid mpremote WS limitation.
+     * Routes all ports through mpremotesubpro.py mv to avoid mpremote WS limitation and DTR resets.
      */
     _moveFileOnDevice(srcPath, destPath) {
         return new Promise((resolve, reject) => {
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
             const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
-
-            let cmd;
-            if (this._port && this._port.startsWith('ws:')) {
-                cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" mv --port "${this._port}" --src "${srcPath}" --dest "${destPath}"`;
-            } else {
-                const code = [
-                    'import os',
-                    `os.rename(${JSON.stringify(srcPath)}, ${JSON.stringify(destPath)})`,
-                    "print('ok')"
-                ].join('\n');
-                const tmpFile = pathMod.join(os.tmpdir(), 'mps_move.py');
-                fs.writeFileSync(tmpFile, code, 'utf8');
-                cmd = `"${venvPython}" -m mpremote connect ${this._port} run "${tmpFile}"`;
-            }
+            const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" mv --port "${this._port}" --src "${srcPath}" --dest "${destPath}"`;
 
             const moveOp = () => new Promise((res, rej) => {
                 exec(cmd, { timeout: 15000 }, (error, _stdout, stderr) => {
-                    if (!this._port.startsWith('ws:')) {
-                        try { fs.unlinkSync(pathMod.join(os.tmpdir(), 'mps_move.py')); } catch (_) {}
-                    }
                     if (error || (stderr && stderr.includes('Traceback'))) {
                         rej(new Error(stderr || error?.message || 'Unknown error'));
                     } else {
@@ -379,8 +388,7 @@ class DeviceFileExplorerProvider {
                     }
                 });
             });
-            const p = this._port && this._port.startsWith('ws:') ? wsQueue.run(moveOp) : moveOp();
-            p.then(resolve, reject);
+            wsQueue.run(moveOp).then(resolve, reject);
         });
     }
 }
@@ -406,14 +414,12 @@ async function readDeviceFile(port, deviceFilePath) {
             cancellable: false
         },
         async () => {
-            // WS ports: mpremote has no WebSocket transport — use mpremotesubpro.py cat
+            // Use mpremotesubpro.py for all ports, bypassing native mpremote errors and DTR resets
             const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
-            const cmd = port.startsWith('ws:')
-                ? `"${venvPython}" "${scriptPath}" --python "${venvPython}" cat --port "${port}" --path "${deviceFilePath}"`
-                : `"${venvPython}" -m mpremote connect ${port} fs cat :${deviceFilePath}`;
+            const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" cat --port "${port}" --path "${deviceFilePath}"`;
             try {
                 const execOp = () => execAsync(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 });
-                const { stdout } = await (port.startsWith('ws:') ? wsQueue.run(execOp) : execOp());
+                const { stdout } = await wsQueue.run(execOp);
                 const fileName = deviceFilePath.split('/').pop();
                 const lang = fileName.endsWith('.py') ? 'python'
                            : fileName.endsWith('.json') ? 'json' : 'plaintext';
@@ -462,10 +468,7 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
     const venvPython = getVenvPythonPath(venvFolder);
     const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
 
-    // WS ports: mpremote has no WebSocket transport — use mpremotesubpro.py rm
-    const cmd = port.startsWith('ws:')
-        ? `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFilePath}"`
-        : `"${venvPython}" -m mpremote connect ${port} fs rm :${deviceFilePath}`;
+    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFilePath}"`;
 
     const rmOp = () => new Promise((resolve) => {
         exec(cmd, { timeout: 15000 }, (error) => {
@@ -479,11 +482,7 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
         });
     });
 
-    if (port.startsWith('ws:')) {
-        wsQueue.run(rmOp);
-    } else {
-        rmOp();
-    }
+    wsQueue.run(rmOp);
 }
 
 /**
@@ -522,34 +521,10 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
     const venvPython = getVenvPythonPath(venvFolder);
     const scriptPath = pathMod.join(__dirname, 'mpremotesubpro.py');
 
-    let cmd;
-    if (port.startsWith('ws:')) {
-        // WS ports: mpremote has no WebSocket transport — use mpremotesubpro.py rm --recursive
-        cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFolderPath}" --recursive`;
-    } else {
-        // Serial: write recursive-delete script to temp file to avoid shell quoting issues
-        const code = [
-            'import os',
-            'def _rm(p):',
-            '    try:',
-            '        for e in os.listdir(p):',
-            '            _rm(p + "/" + e)',
-            '        os.rmdir(p)',
-            '    except OSError:',
-            '        os.remove(p)',
-            `_rm(${JSON.stringify(deviceFolderPath)})`,
-            "print('ok')"
-        ].join('\n');
-        const tmpFile = pathMod.join(os.tmpdir(), 'mps_rmtree.py');
-        fs.writeFileSync(tmpFile, code, 'utf8');
-        cmd = `"${venvPython}" -m mpremote connect ${port} run "${tmpFile}"`;
-    }
+    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFolderPath}" --recursive`;
 
     const rmTreeOp = () => new Promise((resolve) => {
         exec(cmd, { timeout: 30000 }, (error, _stdout, stderr) => {
-            if (!port.startsWith('ws:')) {
-                try { fs.unlinkSync(pathMod.join(os.tmpdir(), 'mps_rmtree.py')); } catch (_) {}
-            }
             if (error || (stderr && stderr.includes('Traceback'))) {
                 const msg = stderr || error?.message || 'Unknown error';
                 vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${msg}`);
@@ -561,11 +536,7 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
         });
     });
 
-    if (port.startsWith('ws:')) {
-        wsQueue.run(rmTreeOp);
-    } else {
-        rmTreeOp();
-    }
+    return wsQueue.run(rmTreeOp);
 }
 
 module.exports = {
