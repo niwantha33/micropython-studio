@@ -1,5 +1,5 @@
-# 🚀 MicroPython Studio - VS Code Extension
-### ✨ Supporting MicroPython, CircuitPython & XBee - Local Private AI Assistant ✨
+# MicroPython Studio - VS Code Extension
+### Supporting MicroPython, CircuitPython & XBee - Local Private AI Assistant
 
 > [!IMPORTANT]
 > **Major Migration (v0.9.0)**: We have transitioned from standard `mpremote` subprocesses to a custom, high-performance `mps` backend. This migration resolves critical serial port conflicts and "COM port busy" errors on dual-CDC devices like the Raspberry Pi Pico 2 W.

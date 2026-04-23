@@ -38,6 +38,28 @@ BOX_WIDTH = 71  # Adjust as needed, must be odd for symmetry
 ANSI_RE = re.compile(r'\x1b\[[^a-zA-Z]*[a-zA-Z]|\x1b\][^\x1b]*\x1b\\')
 
 
+
+def _is_pid_running(pid: int) -> bool:
+    """Check if a process ID is still active on the host system."""
+    if pid <= 0: return False
+    try:
+        if os.name == 'nt':
+            # Windows: use tasklist or OpenProcess
+            import ctypes
+            PROCESS_QUERY_INFORMATION = 0x0400
+            process_handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+            if process_handle:
+                ctypes.windll.kernel32.CloseHandle(process_handle)
+                return True
+            return False
+        else:
+            # Unix/macOS: use kill(0)
+            os.kill(pid, 0)
+            return True
+    except (OSError, AttributeError):
+        return False
+
+
 def parse_mpremote_output(raw: str) -> dict:
     """Extract TransportError and device output from mpremote failure."""
     result: dict[str, Any] = {"error": None, "device_output": None}
@@ -414,10 +436,13 @@ class SerialConnection:
     Provides a more robust 'enter_raw_repl' than mpremote in some cases.
     """
 
-    def __init__(self, port: str, baudrate: int = 115200) -> None:
+    def __init__(self, port, baudrate=115200, debug=False):
         self.port = port
         self.baudrate = baudrate
-        self.serial: 'Any' = None
+        self.serial = None
+        self.debug = debug
+        self.lock_path = None
+        self.dtr_active = False # Track if DTR was enabled during handshake
 
     @property
     def in_waiting_safe(self) -> int:
@@ -433,100 +458,172 @@ class SerialConnection:
 
     def connect(self):
         import serial
-        try:
-            # Creating serial object without port avoids automatic DTR/RTS assertions on connect
-            self.serial = serial.Serial(None, self.baudrate, timeout=1)
-            self.serial.port = self.port
-            self.serial.dtr = False
-            self.serial.rts = False
-            self.serial.open()
-        except serial.SerialException as e:
-            if "Access is denied" in str(e) or "PermissionError" in str(e):
+        import time
+        import os
+        import tempfile
+        
+        # ── Global File Lock ─────────────────────────────────────────────────
+        lock_name = f"mps_lock_{self.port.replace('/', '_').replace('\\', '_').replace(':', '_')}.lock"
+        self.lock_path = os.path.join(tempfile.gettempdir(), lock_name)
+        
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            try:
+                # Exclusive creation as lock
+                fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                break
+            except FileExistsError:
+                # Check for stale lock
+                try:
+                    with open(self.lock_path, 'r') as f:
+                        old_pid = int(f.read().strip())
+                    if not _is_pid_running(old_pid):
+                        try: os.remove(self.lock_path)
+                        except: pass
+                except: pass
+                
+                if time.time() % 1.0 < 0.1: # Throttle message
+                    sys.stderr.write(f"{CLR_DIM} [LOCK] Waiting for port {self.port} to be released...{CLR_RESET}\r")
+                time.sleep(0.2)
+        
+        # ── Serial Connection ────────────────────────────────────────────────
+        last_err = None
+        for attempt in range(15):
+            try:
+                if self.debug: sys.stderr.write(f"{CLR_DIM}[DEBUG] Opening {self.port} (Attempt {attempt})...{CLR_RESET}\n")
+                
+                # Adaptive DTR Strategy:
+                # Start with DTR=False (safer for MicroPython/ESP32 reboots)
+                self.serial = serial.Serial(
+                    port=self.port,
+                    baudrate=self.baudrate,
+                    timeout=1.5,
+                    write_timeout=2.0,
+                    dsrdtr=False,
+                    rtscts=False,
+                    exclusive=True
+                )
+                self.serial.dtr = False
+                self.serial.rts = False
+                return # Success!
+            except serial.SerialException as e:
+                last_err = e
+                if "Access is denied" in str(e) or "PermissionError" in str(e):
+                    if attempt < 14:
+                        time.sleep(0.5)
+                        continue
                 raise Exception(f"Port {self.port} is BUSY. Please close any other terminal (like the shell) and try again.")
-            raise Exception(f"Could not open port {self.port}: {e}")
-        except Exception as e:
-            raise Exception(f"Serial connection error on {self.port}: {e}")
+            except Exception as e:
+                raise Exception(f"Serial connection error on {self.port}: {e}")
+        
+        if last_err:
+            raise Exception(f"Could not open port {self.port} after 15 attempts: {last_err}")
 
     def close(self):
         if self.serial:
             self.serial.close()
+        # Release the global lock
+        if hasattr(self, 'lock_path'):
+            try:
+                import os
+                if os.path.exists(self.lock_path):
+                    os.remove(self.lock_path)
+            except:
+                pass
 
     def _drain(self):
         """Consume all pending bytes aggressively."""
-        deadline = time.time() + 0.3
+        deadline = time.time() + 0.5
         while time.time() < deadline:
             wait = self.in_waiting_safe
             if wait > 0:
                 self.serial.read(wait)
-                deadline = time.time() + 0.1  # reset deadline if data still arriving
+                deadline = time.time() + 0.2  # Keep draining if data is flowing
             else:
-                # Try reading one byte just in case in_waiting is flaky
-                if self.serial.read(1):
-                    deadline = time.time() + 0.1
-                else:
-                    time.sleep(0.01)
+                time.sleep(0.05)
+                # If we've had no data for 0.1s, we're likely done
+                if time.time() > (deadline - 0.3):
+                    break
 
     def enter_raw_repl(self, soft_reset=True):
         """Aggressively enter raw REPL mode with firmware-aware synchronization."""
         # 1. Break any running code with multiple interrupts
-        self.serial.write(b'\r\x03\x03\x03\x03\x03')
-        time.sleep(0.4) 
+        self.serial.write(b'\r\x03\x03')
+        time.sleep(0.3) 
 
         if soft_reset:
             # 2. Trigger soft reboot
             self.serial.write(b'\x04')
 
             # 3. Wait for the reboot confirmation
-            deadline = time.time() + 8.0
+            deadline = time.time() + 6.0
             rebooted = False
             data = b''
             while time.time() < deadline:
-                if self.in_waiting_safe:
-                    data += self.serial.read(self.in_waiting_safe)
+                wait = self.in_waiting_safe
+                if wait > 0:
+                    data += self.serial.read(wait)
                     clean_data = _strip_ansi(data)
-                    if b'soft reboot' in clean_data or b'MPY: soft reboot' in clean_data:
+                    if b'soft reboot' in clean_data or b'MPY: soft reboot' in clean_data or b'CircuitPython' in clean_data:
                         rebooted = True
                         break
                 else:
-                    b = self.serial.read(1)
-                    if b:
-                        data += b
-                        clean_data = _strip_ansi(data)
-                        if b'soft reboot' in clean_data or b'MPY: soft reboot' in clean_data:
-                            rebooted = True
-                            break
-                    else:
-                        time.sleep(0.1)
+                    time.sleep(0.1)
 
             if not rebooted:
-                time.sleep(0.5)
+                time.sleep(0.3)
 
             # 4. Break again to catch the board before main.py takes over
-            self.serial.write(b'\x03\x03')
+            self.serial.write(b'\r\x03\x03')
 
         self._drain()
 
         # 5. Enter raw REPL mode (Ctrl-A)
-        self.serial.write(b'\x01')
-        time.sleep(0.3)
+        # Attempt 0: Standard Fast Sync (MicroPython preferred, DTR=False)
+        # Attempt 1-2: Deep Sync Fallback (CircuitPython/RP2350 preferred, DTR=True)
+        has_seen_data = False
+        for attempt in range(3):
+            if attempt > 0:
+                # 💡 Adaptive DTR: If we haven't seen any data yet, the board 
+                # might be an RP2350/Pico 2 that requires DTR to be High.
+                if not has_seen_data and self.serial:
+                    if self.debug: sys.stderr.write(f"{CLR_DIM}[DEBUG] No response seen. Enabling DTR...{CLR_RESET}\n")
+                    self.serial.dtr = True
+                    self.dtr_active = True
+                
+                # Deep Sync Kick: extra interrupts for stubborn boards
+                if self.debug: sys.stderr.write(f"{CLR_DIM}[DEBUG] Sync Attempt {attempt}...{CLR_RESET}\n")
+                self._write_trace(b'\r\x03\x03\x03\x03\x03')
+                time.sleep(0.5)
+                self._drain()
+            
+            self._write_trace(b'\x01')
+            time.sleep(0.5 if attempt == 0 else 0.8)
 
-        # 6. Read until we see the prompt '>'
-        data = b''
-        deadline = time.time() + 6.0
-        while time.time() < deadline:
-            if self.in_waiting_safe:
-                data += self.serial.read(self.in_waiting_safe)
-                if b'>' in _strip_ansi(data):
-                    return True
-            else:
-                b = self.serial.read(1)
-                if b:
-                    data += b
+            # 6. Read until we see the prompt '>'
+            data = b''
+            deadline = time.time() + (3.0 if attempt == 0 else 6.0)
+            while time.time() < deadline:
+                wait = self.in_waiting_safe
+                if wait > 0:
+                    has_seen_data = True
+                    chunk = self.serial.read(wait)
+                    if self.debug: sys.stderr.write(f"{CLR_DIM}[RECV] {chunk!r}{CLR_RESET}\n")
+                    data += chunk
                     if b'>' in _strip_ansi(data):
                         return True
                 else:
                     time.sleep(0.1)
+        
         return False
+
+    def _write_trace(self, data):
+        """Helper to write data and log it if debug is enabled."""
+        if self.debug:
+            sys.stderr.write(f"{CLR_DIM}[SENT] {data!r}{CLR_RESET}\n")
+        self.serial.write(data)
 
     def _exec_raw_no_exit(self, code: Union[str, bytes], timeout=30, stream_stdout=True):
         """Execute code on device and return (rc, stdout_bytes, stderr_bytes), but STAY in raw REPL mode."""
@@ -630,6 +727,9 @@ class SerialConnection:
                 raise Exception("Could not enter raw REPL via soft reset")
         else:
             if not self.enter_raw_repl(soft_reset=False):
+                # 💡 Fallback: Wait a bit and try with soft reset. 
+                # This helps if the board is stuck in an auto-reload loop.
+                time.sleep(1.0)
                 if not self.enter_raw_repl(soft_reset=True):
                     raise Exception("Could not enter raw REPL via serial")
 
@@ -1169,7 +1269,7 @@ def run_mpremote(python_exe, args_list, timeout=60):
                         print(line, end="")
                         output_lines.append(line)
                         print(
-                            "💡 WebREPL tip: only one connection is allowed at a time.\n"
+                            " [INFO] WebREPL tip: only one connection is allowed at a time.\n"
                             "   Close any open browser WebREPL tab (micropython.org/webrepl)\n"
                             "   and make sure no other mpremote session is running.",
                             file=sys.stderr
@@ -1186,12 +1286,12 @@ def run_mpremote(python_exe, args_list, timeout=60):
             except KeyboardInterrupt:
                 if proc.poll() is not None:
                     break
-                print("\n\n👋 Ctrl+C detected. Stopping...", file=sys.stderr)
+                print("\n\n [INFO] Ctrl+C detected. Stopping...", file=sys.stderr)
                 break
 
         # Terminate the process gracefully
         if proc.poll() is None:
-            print("🔁 Sending soft reset (Ctrl+D) to device...", file=sys.stderr)
+            print(" [RESET] Sending soft reset (Ctrl+D) to device...", file=sys.stderr)
             proc.terminate()
             try:
                 proc.wait(timeout=3)
@@ -1217,7 +1317,7 @@ def run_mpremote(python_exe, args_list, timeout=60):
         # return subprocess.CompletedProcess(cmd, proc.returncode or 0, captured, "")
 
     except KeyboardInterrupt:
-        print("\n\n👋 Script manually interrupted. Exiting cleanly.", file=sys.stderr)
+        print("\n\n [INFO] Script manually interrupted. Exiting cleanly.", file=sys.stderr)
         if proc:
             proc.terminate()
             try:
@@ -1226,7 +1326,7 @@ def run_mpremote(python_exe, args_list, timeout=60):
                 proc.kill()
         return subprocess.CompletedProcess(cmd, 0, "", "")
     except Exception as e:
-        print(f"\n💥 Failed to run: {e}", file=sys.stderr)
+        print(f"\n [ERROR] Failed to run: {e}", file=sys.stderr)
         return subprocess.CompletedProcess(cmd, 1, "", str(e))
 # ----------------------------
 # Command: run (mount folder + run full file path)
@@ -1236,7 +1336,7 @@ def run_mpremote(python_exe, args_list, timeout=60):
 def cmd_run(python_exe, port, file_path, folder=None):
     file_path = Path(file_path).resolve()
     if not file_path.is_file():
-        print(f"❌ File not found: {file_path}", file=sys.stderr)
+        print(f" [ERROR] File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
 
     # WebSocket (ws:) ports don't support mount — fall back to run_mcu automatically
@@ -1252,20 +1352,20 @@ def cmd_run(python_exe, port, file_path, folder=None):
     folder = Path(folder).resolve()
 
     if not folder.is_dir():
-        print(f"❌ Mount folder not found: {folder}", file=sys.stderr)
+        print(f" [ERROR] Mount folder not found: {folder}", file=sys.stderr)
         sys.exit(1)
 
     _print_ui_header(port, folder, file_path)
 
-    # Pre-interrupt: send Ctrl+C to stop any running code on the device.
-    # This prevents "could not enter raw repl" when the device is busy.
-    _serial_pre_interrupt(python_exe, port, hard=False)
-    time.sleep(1.0)
-    # 🔥 Correct command: mount "folder" run "full/file/path"
+    # Pre-interrupt: Use light mode for mpremote to avoid Raw REPL collisions.
+    _serial_pre_interrupt(python_exe, port, hard=False, light=True)
+    time.sleep(0.8)
+    # 🔥 Strategy: First attempt uses standard connect (with reset) for stability.
+    # Retry attempt uses 'resume' after a hardware reset.
     args = [
-        'connect', port, 'resume',
+        'connect', port, 
         'mount', str(folder),
-        'run', str(file_path)  # ← Full path to the .py file
+        'run', str(file_path)
     ]
 
     result = run_mpremote(python_exe, args, timeout=30)
@@ -1275,12 +1375,13 @@ def cmd_run(python_exe, port, file_path, folder=None):
         
     # Auto-retry once on raw REPL failure (device may need an extra hard kick)
     if result.returncode != 0:
-        print("💡 First attempt failed. Trying a hardware reset/kick...",
+        print(" [INFO] First attempt failed. Trying a hardware reset/kick...",
               file=sys.stderr)
-        _serial_pre_interrupt(python_exe, port, hard=True)
+        _serial_pre_interrupt(python_exe, port, hard=True, light=False)
         time.sleep(1.0)
-        print("🔄 Retrying with mpremote...", file=sys.stderr)
-        result = run_mpremote(python_exe, args, timeout=30)
+        print(" [RETRY] Retrying with mpremote (resume)...", file=sys.stderr)
+        retry_args = ['connect', port, 'resume', 'mount', str(folder), 'run', str(file_path)]
+        result = run_mpremote(python_exe, retry_args, timeout=30)
 
     # Final fallback: if mpremote still fails, use our robust SerialConnection
     if result.returncode != 0:
@@ -1293,7 +1394,7 @@ def cmd_run(python_exe, port, file_path, folder=None):
             rc = conn.exec_code(code)
             sys.exit(rc)
         except Exception as e:
-            print(f"❌ Robust fallback also failed: {e}", file=sys.stderr)
+            print(f" [ERROR] Robust fallback also failed: {e}", file=sys.stderr)
             sys.exit(1)
         finally:
             conn.close()
@@ -1301,12 +1402,13 @@ def cmd_run(python_exe, port, file_path, folder=None):
     sys.exit(result.returncode)
 
 
-def _serial_pre_interrupt(python_exe, port, hard=False):
+def _serial_pre_interrupt(python_exe, port, hard=False, light=False):
     """Fast pre-interrupt using pyserial. Falls back to mpremote if serial is unavailable.
     If hard=True, toggles DTR/RTS to trigger a hardware reset on ESP32/8266.
+    If light=True, just sends interrupts without a full raw REPL handshake (prevents mpremote collision).
     """
     if _is_ws_port(port):
-        return
+        return False
 
     try:
         import serial
@@ -1321,9 +1423,7 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
             s.open()
 
             # Hard Reset Sequence (ESP32/ESP8266 logic)
-            # RTS pulls EN low (Reset), DTR pulls GPIO0 low (Boot)
-            print(
-                f"{CLR_YELLOW} [RESET] Performing Hardware Reset (DTR/RTS) on {port}...{CLR_RESET}", file=sys.stderr)
+            print(f" [RESET] Performing Hardware Reset (DTR/RTS) on {port}...", file=sys.stderr)
             s.setRTS(True)
             s.setDTR(False)
             time.sleep(0.1)
@@ -1331,32 +1431,32 @@ def _serial_pre_interrupt(python_exe, port, hard=False):
             time.sleep(0.5)  # Wait for boot
             s.close()
 
-        # Ultimate Kick: Deliberate Sync without soft-rebooting
-        print(f"{CLR_DIM} [SYNC] Synchronizing with device...{CLR_RESET}",
-              file=sys.stderr)
+        if light:
+            # Light Kick: Ensure we are at a friendly prompt '>>>'
+            s = serial.Serial(port, 115200, timeout=0.5)
+            s.dtr = False
+            s.rts = False
+            # Break everything and force friendly REPL
+            s.write(b'\r\x03\x03\x02\r') 
+            time.sleep(0.3)
+            # Drain residual output
+            s.read_all()
+            s.close()
+            return False
 
+        # Ultimate Kick: Deliberate Sync without soft-rebooting
+        print(f" [SYNC] Synchronizing with device...", file=sys.stderr)
         conn = SerialConnection(port)
         conn.connect()
-        # Strictly breaks loop and enters raw REPL without triggering a soft reboot
+        is_active = False
         if conn.enter_raw_repl(soft_reset=False):
-            # Exit raw REPL gracefully to friendly REPL so mpremote isn't confused
-            conn.serial.write(b'\x02')
+            is_active = conn.dtr_active
+            conn.serial.write(b'\x02') # Exit to friendly REPL
             time.sleep(0.1)
         conn.close()
-        return
-    except Exception as e:
-        # If pyserial fails (e.g. port already open by another tool),
-        # mpremote will likely fail too, but we try its polite method as fallback.
-        pass
-
-    try:
-        subprocess.run(
-            [python_exe, '-m', 'mpremote', 'connect', port, 'exec', 'print()'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL, timeout=2
-        )
+        return is_active
     except KeyboardInterrupt:
-        print("\n\n👋 Script manually interrupted. Exiting cleanly.", file=sys.stderr)
+        print("\n\n [INFO] Script manually interrupted. Exiting cleanly.", file=sys.stderr)
         sys.exit(0)
     except Exception:
         pass  # best-effort — device may not respond
@@ -1395,14 +1495,16 @@ def cmd_run_mcu(python_exe: str, port: str, file_path: str, soft_reset: bool = T
 
     # Serial: Execute natively using pure PySerial
     sys.stderr.write(f"{CLR_DIM} [EXEC] Executing directly via pure serial...{CLR_RESET}\n")
-    conn = SerialConnection(port)
+    # Check for debug flag in environment or common args
+    debug_mode = os.environ.get('MPS_DEBUG') == '1'
+    conn = SerialConnection(port, debug=debug_mode)
     try:
         conn.connect()
         code = Path(file_path).read_bytes()
         rc, stdout, stderr = conn.exec_code(code, soft_reset=soft_reset, stream_stdout=True)
         sys.exit(rc)
     except Exception as e:
-        sys.stderr.write(f"❌ Pure serial execution failed: {e}\n")
+        sys.stderr.write(f" [ERROR] Pure serial execution failed: {e}\n")
         sys.exit(1)
     finally:
         conn.close()
@@ -1416,10 +1518,10 @@ def cmd_run_mcu(python_exe: str, port: str, file_path: str, soft_reset: bool = T
 def cmd_mount(python_exe, port, folder):
     folder = Path(folder).resolve()
     if not folder.is_dir():
-        print(f"❌ Folder not found: {folder}", file=sys.stderr)
+        print(f" [ERROR] Folder not found: {folder}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"📁 Mounting {folder} to /remote...", file=sys.stderr)
+    print(f" [UPLOAD] Mounting {folder} to /remote...", file=sys.stderr)
     args = [
         'connect', port,
         'mount', str(folder),
@@ -1808,21 +1910,22 @@ def cmd_hard_reset(python_exe, port):
 # ----------------------------
 def cmd_shell(python_exe, port):
     """Start an interactive Miniterem session via pure serial, without resetting the board."""
-    if _is_ws_port(port):
-        print("❌ Shell is not supported over WebREPL yet.", file=sys.stderr)
-        sys.exit(1)
-        
-    print(f"{CLR_DIM}⚡ Syncing with device for interactive shell...{CLR_RESET}", file=sys.stderr)
-    _serial_pre_interrupt(python_exe, port, hard=False)
+    print(f" [SYNC] Syncing with device for interactive shell...", file=sys.stderr)
+    dtr_required = _serial_pre_interrupt(python_exe, port, hard=False)
+    # 💡 Safety delay: Give Windows time to release the port after sync
+    time.sleep(0.5)
     
-    print(f"✅ Connected to MicroPython at {port}")
+    print(f" [SUCCESS] Connected to MicroPython at {port}")
     print("Use Ctrl-] or Ctrl-x to exit this shell")
     
-    # Hand over to miniterm, strictly configuring DTR=0 to prevent reboots
+    # Hand over to miniterm.
+    # 💡 Adaptive DTR: If the sync required DTR, we enable it for miniterm.
+    dtr_val = '1' if dtr_required else '0'
+    
     import subprocess as _sp
     sys.exit(_sp.call([
         python_exe, '-m', 'serial.tools.miniterm',
-        port, '115200', '--dtr=0', '--rts=0'
+        port, '115200', f'--dtr={dtr_val}', '--rts=0'
     ]))
 
 # ----------------------------
@@ -2227,5 +2330,5 @@ if __name__ == '__main__':
         main()
     except KeyboardInterrupt:
         import sys
-        print("\n\n👋 Script manually interrupted. Exiting cleanly.", file=sys.stderr)
+        print("\n\n [INFO] Script manually interrupted. Exiting cleanly.", file=sys.stderr)
         sys.exit(0)

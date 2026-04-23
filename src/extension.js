@@ -61,9 +61,9 @@ async function _buildRunPortOptions() {
 
     const items = [];
     if (savedCom) {
-        items.push({ label: `$(plug) USB — ${savedCom}`, port: savedCom });
+        items.push({ label: `[OK] USB — ${savedCom}`, port: savedCom });
     }
-    items.push({ label: `$(remote) Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
+    items.push({ label: `[OK] Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
     return items;
 }
 
@@ -73,6 +73,14 @@ async function _buildRunPortOptions() {
  * Get or create the MicroPython terminal.
  * Reuses existing terminal if it's still alive.
  */
+function getMpremoteTerminal() {
+    let terminal = vscode.window.terminals.find(t => t.name === 'MicroPython Studio');
+    if (!terminal) {
+        terminal = vscode.window.createTerminal('MicroPython Studio');
+    }
+    return terminal;
+}
+
 /**
  * Run a Python subprocess (no shell) and show output in an OutputChannel.
  * Avoids Git Bash / MSYS2 shell quoting issues entirely.
@@ -80,6 +88,25 @@ async function _buildRunPortOptions() {
  * @param {string[]} args - Arguments (no quoting needed)
  * @param {((code:number|null)=>void)} [onComplete] - Called when process exits
  */
+function runPythonProcess(exe, args, onComplete) {
+    const channel = vscode.window.createOutputChannel('MicroPython Studio');
+    channel.show(true);
+    channel.appendLine('─'.repeat(50));
+
+    let fullOutput = '';
+    const proc = spawn(exe, args);
+    proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+    proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+    proc.on('close', code => {
+        _notifyAiOnError(fullOutput, args);
+        channel.appendLine("[SUCCESS] Task complete.");
+        if (onComplete) onComplete(code);
+    });
+    proc.on('error', err => {
+        channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
+    });
+}
+
 /**
  * Parse --port and --file from mps_backend.py args array for AI context.
  * @param {string[]} args
@@ -104,7 +131,7 @@ async function _notifyAiOnError(output, args) {
     if (!errorText || !aiAssistanceProvider) return;
 
     const action = await vscode.window.showWarningMessage(
-        '⚡ Device error detected. Investigate with AI?',
+        '[ERROR] Device error detected. Investigate with AI?',
         'Investigate', 'Dismiss'
     );
     if (action !== 'Investigate') return;
@@ -142,10 +169,11 @@ function runPythonProcess(exe, args, onComplete) {
     proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
     proc.on('close', code => {
         _notifyAiOnError(fullOutput, args);
+        channel.appendLine("[SUCCESS] Task complete.");
         if (onComplete) onComplete(code);
     });
     proc.on('error', err => {
-        channel.appendLine(`❌ Failed to start process: ${err.message}`);
+        channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
     });
 }
 
@@ -167,7 +195,7 @@ function _spawnAsync(exe, args) {
         proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
         proc.on('close', code => { _notifyAiOnError(fullOutput, args); resolve(code); });
         proc.on('error', err => {
-            channel.appendLine(`❌ Failed to start process: ${err.message}`);
+            channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
             resolve(null);
         });
     });
@@ -219,7 +247,7 @@ async function _runDownloadQueued(exe, baseArgs) {
             }
         });
         proc.stderr.on('data', d => channel.append(d.toString()));
-        proc.on('error', err => channel.appendLine(`❌ ${err.message}`));
+        proc.on('error', err => channel.appendLine(`[ERROR] ${err.message}`));
         proc.on('close', c => resolve({ code: c, stdoutBuf: buf }));
     }));
 
@@ -234,10 +262,10 @@ async function _runDownloadQueued(exe, baseArgs) {
     }
 
     const pick = await vscode.window.showQuickPick([
-        { label: '$(sync)       Overwrite all', id: 'overwrite' },
-        { label: '$(file-add)   Keep (Rename)', id: 'rename' },
-        { label: '$(debug-step-over) Skip existing', id: 'skip' },
-        { label: '$(list-tree)  Choose files', id: 'choose' }
+        { label: '[OK] Overwrite all', id: 'overwrite' },
+        { label: '[OK] Keep (Rename)', id: 'rename' },
+        { label: '[OK] Skip existing', id: 'skip' },
+        { label: '[OK] Choose files', id: 'choose' }
     ], { placeHolder: `${conflicts.length} file(s) already exist locally. What should we do?` });
 
     if (!pick) return;
@@ -296,7 +324,7 @@ function checkPythonAvailability() {
             exec('python3 --version', (err2) => {
                 if (err2) {
                     vscode.window.showWarningMessage(
-                        'Python not found in PATH. MicroPython Studio requires Python 3.7+.'
+                        '[ERROR] Python not found in PATH. MicroPython Studio requires Python 3.7+.'
                     );
                 }
             });
@@ -320,12 +348,12 @@ function updateDeviceStatusBar() {
 
     if (gRemoteDevicePort) {
         const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
-        const portLabel = wsMatch ? `📡 ${wsMatch[1]}` : gRemoteDevicePort;
-        deviceStatusBarItem.text = `$(plug) ${portLabel}`;
+        const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : gRemoteDevicePort;
+        deviceStatusBarItem.text = `[OK] ${portLabel}`;
         deviceStatusBarItem.tooltip = `Connected to ${gRemoteDevicePort}`;
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
-        deviceStatusBarItem.text = '$(plug) No Device';
+        deviceStatusBarItem.text = '[OK] No Device';
         deviceStatusBarItem.tooltip = 'No device connected — click Refresh Device Files';
         deviceStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     }
@@ -497,7 +525,7 @@ function activate(context) {
         const fileName = path.basename(uri.fsPath);
         if (fileName === 'Modelfile-mpy' || fileName === 'Modelfile-cpy') {
             if (aiAssistanceProvider) {
-                vscode.window.showInformationMessage(`AI Modelfile updated (${fileName}). Reinstalling models...`);
+                vscode.window.showInformationMessage(`[OK] AI Modelfile updated (${fileName}). Reinstalling models...`);
                 // Bump the version dynamically or just let it reinstall
                 await aiAssistanceProvider._installModel(true);
             }
@@ -644,7 +672,8 @@ function activate(context) {
                     `--python "${venvPython}"`,
                     `run_mcu`,
                     `--port "${runPort}"`,
-                    `--file "${filePath}"`
+                    `--file "${filePath}"`,
+                    `--no-reset`
                 ].join(' ');
                 await sendCleanCommand(terminal, cpCmd);          
                 return;
@@ -704,7 +733,7 @@ function activate(context) {
             const terminal = getMpremoteTerminal();
             terminal.sendText('\x03', false); // Ctrl+C — interrupts the running script
             terminal.show();
-            vscode.window.showInformationMessage('Interrupt sent to device (Ctrl+C).');
+            vscode.window.showInformationMessage('[OK] Interrupt sent to device (Ctrl+C).');
         })
     );
 
@@ -723,14 +752,14 @@ function activate(context) {
             for (const f of localFiles) {
                 try {
                     const dest = copyToCircuitPyDrive(drive, f, localRoot);
-                    outputChannel.appendLine(`📤 ${path.relative(localRoot, f)} → ${dest}`);
+                    outputChannel.appendLine(`[UPLOAD] ${path.relative(localRoot, f)} → ${dest}`);
                     copied++;
                 } catch (err) {
-                    outputChannel.appendLine(`❌ Failed to copy ${f}: ${err.message}`);
+                    outputChannel.appendLine(`[ERROR] Failed to copy ${f}: ${err.message}`);
                 }
             }
             outputChannel.show(true);
-            outputChannel.appendLine(`✅ Copied ${copied} file(s) to ${boardLabel} (${drive})`);
+            outputChannel.appendLine(`[SUCCESS] Copied ${copied} file(s) to ${boardLabel} (${drive})`);
             return;
         }
 
@@ -754,10 +783,10 @@ function activate(context) {
                 if (remoteDir && remoteDir !== '/') await makeDir(wwIp, wwPass, remoteDir, wwPort);
                 const content = fsSync.readFileSync(f);
                 const success = await putFile(wwIp, wwPass, remotePath, content, wwPort);
-                outputChannel.appendLine(success ? `📤 ${remotePath}` : `❌ Failed: ${remotePath}`);
+                outputChannel.appendLine(success ? `[UPLOAD] ${remotePath}` : `[ERROR] Failed: ${remotePath}`);
                 if (success) ok++;
             }
-            outputChannel.appendLine(`✅ Web Workflow upload: ${ok}/${localFiles.length} file(s)`);
+            outputChannel.appendLine(`[SUCCESS] Web Workflow upload: ${ok}/${localFiles.length} file(s)`);
             return;
         }
 
@@ -1018,12 +1047,13 @@ function activate(context) {
     );
 
     // Update Device Port (placeholder — coming soon)
+    // Update Device Port (placeholder - coming soon)
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.updateDevicePort', async () => {
             const port = await vscode.window.showInputBox({
                 prompt: 'Enter the device port manually',
                 placeHolder: 'e.g. COM3, /dev/ttyUSB0',
-                value: gRemoteDevicePort || ''
+                value: gRemoteDevicePort || '-'
             });
             if (port) {
                 gRemoteDevicePort = port;
@@ -1111,7 +1141,7 @@ function activate(context) {
                     if (autoSync) {
                         // Auto-sync enabled — do it silently
                         const result = syncFromCircuitPyDrive(drive, localDest);
-                        outputChannel.appendLine(`🔄 Auto-sync: ${result.copied} file(s) copied from ${drive} to local.`);
+                        outputChannel.appendLine(`[SUCCESS] Auto-sync: ${result.copied} file(s) copied from ${drive} to local.`);
                         outputChannel.show(true);
                     } else {
                         // Offer sync via notification
@@ -1123,14 +1153,14 @@ function activate(context) {
                         );
                         if (choice === 'Sync Now') {
                             const result = syncFromCircuitPyDrive(drive, localDest);
-                            outputChannel.appendLine(`🔄 Sync: ${result.copied} file(s) copied from ${drive} to local.`);
-                            if (result.errors.length) result.errors.forEach(e => outputChannel.appendLine(`❌ ${e}`));
+                            outputChannel.appendLine(`[SUCCESS] Sync: ${result.copied} file(s) copied from ${drive} to local.`);
+                            if (result.errors.length) result.errors.forEach(e => outputChannel.appendLine(`[ERROR] ${e}`));
                             outputChannel.show(true);
                         } else if (choice === 'Enable Auto-Sync') {
                             await vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
                                 .update('autoSyncAfterInstall', true, vscode.ConfigurationTarget.Global);
                             const result = syncFromCircuitPyDrive(drive, localDest);
-                            outputChannel.appendLine(`🔄 Sync: ${result.copied} file(s) copied. Auto-sync enabled for future installs.`);
+                            outputChannel.appendLine(`[SUCCESS] Sync: ${result.copied} file(s) copied. Auto-sync enabled for future installs.`);
                             outputChannel.show(true);
                         }
                     }
