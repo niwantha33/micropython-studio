@@ -133,16 +133,35 @@ def print_execution_header(folder_name, port, file_name):
 # print_execution_header("MyProject", "COM3", "main.py")
 
 
+# ---------------------------------------------------------------------------
+# Device-side Recursive Directory Helper
+# ---------------------------------------------------------------------------
+
+def _mkdir_p_code(remote_dir: str) -> str:
+    """Generate MicroPython code for recursive directory creation (mkdir -p)."""
+    return f"""
+import os
+def _mkdir_p(p):
+    parts = p.strip('/').split('/')
+    acc = ''
+    for part in parts:
+        acc += '/' + part
+        try: os.mkdir(acc)
+        except: pass
+_mkdir_p({remote_dir!r})
+"""
+
 # ----------------------------
 # Command: mkdir
 # ----------------------------
 
 def cmd_mkdir(python_exe: str, port: str, path: str):
-    """Create a directory on the device."""
+    """Create a directory on the device recursively (mkdir -p)."""
     conn = SerialConnection(port)
     try:
         conn.connect()
-        code = f"import os\ntry: os.mkdir({path!r})\nexcept: pass"
+        # Use recursive logic
+        code = _mkdir_p_code(path)
         conn.exec_code(code, stream_stdout=False)
         sys.exit(0)
     except Exception as e:
@@ -767,35 +786,41 @@ l()
                 raise Exception(f"Could not enter raw REPL for {dest}")
 
         try:
+            # 1. Ensure parent directory exists
+            parent_dir = str(Path(dest).parent).replace('\\', '/')
+            if parent_dir != '/':
+                self._exec_raw_no_exit(_mkdir_p_code(parent_dir))
+
             # Strategy A: Small files (< 512 bytes)
             if len(data) <= 512:
                 hex_str = binascii.hexlify(data).decode()
                 one_shot_code = (
-                    f"import binascii\n"
+                    f"import binascii, os, time\n"
+                    f"try: os.remove({dest!r})\n"
+                    f"except: pass\n"
+                    f"time.sleep(0.01)\n"
                     f"try:\n"
-                    f" import os\n"
-                    f" try: os.remove({dest!r})\n"
-                    f" except: pass\n"
-                    f"except: pass\n"
-                    f"try: import time; time.sleep(0.1)\n"
-                    f"except: pass\n"
-                    f"f=open({dest!r},'wb')\n"
-                    f"f.write(binascii.unhexlify({hex_str!r}))\n"
-                    f"f.close()"
+                    f" _f=open({dest!r},'wb')\n"
+                    f" _f.write(binascii.unhexlify({hex_str!r}))\n"
+                    f" _f.close()\n"
+                    f"except Exception as e: print('FAIL:', e)"
                 )
-                rc, _, _ = self._exec_raw_no_exit(one_shot_code)
+                rc, stdout, _ = self._exec_raw_no_exit(one_shot_code)
+                if b'FAIL:' in stdout: return 1
                 return rc
 
-            # Strategy B: Chunked upload for larger files
             # Initial cleanup and open
             setup_code = (
                 f"import binascii, os, time\n"
                 f"try: os.remove({dest!r})\n"
                 f"except: pass\n"
-                f"time.sleep(0.1)\n"
+                f"time.sleep(0.01)\n"
                 f"_f=open({dest!r},'wb')"
             )
-            self._exec_raw_no_exit(setup_code)
+            rc, _, _ = self._exec_raw_no_exit(setup_code)
+            if rc != 0:
+                sys.stderr.write(f"   [ERROR] Failed to open {dest} for writing. Aborting.\n")
+                return 1
 
             chunk_size = 1024  # 512 bytes of binary
             hex_data = binascii.hexlify(data).decode()
@@ -803,7 +828,8 @@ l()
             
             for i in range(total_chunks):
                 chunk = hex_data[i*chunk_size : (i+1)*chunk_size]
-                chunk_code = f"_f.write(binascii.unhexlify({chunk!r}))"
+                # Robust check: only write if handle _f exists
+                chunk_code = f"if '_f' in globals(): _f.write(binascii.unhexlify({chunk!r}))"
                 self._exec_raw_no_exit(chunk_code)
                 
                 # Progress bar for files > 10KB
@@ -814,7 +840,7 @@ l()
                     sys.stderr.flush()
 
             # Finalize
-            self._exec_raw_no_exit("_f.close()")
+            self._exec_raw_no_exit("if '_f' in globals(): _f.close()")
             sys.stderr.write(f"\n   Upload of {source_path.name} finalized.\n")
             return 0
         finally:
@@ -826,11 +852,14 @@ l()
         files = sorted(f for f in source_dir.rglob('*') if f.is_file())
         sys.stderr.write(f"DEBUG: Scanning {source_dir} -> Found {len(files)} files to upload to {remote_dir}\n")
         
-        # 1. Create directories first
-        dirs = sorted(set(
-            str(f.relative_to(source_dir).parent).replace('\\', '/')
-            for f in files if f.relative_to(source_dir).parent != Path('.')
-        ))
+        # 1. Create directories first (including all intermediate parents)
+        all_dirs = set()
+        for f in files:
+            rel_parts = f.relative_to(source_dir).parent.parts
+            for i in range(1, len(rel_parts) + 1):
+                all_dirs.add('/'.join(rel_parts[:i]))
+        
+        dirs = sorted(list(all_dirs))
         
         # Enter raw REPL once
         sys.stderr.write("DEBUG: Entering raw REPL for bulk upload...\n")
@@ -840,15 +869,27 @@ l()
                 raise Exception(f"Could not enter raw REPL for directory upload")
 
         try:
-            # Create base remote_dir if it's not root
+            # 1. Create all required directories in one go
+            all_target_dirs = []
             if remote_dir != '/':
-                sys.stderr.write(f"DEBUG: Ensuring directory {remote_dir} exists\n")
-                self._exec_raw_no_exit(f"import os\ntry: os.mkdir({remote_dir!r})\nexcept: pass")
-            
+                all_target_dirs.append(remote_dir)
             for d in dirs:
-                full_remote_dir = f"{remote_dir}/{d}"
-                sys.stderr.write(f"DEBUG: Creating subdirectory {full_remote_dir}\n")
-                self._exec_raw_no_exit(f"import os\ntry: os.mkdir({full_remote_dir!r})\nexcept: pass")
+                all_target_dirs.append(f"{remote_dir.rstrip('/')}/{d}")
+            
+            if all_target_dirs:
+                sys.stderr.write(f"DEBUG: Ensuring {len(all_target_dirs)} directories exist on device...\n")
+                # Efficiently create all directories using a single script
+                # We use the recursive logic to be extra safe
+                dir_code = f"""
+import os
+for d in {all_target_dirs!r}:
+    p = ''
+    for part in d.strip('/').split('/'):
+        p += '/' + part
+        try: os.mkdir(p)
+        except: pass
+"""
+                self._exec_raw_no_exit(dir_code)
 
             # 2. Upload files
             for i, f in enumerate(files, 1):
@@ -873,10 +914,13 @@ l()
             f"import binascii, os, time\n"
             f"try: os.remove({dest!r})\n"
             f"except: pass\n"
-            f"time.sleep(0.01)\n"
+            f"time.sleep(0.005)\n"
             f"_f=open({dest!r},'wb')"
         )
-        self._exec_raw_no_exit(setup_code)
+        rc, _, _ = self._exec_raw_no_exit(setup_code)
+        if rc != 0:
+            sys.stderr.write(f"   [ERROR] Failed to open {dest} for writing. Aborting.\n")
+            return 1
 
         chunk_size = 1024
         hex_data = binascii.hexlify(data).decode()
@@ -884,9 +928,9 @@ l()
 
         for i in range(0, len(hex_data), chunk_size):
             chunk = hex_data[i:i+chunk_size]
-            self._exec_raw_no_exit(f"_f.write(binascii.unhexlify({chunk!r}))")
+            self._exec_raw_no_exit(f"if '_f' in globals(): _f.write(binascii.unhexlify({chunk!r}))")
         
-        self._exec_raw_no_exit("_f.close()")
+        self._exec_raw_no_exit("if '_f' in globals(): _f.close()")
 
     def get_file(self, remote_path: str, local_path: Path):
         """Download a file using hex-encoding via return buffer."""
@@ -943,10 +987,41 @@ class LocalTransport:
         # Used for checking existing files - always return mismatch to force download
         return b"mismatch"
 
+def _acquire_port_friendly(python_exe, port, retries=4):
+    """Robust port acquisition. Tries pre-interrupt with retries, gives friendly message on fail."""
+    if _is_ws_port(port):
+        return True
+    import time
+    last_err = None
+    for i in range(retries):
+        try:
+            _serial_pre_interrupt(python_exe, port, hard=False, light=True)
+            time.sleep(0.4)
+            return True
+        except Exception as e:
+            last_err = e
+            if i < retries - 1:
+                sys.stderr.write(f" [RETRY {i+1}/{retries}] Port busy, waiting...\n")
+                time.sleep(0.8)
+    sys.stderr.write(
+        f"\n [ERROR] Cannot access {port}.\n"
+        f"   Another program is using it. Try one of these:\n"
+        f"     1. Close the Device Dashboard panel\n"
+        f"     2. Close the WebREPL / Terminal tab connected to {port}\n"
+        f"     3. Close Thonny / PuTTY / other serial tools\n"
+        f"     4. Unplug + replug the board\n"
+        f"   (Last error: {last_err})\n"
+    )
+    return False
+
+
 def cmd_mip(python_exe: str, port: str, package: str, index: str = None):
     """Install a package on-device, falling back to PC-side download if needed."""
     sys.stderr.write(f"   Starting mip installation for '{package}' on {port}\n")
     sys.stderr.write(f"Installing '{package}' on device via mip...\n")
+    # Robust port acquisition — clears stale locks, retries on busy
+    if not _acquire_port_friendly(python_exe, port):
+        sys.exit(1)
     
     mip_code = f"""
 import sys, os
@@ -1357,9 +1432,9 @@ def cmd_run(python_exe, port, file_path, folder=None):
 
     _print_ui_header(port, folder, file_path)
 
-    # Pre-interrupt: Use light mode for mpremote to avoid Raw REPL collisions.
-    _serial_pre_interrupt(python_exe, port, hard=False, light=True)
-    time.sleep(0.8)
+    # Robust port acquisition — friendly message on port-busy.
+    if not _acquire_port_friendly(python_exe, port):
+        sys.exit(1)
     # 🔥 Strategy: First attempt uses standard connect (with reset) for stability.
     # Retry attempt uses 'resume' after a hardware reset.
     args = [
@@ -1918,15 +1993,86 @@ def cmd_shell(python_exe, port):
     print(f" [SUCCESS] Connected to MicroPython at {port}")
     print("Use Ctrl-] or Ctrl-x to exit this shell")
     
-    # Hand over to miniterm.
-    # 💡 Adaptive DTR: If the sync required DTR, we enable it for miniterm.
-    dtr_val = '1' if dtr_required else '0'
-    
-    import subprocess as _sp
-    sys.exit(_sp.call([
-        python_exe, '-m', 'serial.tools.miniterm',
-        port, '115200', f'--dtr={dtr_val}', '--rts=0'
-    ]))
+    # Custom pyserial shell with DEL->BS translation so Backspace works on
+    # Windows. Exit with Ctrl-] or Ctrl-X.
+    import serial as _ser
+    import threading
+    try:
+        s = _ser.Serial(port, 115200, timeout=0.05, write_timeout=1.0,
+                        dsrdtr=False, rtscts=False)
+        s.dtr = bool(dtr_required)
+        s.rts = False
+    except Exception as e:
+        print(f" [ERROR] Cannot open {port}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    stop = threading.Event()
+
+    def reader():
+        while not stop.is_set():
+            try:
+                data = s.read(256)
+            except Exception:
+                break
+            if data:
+                try:
+                    sys.stdout.buffer.write(data)
+                    sys.stdout.buffer.flush()
+                except Exception:
+                    break
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+
+    # Try to put stdin in raw mode so keystrokes pass through byte-by-byte.
+    # On Windows use msvcrt; on POSIX use termios+tty.
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            while not stop.is_set():
+                if msvcrt.kbhit():
+                    ch = msvcrt.getch()
+                    # Ctrl-] (0x1D) or Ctrl-X (0x18) -> exit
+                    if ch in (b'\x1d', b'\x18'):
+                        break
+                    # DEL -> BS
+                    if ch == b'\x7f':
+                        ch = b'\x08'
+                    # Windows arrow keys come as 0xE0 then a code; translate to ANSI
+                    if ch in (b'\xe0', b'\x00'):
+                        ch2 = msvcrt.getch()
+                        m = {b'H': b'\x1b[A', b'P': b'\x1b[B',
+                             b'M': b'\x1b[C', b'K': b'\x1b[D',
+                             b'S': b'\x7f'}  # Delete key -> DEL for REPL
+                        ch = m.get(ch2, b'')
+                    try:
+                        s.write(ch)
+                    except Exception:
+                        break
+                else:
+                    time.sleep(0.01)
+        else:
+            import termios, tty
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while not stop.is_set():
+                    ch = os.read(fd, 1)
+                    if ch in (b'\x1d', b'\x18'):
+                        break
+                    if ch == b'\x7f':
+                        ch = b'\x08'
+                    s.write(ch)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        try: s.close()
+        except: pass
+    sys.exit(0)
 
 # ----------------------------
 # Command: ls

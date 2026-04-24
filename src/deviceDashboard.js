@@ -1201,7 +1201,7 @@ function getWebviewContent(metrics) {
             Refresh
         </button>
     </div>
-    <div class="subtitle">Live hardware telemetry & management via mpremote</div>
+    <div class="subtitle">Live hardware telemetry & management via high-performance mps backend</div>
 
     <div class="dashboard-grid">
         
@@ -1666,7 +1666,7 @@ function escapePy(s) {
 
 /**
  * Run a Python script string on the device and return stdout.
- * Writes a temp file, runs it via mpremote, then deletes the temp file.
+ * Writes a temp file, runs it via high-performance mps backend, then deletes the temp file.
  * @param {string} scriptContent  - Python source code
  * @param {string} tempName       - Temp filename (no spaces, no path separators)
  * @param {string} workspaceRoot  - Local folder to write the temp file into

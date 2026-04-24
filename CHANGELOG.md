@@ -4,6 +4,21 @@ All notable changes to the "micropython-studio" extension will be documented in 
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.9.1] - 2026-04-23
+
+### Fixed
+- **MIP Installation Stability**: Implemented recursive directory creation (`mkdir -p`) on the device to support complex package structures during installation.
+- **Robust File Operations**: Added device-side handle validation (`if '_f' in globals()`) to prevent "NameError cascades" when file operations fail due to filesystem limits.
+- **Optimized Bulk Uploads**: Refactored directory creation to execute in a single device-side block, significantly reducing the overhead of nested path creation.
+
+## [0.9.0] - 2026-04-23
+
+### Added
+- **Native High-Performance Serial Backend**: Migrated core operations to a native PySerial implementation (`mps`) for superior stability on Windows Dual-CDC devices.
+- **Adaptive DTR Strategy**: Intelligent signaling that supports both MicroPython (DTR=False) and CircuitPython/RP2350 (DTR=True) automatically.
+- **Professional ASCII UI**: Cleaned up all terminal outputs and documentation to a professional ASCII-only standard for maximum cross-platform compatibility.
+- **Light Kick (Ctrl-B) Sync**: Improved synchronization for "Run on Host" commands to prevent `mpremote` handshake collisions.
+
 ## [0.8.1] - 2026-04-06
 
 ### Added

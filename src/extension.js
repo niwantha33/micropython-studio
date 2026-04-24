@@ -23,6 +23,7 @@ const { openWebReplTerminal } = require('./webReplTerminal');
 const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive } = require('./circuitpyDrive');
 const { getConnectedDevices } = require('./runCommand');
 const { AiAssistanceProvider } = require('./aiAssistance');
+const { startDebugger } = require('./mpyDebugger');
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
@@ -1039,10 +1040,10 @@ function activate(context) {
 
     // Start Debug (placeholder — coming soon)
     context.subscriptions.push(
-        vscode.commands.registerCommand('micropython-ide.startDebug', () => {
-            vscode.window.showInformationMessage(
-                'Debug support is coming soon! Stay tuned for future updates.'
-            );
+        vscode.commands.registerCommand('micropython-ide.startDebug', async () => {
+            const venvFolder = getVenvPythonPathFolder();
+            const venvPython = getVenvPythonPath(venvFolder);
+            await startDebugger(context, gRemoteDevicePort, venvPython);
         })
     );
 
@@ -1503,6 +1504,14 @@ function createStatusBar(context) {
     flashButton.command = 'micropython-ide.flashFirmware';
     flashButton.show();
     context.subscriptions.push(flashButton);
+
+    // 6.5 Start MPy Debugger Button
+    const startDebugButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.5);
+    startDebugButton.text = '$(debug-alt) Start Debug';
+    startDebugButton.tooltip = 'Upload debugger files + start live debugger panel';
+    startDebugButton.command = 'micropython-ide.startDebug';
+    startDebugButton.show();
+    context.subscriptions.push(startDebugButton);
 
     // 7. Device Dashboard Button
     const dashboardButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);

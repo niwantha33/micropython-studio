@@ -513,6 +513,10 @@ window.onload = function() {
     term.open(document.getElementById('term'));
     term.on('data', function(data) {
         var bytes = Array.from(new TextEncoder().encode(data));
+        // Translate DEL (0x7F) -> BS (0x08) for MicroPython REPL compatibility
+        for (var i = 0; i < bytes.length; i++) {
+            if (bytes[i] === 0x7F) bytes[i] = 0x08;
+        }
         vscodeApi.postMessage({ type: 'input', data: bytes });
     });
     
