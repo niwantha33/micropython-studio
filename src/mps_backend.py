@@ -644,23 +644,93 @@ class SerialConnection:
             sys.stderr.write(f"{CLR_DIM}[SENT] {data!r}{CLR_RESET}\n")
         self.serial.write(data)
 
+    def _send_code_raw_paste(self, code_buf: bytes) -> bool:
+        """Send code via raw-paste mode (Ctrl-E variant) with proper flow control.
+        Returns True on success, False if device rejected raw-paste (caller falls back).
+        This is the same protocol mpremote uses; it prevents RX buffer overrun on
+        large transfers by waiting for the device to ack each window."""
+        # Initiate raw-paste
+        self.serial.write(b'\x05A\x01')
+        # Read 2-byte response: 'R\x01' means OK, 'R\x00' means not supported
+        deadline = time.time() + 2
+        resp = bytearray()
+        while len(resp) < 2 and time.time() < deadline:
+            n = self.in_waiting_safe
+            if n:
+                resp.extend(self.serial.read(min(n, 2 - len(resp))))
+            else:
+                time.sleep(0.005)
+        if len(resp) < 2 or resp[0:1] != b'R' or resp[1:2] != b'\x01':
+            return False
+        # Read window-size: 2 bytes little-endian
+        deadline = time.time() + 2
+        ws_bytes = bytearray()
+        while len(ws_bytes) < 2 and time.time() < deadline:
+            n = self.in_waiting_safe
+            if n:
+                ws_bytes.extend(self.serial.read(min(n, 2 - len(ws_bytes))))
+            else:
+                time.sleep(0.005)
+        if len(ws_bytes) < 2:
+            return False
+        window = ws_bytes[0] | (ws_bytes[1] << 8)
+        window_remain = window
+        # Stream code, refilling window as device acks (\x01) or aborts (\x04)
+        i = 0
+        while i < len(code_buf):
+            # First drain any control bytes
+            while self.in_waiting_safe:
+                b = self.serial.read(1)
+                if b == b'\x01':
+                    window_remain += window
+                elif b == b'\x04':
+                    # Device aborted
+                    self.serial.write(b'\x04')
+                    return False
+            if window_remain == 0:
+                # wait for ack
+                b = self.serial.read(1)
+                if b == b'\x01':
+                    window_remain += window
+                elif b == b'\x04':
+                    self.serial.write(b'\x04')
+                    return False
+                continue
+            n = min(window_remain, len(code_buf) - i, 256)
+            self.serial.write(code_buf[i:i+n])
+            i += n
+            window_remain -= n
+        # Signal end-of-data; outer state machine will read the response.
+        self.serial.write(b'\x04')
+        return True
+
     def _exec_raw_no_exit(self, code: Union[str, bytes], timeout=30, stream_stdout=True):
         """Execute code on device and return (rc, stdout_bytes, stderr_bytes), but STAY in raw REPL mode."""
         self._drain()
         code_buf = code.encode() if isinstance(code, str) else code
-        
-        # Send code in safe chunks to avoid device UART buffer overflow
-        chunk_size = 128
-        for i in range(0, len(code_buf), chunk_size):
-            self.serial.write(code_buf[i:i+chunk_size])
-            time.sleep(0.01)
-            
-        self.serial.write(b'\x04')  # Ctrl-D
+
+        # Use raw-paste mode (proper flow control) ONLY for large payloads
+        # where the slow chunked path would overflow the device RX buffer.
+        # Small commands (ls, file ops) use the safer original path.
+        used_paste = False
+        if len(code_buf) > 4096:
+            used_paste = self._send_code_raw_paste(code_buf)
+        if not used_paste:
+            chunk_size = 128
+            for i in range(0, len(code_buf), chunk_size):
+                self.serial.write(code_buf[i:i+chunk_size])
+                time.sleep(0.02)
+            self.serial.write(b'\x04')
+
+        # In raw-paste mode the device skips the leading "OK" — output goes
+        # straight to stdout, then \x04 stderr \x04 >. Pre-seed the state
+        # machine past the OK-search if we used raw-paste.
+        _start_state = 1 if used_paste else 0
 
         # Read: OK<stdout>\x04<stderr>\x04>
         # We use a state machine to parse the response as it arrives
         # States: 0=wait OK, 1=wait stdout \x04, 2=wait stderr \x04, 3=wait >
-        state = 0
+        state = _start_state
         stdout_buf = bytearray()
         stderr_buf = bytearray()
         
@@ -791,8 +861,10 @@ l()
             if parent_dir != '/':
                 self._exec_raw_no_exit(_mkdir_p_code(parent_dir))
 
-            # Strategy A: Small files (< 512 bytes)
-            if len(data) <= 512:
+            # Strategy A: one-shot for ALL sizes (chunked path had a corruption
+            # bug where chunk-write echoes occasionally interleaved into the
+            # file content). Slower for very large files but reliable.
+            if True or len(data) <= 512:
                 hex_str = binascii.hexlify(data).decode()
                 one_shot_code = (
                     f"import binascii, os, time\n"
@@ -904,48 +976,75 @@ for d in {all_target_dirs!r}:
             self.serial.write(b'\x02') # Exit raw REPL
 
     def _put_file_internal(self, source_path: Path, remote_path: str):
-        """Internal helper for uploading a file while ALREADY in raw REPL mode."""
+        """Internal helper for uploading a file while ALREADY in raw REPL mode.
+        One-shot hex transfer via raw-paste flow control — same path as put_file."""
         import binascii
         data = source_path.read_bytes()
         dest = remote_path.replace('\\', '/')
-
-        # Initial cleanup and open
-        setup_code = (
+        hex_str = binascii.hexlify(data).decode()
+        one_shot = (
             f"import binascii, os, time\n"
             f"try: os.remove({dest!r})\n"
             f"except: pass\n"
-            f"time.sleep(0.005)\n"
-            f"_f=open({dest!r},'wb')"
+            f"time.sleep(0.01)\n"
+            f"try:\n"
+            f" _f=open({dest!r},'wb')\n"
+            f" _f.write(binascii.unhexlify({hex_str!r}))\n"
+            f" _f.close()\n"
+            f"except Exception as e: print('FAIL:', e)"
         )
-        rc, _, _ = self._exec_raw_no_exit(setup_code)
-        if rc != 0:
-            sys.stderr.write(f"   [ERROR] Failed to open {dest} for writing. Aborting.\n")
+        rc, stdout, _ = self._exec_raw_no_exit(one_shot)
+        if b'FAIL:' in stdout:
+            sys.stderr.write(f"   [ERROR] Upload of {dest} reported FAIL\n")
             return 1
-
-        chunk_size = 1024
-        hex_data = binascii.hexlify(data).decode()
-        total_chunks = (len(hex_data) + chunk_size - 1) // chunk_size
-
-        for i in range(0, len(hex_data), chunk_size):
-            chunk = hex_data[i:i+chunk_size]
-            self._exec_raw_no_exit(f"if '_f' in globals(): _f.write(binascii.unhexlify({chunk!r}))")
-        
-        self._exec_raw_no_exit("if '_f' in globals(): _f.close()")
+        return rc
 
     def get_file(self, remote_path: str, local_path: Path):
-        """Download a file using hex-encoding via return buffer."""
+        """Download a file using hex-encoding bracketed by sentinel markers.
+        Robust to any echo/duplication noise in the serial stream."""
         dest = remote_path.replace('\\', '/')
-        code = f"import binascii; f=open({dest!r},'rb'); print(binascii.hexlify(f.read()).decode()); f.close()"
+        # Print hex in small chunks with tiny sleeps so the USB-CDC RX buffer
+        # on the host doesn't overrun.
+        code = (
+            "import binascii as _b, sys as _s, time as _t\n"
+            f"_f=open({dest!r},'rb');_d=_f.read();_f.close()\n"
+            "print('<<HEXLEN:%d>>' % len(_d))\n"
+            "print('<<HEXSTART>>')\n"
+            "_h=_b.hexlify(_d).decode()\n"
+            "for _i in range(0,len(_h),128):\n"
+            "    _s.stdout.write(_h[_i:_i+128]);_s.stdout.write('\\n')\n"
+            "    _t.sleep_ms(3)\n"
+            "print('<<HEXEND>>')"
+        )
 
         rc, stdout, stderr = self.exec_code(code, stream_stdout=False)
-        if rc == 0 and stdout:
-            import binascii as _ba
+        if stdout:
             try:
-                # Find the hex string in stdout (it might have extra noise)
-                lines = stdout.decode('utf-8', errors='ignore').strip().splitlines()
-                # The last non-empty line should be our hex string
-                hex_str = [l.strip() for l in lines if l.strip()][-1]
-                local_path.write_bytes(_ba.unhexlify(hex_str))
+                import re as _re
+                text = stdout.decode('utf-8', errors='ignore')
+                lm = _re.search(r'<<HEXLEN:(\d+)>>', text)
+                if not lm:
+                    sys.stderr.write(f"   No HEXLEN marker for {remote_path}\n")
+                    return 1
+                expected_bytes = int(lm.group(1))
+                a = text.find('<<HEXSTART>>')
+                if a < 0:
+                    sys.stderr.write(f"   No HEXSTART marker for {remote_path}\n")
+                    return 1
+                hex_part_start = a + len('<<HEXSTART>>')
+                # Walk forward collecting hex chars until we have exactly the
+                # expected count. Ignore any duplication / echo after that.
+                need = expected_bytes * 2
+                got = []
+                for c in text[hex_part_start:]:
+                    if c in '0123456789abcdefABCDEF':
+                        got.append(c)
+                        if len(got) == need:
+                            break
+                if len(got) != need:
+                    sys.stderr.write(f"   Got {len(got)} hex chars, expected {need} for {remote_path}\n")
+                    return 1
+                local_path.write_bytes(bytes.fromhex(''.join(got)))
                 return 0
             except Exception as e:
                 sys.stderr.write(f"   Failed to parse hex data for {remote_path}: {e}\n")
@@ -1024,28 +1123,25 @@ def cmd_mip(python_exe: str, port: str, package: str, index: str = None):
         sys.exit(1)
     
     mip_code = f"""
-import sys, os
 try:
-    import mip
+    import mip as _mip
 except ImportError:
     try:
-        import upip as mip
+        import upip as _mip
     except ImportError:
-        print("ERROR: This device does not have 'mip' or 'upip' installed.")
-        sys.exit(1)
+        print('ERROR: device has no mip/upip')
+        _mip = None
 
-try:
-    print("mip.install({package!r})")
-    mip.install({package!r}{f', index={index!r}' if index else ''})
-    print("Installation successful!")
-    sys.exit(0)
-except OSError as e:
-    if len(e.args) > 0 and e.args[0] == -6:
+if _mip is not None:
+    try:
+        print("mip.install({package!r})")
+        _mip.install({package!r}{f', index={index!r}' if index else ''})
+        print("Installation successful!")
+    except OSError as _e:
         print("NETWORK_ERROR")
-    sys.exit(1)
-except Exception as e:
-    print(f"ERROR: Installation failed: {{e}}")
-    sys.exit(1)
+    except Exception as _e:
+        print("ERROR: Installation failed: " + repr(_e))
+print("<<MIP_DONE>>")
 """
 
     def _run_on_device():
@@ -1065,7 +1161,7 @@ except Exception as e:
             try:
                 conn.connect()
                 # Run WITHOUT soft reset to avoid dropping Wi-Fi
-                rc, stdout, stderr = conn.exec_code(mip_code, timeout=120, soft_reset=False)
+                rc, stdout, stderr = conn.exec_code(mip_code, timeout=20, soft_reset=False)
                 
                 output = stdout.decode('utf-8', errors='replace')
                 sys.stderr.write(f"DEBUG: Device output: {output.strip()}\n")
@@ -2156,41 +2252,84 @@ except Exception as _e:
 # Command: cat
 # ----------------------------
 def cmd_cat(python_exe, port, remote_path):
-    """Print file contents to stdout (text mode). Handles both serial and WebREPL."""
+    """Print file contents to stdout. Uses hex-encoded binary transfer for
+    reliability (text-mode streaming was losing chunks on large files)."""
+    # Read the file as binary, hex-encode on device, print one line.
+    # Host decodes hex → bytes → decode utf-8.
     code = f"""
+import binascii as _b, sys as _s, time as _t
 try:
-    _f = open({remote_path!r}, 'r')
-    print(_f.read(), end='')
+    _f = open({remote_path!r}, 'rb')
+    _d = _f.read()
     _f.close()
+    print('<<HEXLEN:%d>>' % len(_d))
+    print('<<HEXSTART>>')
+    _h = _b.hexlify(_d).decode()
+    for _i in range(0, len(_h), 128):
+        _s.stdout.write(_h[_i:_i+128])
+        _s.stdout.write('\\n')
+        _t.sleep_ms(3)
+    print('<<HEXEND>>')
 except Exception as _e:
-    import sys as _sys
-    print(str(_e), file=_sys.stderr)
+    print('CAT_ERR:'+str(_e), file=_s.stderr)
 """
+
+    def _decode_and_print(stdout_bytes):
+        try:
+            import re as _re
+            text = stdout_bytes.decode('utf-8', errors='replace')
+            lm = _re.search(r'<<HEXLEN:(\d+)>>', text)
+            if not lm:
+                sys.stderr.write('cat: no HEXLEN marker. Got stdout:\n')
+                sys.stderr.write(text[:2000] + '\n')
+                return 1
+            expected = int(lm.group(1))
+            a = text.find('<<HEXSTART>>')
+            if a < 0:
+                sys.stderr.write('cat: no HEXSTART. Got stdout:\n')
+                sys.stderr.write(text[:2000] + '\n')
+                return 1
+            need = expected * 2
+            got = []
+            for c in text[a + len('<<HEXSTART>>'):]:
+                if c in '0123456789abcdefABCDEF':
+                    got.append(c)
+                    if len(got) == need:
+                        break
+            if len(got) != need:
+                sys.stderr.write(f'cat: got {len(got)} hex chars, expected {need}\n')
+                return 1
+            sys.stdout.buffer.write(bytes.fromhex(''.join(got)))
+            sys.stdout.buffer.flush()
+            return 0
+        except Exception as _e:
+            sys.stderr.write(f'cat: {_e}\n')
+            return 1
+
     if _is_ws_port(port):
         host, password = _parse_ws_port(port)
         conn = WebReplConnection(host, password)
         try:
             conn.connect()
-            conn.exec_code(code)
+            rc, stdout, stderr = conn.exec_code(code, stream_stdout=False)
         except Exception as e:
             print(f"WebREPL cat failed: {e}", file=sys.stderr)
             sys.exit(1)
         finally:
             conn.close()
-        sys.exit(0)
+        sys.exit(_decode_and_print(stdout))
 
     # Serial
     conn = SerialConnection(port)
     try:
         conn.connect()
-        rc, stdout, stderr = conn.exec_code(code)
-        # Output is already printed by exec_code
+        rc, stdout, stderr = conn.exec_code(code, stream_stdout=False)
     except Exception as e:
         sys.stderr.write(f"   Serial cat failed: {e}\n")
         sys.exit(1)
     finally:
         conn.close()
-    sys.exit(0)
+    sys.exit(_decode_and_print(stdout))
 
 
 # ----------------------------
