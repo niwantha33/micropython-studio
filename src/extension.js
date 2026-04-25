@@ -10,27 +10,77 @@ const vscode = require('vscode');
 const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs'); // Added fs import
-const os = require('os');
-const EventEmitter = require('events');
 const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
-const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue } = require('./commonFxn');
-const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder } = require('./deviceFileExplorer');
+const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent } = require('./commonFxn');
+const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
-const { updateCfgComponent } = require('./commonFxn');
 const { openDeviceDashboard } = require('./deviceDashboard');
 const { openWebReplTerminal } = require('./webReplTerminal');
 const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive } = require('./circuitpyDrive');
+const { getConnectedDevices } = require('./runCommand');
 const { AiAssistanceProvider } = require('./aiAssistance');
+const { startDebugger } = require('./mpyDebugger');
+
+// Download a URL to a local path, following redirects.
+function downloadFile(url, dest, redirects = 5) {
+    const https = require('https');
+    const fs = require('fs');
+    return new Promise((resolve, reject) => {
+        const req = https.get(url, (res) => {
+            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
+                res.resume();
+                return resolve(downloadFile(res.headers.location, dest, redirects - 1));
+            }
+            if (res.statusCode !== 200) {
+                res.resume();
+                return reject(new Error('HTTP ' + res.statusCode));
+            }
+            const file = fs.createWriteStream(dest);
+            res.pipe(file);
+            file.on('finish', () => file.close(() => resolve(dest)));
+            file.on('error', reject);
+        });
+        req.on('error', reject);
+        req.setTimeout(30000, () => req.destroy(new Error('timeout')));
+    });
+}
+
+// Detect a Pico in BOOTSEL mode by looking for a drive containing INFO_UF2.TXT
+// with a Raspberry Pi RP2350 / RP2040 board ID. Returns the mount path or null.
+async function findPicoBootselDrive() {
+    const fs = require('fs');
+    const path = require('path');
+    const candidates = [];
+    if (process.platform === 'win32') {
+        for (let c = 67; c <= 90; c++) candidates.push(String.fromCharCode(c) + ':\\');
+    } else if (process.platform === 'darwin') {
+        candidates.push('/Volumes/RPI-RP2', '/Volumes/RP2350');
+    } else {
+        const u = process.env.USER || 'user';
+        candidates.push(`/media/${u}/RPI-RP2`, `/media/${u}/RP2350`, `/run/media/${u}/RPI-RP2`, `/run/media/${u}/RP2350`);
+    }
+    for (const d of candidates) {
+        try {
+            const info = path.join(d, 'INFO_UF2.TXT');
+            if (fs.existsSync(info)) {
+                const txt = fs.readFileSync(info, 'utf8');
+                if (/RP2350|RP2040|Raspberry Pi/i.test(txt)) return d;
+            }
+        } catch (_) { /* skip */ }
+    }
+    return null;
+}
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
 const outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
 
 let gMpremoteTerminal = null;
+let gShellTerminal = null;
 let gRemoteDevicePort = null;
 let gDeviceCodeDir = null;
 let gDeviceFirmware = 'MicroPython'; // 'MicroPython' | 'CircuitPython'
@@ -42,7 +92,6 @@ let deviceStatusBarItem = null;
 let deviceFileExplorer = null;
 let deviceFileTreeView = null;
 
-const captureEmitter = new EventEmitter();
 
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
 
@@ -64,9 +113,9 @@ async function _buildRunPortOptions() {
 
     const items = [];
     if (savedCom) {
-        items.push({ label: `$(plug) USB — ${savedCom}`, port: savedCom });
+        items.push({ label: `[OK] USB — ${savedCom}`, port: savedCom });
     }
-    items.push({ label: `$(remote) Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
+    items.push({ label: `[OK] Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
     return items;
 }
 
@@ -76,6 +125,14 @@ async function _buildRunPortOptions() {
  * Get or create the MicroPython terminal.
  * Reuses existing terminal if it's still alive.
  */
+function getMpremoteTerminal() {
+    let terminal = vscode.window.terminals.find(t => t.name === 'MicroPython Studio');
+    if (!terminal) {
+        terminal = vscode.window.createTerminal('MicroPython Studio');
+    }
+    return terminal;
+}
+
 /**
  * Run a Python subprocess (no shell) and show output in an OutputChannel.
  * Avoids Git Bash / MSYS2 shell quoting issues entirely.
@@ -83,8 +140,27 @@ async function _buildRunPortOptions() {
  * @param {string[]} args - Arguments (no quoting needed)
  * @param {((code:number|null)=>void)} [onComplete] - Called when process exits
  */
+function runPythonProcess(exe, args, onComplete) {
+    const channel = vscode.window.createOutputChannel('MicroPython Studio');
+    channel.show(true);
+    channel.appendLine('─'.repeat(50));
+
+    let fullOutput = '';
+    const proc = spawn(exe, args);
+    proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+    proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+    proc.on('close', code => {
+        _notifyAiOnError(fullOutput, args);
+        channel.appendLine("[SUCCESS] Task complete.");
+        if (onComplete) onComplete(code);
+    });
+    proc.on('error', err => {
+        channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
+    });
+}
+
 /**
- * Parse --port and --file from mpremotesubpro.py args array for AI context.
+ * Parse --port and --file from mps_backend.py args array for AI context.
  * @param {string[]} args
  */
 function _parseArgContext(args) {
@@ -107,7 +183,7 @@ async function _notifyAiOnError(output, args) {
     if (!errorText || !aiAssistanceProvider) return;
 
     const action = await vscode.window.showWarningMessage(
-        '⚡ Device error detected. Investigate with AI?',
+        '[ERROR] Device error detected. Investigate with AI?',
         'Investigate', 'Dismiss'
     );
     if (action !== 'Investigate') return;
@@ -145,10 +221,11 @@ function runPythonProcess(exe, args, onComplete) {
     proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
     proc.on('close', code => {
         _notifyAiOnError(fullOutput, args);
+        channel.appendLine("[SUCCESS] Task complete.");
         if (onComplete) onComplete(code);
     });
     proc.on('error', err => {
-        channel.appendLine(`❌ Failed to start process: ${err.message}`);
+        channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
     });
 }
 
@@ -170,7 +247,7 @@ function _spawnAsync(exe, args) {
         proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
         proc.on('close', code => { _notifyAiOnError(fullOutput, args); resolve(code); });
         proc.on('error', err => {
-            channel.appendLine(`❌ Failed to start process: ${err.message}`);
+            channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
             resolve(null);
         });
     });
@@ -213,9 +290,16 @@ async function _runDownloadQueued(exe, baseArgs) {
         channel.show(true);
         channel.appendLine('─'.repeat(50));
         const proc = spawn(exe, baseArgs);
-        proc.stdout.on('data', d => { buf += d.toString(); channel.append(d.toString()); });
+        proc.stdout.on('data', d => {
+            const str = d.toString();
+            buf += str;
+            // Only append to the channel if it's NOT the machine-readable conflict JSON
+            if (!str.trim().startsWith('{"conflicts":')) {
+                channel.append(str);
+            }
+        });
         proc.stderr.on('data', d => channel.append(d.toString()));
-        proc.on('error', err => channel.appendLine(`❌ ${err.message}`));
+        proc.on('error', err => channel.appendLine(`[ERROR] ${err.message}`));
         proc.on('close', c => resolve({ code: c, stdoutBuf: buf }));
     }));
 
@@ -230,10 +314,10 @@ async function _runDownloadQueued(exe, baseArgs) {
     }
 
     const pick = await vscode.window.showQuickPick([
-        { label: '$(sync)       Overwrite all', id: 'overwrite' },
-        { label: '$(file-add)   Keep (Rename)', id: 'rename' },
-        { label: '$(debug-step-over) Skip existing', id: 'skip' },
-        { label: '$(list-tree)  Choose files', id: 'choose' }
+        { label: '[OK] Overwrite all', id: 'overwrite' },
+        { label: '[OK] Keep (Rename)', id: 'rename' },
+        { label: '[OK] Skip existing', id: 'skip' },
+        { label: '[OK] Choose files', id: 'choose' }
     ], { placeHolder: `${conflicts.length} file(s) already exist locally. What should we do?` });
 
     if (!pick) return;
@@ -261,97 +345,6 @@ async function _runDownloadQueued(exe, baseArgs) {
     }
 }
 
-/**
- * Run an upload command. If the script exits with code 3 (conflicts found),
- * show a VSCode confirmation dialog and re-run with --overwrite.
- * @param {string} exe
- * @param {string[]} baseArgs - args WITHOUT --overwrite
- * @param {()=>void} [onDone]
- */
-function runUpload(exe, baseArgs, onDone) {
-    runPythonProcess(exe, baseArgs, async (code) => {
-        if (code === 3) {
-            const answer = await vscode.window.showWarningMessage(
-                'Some files already exist on the device. Overwrite them?',
-                { modal: true },
-                'Overwrite',
-                'Cancel'
-            );
-            if (answer === 'Overwrite') {
-                runPythonProcess(exe, [...baseArgs, '--overwrite'], onDone);
-            }
-        } else {
-            if (onDone) onDone();
-        }
-    });
-}
-
-/**
- * Run a download command. Captures stdout to detect conflict JSON (exit code 3),
- * then shows a QuickPick with Overwrite all / Skip existing / Choose files options.
- * @param {string} exe
- * @param {string[]} baseArgs - args WITHOUT --overwrite / --skip / --overwrite-files
- */
-function runDownload(exe, baseArgs) {
-    let stdoutBuf = '';
-    const channel = vscode.window.createOutputChannel('MicroPython Studio');
-    channel.show(true);
-    channel.appendLine('─'.repeat(50));
-
-    const proc = spawn(exe, baseArgs);
-    proc.stdout.on('data', d => {
-        stdoutBuf += d.toString();
-        channel.append(d.toString());
-    });
-    proc.stderr.on('data', d => channel.append(d.toString()));
-    proc.on('error', err => channel.appendLine(`❌ ${err.message}`));
-
-    proc.on('close', async (code) => {
-        if (code !== 3) return;
-
-        // Parse conflict list from stdout JSON line
-        let conflicts = [];
-        for (const line of stdoutBuf.split('\n')) {
-            try {
-                const msg = JSON.parse(line.trim());
-                if (msg.conflicts) { conflicts = msg.conflicts; break; }
-            } catch (_) { }
-        }
-
-        // Show the conflict resolution options
-        const pick = await vscode.window.showQuickPick([
-            { label: '$(sync)       Overwrite all', id: 'overwrite' },
-            { label: '$(file-add)   Keep (Rename)', id: 'rename' },
-            { label: '$(debug-step-over) Skip existing', id: 'skip' },
-            { label: '$(list-tree)  Choose files', id: 'choose' }
-        ], { placeHolder: `${conflicts.length} file(s) already exist locally. What should we do?` });
-
-        if (!pick) return;
-
-        const pickId = /** @type {any} */(pick).id;
-        if (pickId === 'overwrite') {
-            runPythonProcess(exe, [...baseArgs, '--overwrite'], undefined);
-        } else if (pickId === 'rename') {
-            runPythonProcess(exe, [...baseArgs, '--rename'], undefined);
-        } else if (pickId === 'skip') {
-            runPythonProcess(exe, [...baseArgs, '--skip'], undefined);
-        } else if (pickId === 'choose') {
-            // Choose files: show multi-select of conflicting files
-            const items = /** @type {vscode.QuickPickItem[]} */ (
-                conflicts.map(f => ({ label: /** @type {string} */ (f), picked: true }))
-            );
-            const chosen = /** @type {vscode.QuickPickItem[] | undefined} */ (
-                await vscode.window.showQuickPick(items, {
-                    placeHolder: 'Select files to overwrite (unchecked = skip)',
-                    canPickMany: true
-                })
-            );
-            if (!chosen || chosen.length === 0) return;
-            const owf = chosen.map(i => i.label).join('|');
-            runPythonProcess(exe, [...baseArgs, '--overwrite-files', owf], undefined);
-        }
-    });
-}
 
 function getMpremoteTerminal() {
     if (!gMpremoteTerminal || gMpremoteTerminal.exitStatus) {
@@ -383,7 +376,7 @@ function checkPythonAvailability() {
             exec('python3 --version', (err2) => {
                 if (err2) {
                     vscode.window.showWarningMessage(
-                        'Python not found in PATH. MicroPython Studio requires Python 3.7+.'
+                        '[ERROR] Python not found in PATH. MicroPython Studio requires Python 3.7+.'
                     );
                 }
             });
@@ -407,12 +400,12 @@ function updateDeviceStatusBar() {
 
     if (gRemoteDevicePort) {
         const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
-        const portLabel = wsMatch ? `📡 ${wsMatch[1]}` : gRemoteDevicePort;
-        deviceStatusBarItem.text = `$(plug) ${portLabel}`;
+        const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : gRemoteDevicePort;
+        deviceStatusBarItem.text = `[OK] ${portLabel}`;
         deviceStatusBarItem.tooltip = `Connected to ${gRemoteDevicePort}`;
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
-        deviceStatusBarItem.text = '$(plug) No Device';
+        deviceStatusBarItem.text = '[OK] No Device';
         deviceStatusBarItem.tooltip = 'No device connected — click Refresh Device Files';
         deviceStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     }
@@ -451,6 +444,15 @@ async function sendCleanCommand(terminal, command) {
 function activate(context) {
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
+
+    // Stop VS Code's Python extension from auto-typing the venv activate path
+    // into our REPL terminal. This setting is workspace-scoped.
+    try {
+        const cfg = vscode.workspace.getConfiguration('python');
+        if (cfg.get('terminal.activateEnvironment') !== false) {
+            cfg.update('terminal.activateEnvironment', false, vscode.ConfigurationTarget.Workspace);
+        }
+    } catch (_) { /* ignore */ }
 
     const getAIAssistanceContext = async () => {
         // 1. Determine the active project root based on the current editor
@@ -584,7 +586,7 @@ function activate(context) {
         const fileName = path.basename(uri.fsPath);
         if (fileName === 'Modelfile-mpy' || fileName === 'Modelfile-cpy') {
             if (aiAssistanceProvider) {
-                vscode.window.showInformationMessage(`AI Modelfile updated (${fileName}). Reinstalling models...`);
+                vscode.window.showInformationMessage(`[OK] AI Modelfile updated (${fileName}). Reinstalling models...`);
                 // Bump the version dynamically or just let it reinstall
                 await aiAssistanceProvider._installModel(true);
             }
@@ -686,9 +688,27 @@ function activate(context) {
 
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
+            const helperPy = path.join(context.extensionPath, 'src', 'mps_backend.py');
 
-            const terminal = getMpremoteTerminal();
-            sendCleanCommand(terminal, `"${venvPython}" -m mpremote connect ${gRemoteDevicePort} resume repl`);
+            // Dedicated terminal where the shell process IS python directly.
+            // This bypasses PowerShell/cmd, so VS Code's Python extension cannot
+            // inject venv-activation text into our REPL stdin.
+            if (gShellTerminal) {
+                try { gShellTerminal.dispose(); } catch (_) {}
+                gShellTerminal = null;
+            }
+            gShellTerminal = vscode.window.createTerminal({
+                name: `MicroPython Shell (${gRemoteDevicePort})`,
+                shellPath: venvPython,
+                shellArgs: [helperPy, '--python', venvPython, 'shell', '--port', gRemoteDevicePort],
+                env: {
+                    // Prevent VS Code Python ext from re-activating venv into this terminal.
+                    VSCODE_DISABLE_PYTHON_AUTO_ACTIVATE: '1',
+                    PYTHONUNBUFFERED: '1',
+                },
+                strictEnv: false,
+            });
+            gShellTerminal.show(true);
         })
     );
 
@@ -724,19 +744,20 @@ function activate(context) {
             const isCpDrive = gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\');
             const isCircuitPython = gDeviceFirmware === 'CircuitPython' || isCpDrive;
             if (isCircuitPython) {
-                const scriptPath2 = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+                const scriptPath2 = path.join(context.extensionPath, 'src', 'mps_backend.py');
                 const cpCmd = [
                     `"${venvPython}"`, `"${scriptPath2}"`,
                     `--python "${venvPython}"`,
                     `run_mcu`,
                     `--port "${runPort}"`,
-                    `--file "${filePath}"`
+                    `--file "${filePath}"`,
+                    `--no-reset`
                 ].join(' ');
                 await sendCleanCommand(terminal, cpCmd);          
                 return;
             }
 
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const isMpy = filePath.endsWith('.mpy');
             const isWireless = runPort.startsWith('ws:');
             let cmd;
@@ -790,7 +811,7 @@ function activate(context) {
             const terminal = getMpremoteTerminal();
             terminal.sendText('\x03', false); // Ctrl+C — interrupts the running script
             terminal.show();
-            vscode.window.showInformationMessage('Interrupt sent to device (Ctrl+C).');
+            vscode.window.showInformationMessage('[OK] Interrupt sent to device (Ctrl+C).');
         })
     );
 
@@ -809,14 +830,14 @@ function activate(context) {
             for (const f of localFiles) {
                 try {
                     const dest = copyToCircuitPyDrive(drive, f, localRoot);
-                    outputChannel.appendLine(`📤 ${path.relative(localRoot, f)} → ${dest}`);
+                    outputChannel.appendLine(`[UPLOAD] ${path.relative(localRoot, f)} → ${dest}`);
                     copied++;
                 } catch (err) {
-                    outputChannel.appendLine(`❌ Failed to copy ${f}: ${err.message}`);
+                    outputChannel.appendLine(`[ERROR] Failed to copy ${f}: ${err.message}`);
                 }
             }
             outputChannel.show(true);
-            outputChannel.appendLine(`✅ Copied ${copied} file(s) to ${boardLabel} (${drive})`);
+            outputChannel.appendLine(`[SUCCESS] Copied ${copied} file(s) to ${boardLabel} (${drive})`);
             return;
         }
 
@@ -840,10 +861,10 @@ function activate(context) {
                 if (remoteDir && remoteDir !== '/') await makeDir(wwIp, wwPass, remoteDir, wwPort);
                 const content = fsSync.readFileSync(f);
                 const success = await putFile(wwIp, wwPass, remotePath, content, wwPort);
-                outputChannel.appendLine(success ? `📤 ${remotePath}` : `❌ Failed: ${remotePath}`);
+                outputChannel.appendLine(success ? `[UPLOAD] ${remotePath}` : `[ERROR] Failed: ${remotePath}`);
                 if (success) ok++;
             }
-            outputChannel.appendLine(`✅ Web Workflow upload: ${ok}/${localFiles.length} file(s)`);
+            outputChannel.appendLine(`[SUCCESS] Web Workflow upload: ${ok}/${localFiles.length} file(s)`);
             return;
         }
 
@@ -912,16 +933,12 @@ function activate(context) {
             }
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const baseDest = isXBeeDevice() ? '/flash' : '';
             const uploadArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', filePath, '--dest', baseDest];
             const onDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
-            if (gRemoteDevicePort.startsWith('ws:')) {
-                _runUploadQueued(venvPython, uploadArgs, onDone);
-            } else {
-                runPythonProcess(venvPython, uploadArgs, onDone);
-            }
+            _runUploadQueued(venvPython, uploadArgs, onDone);
         })
     );
 
@@ -959,21 +976,17 @@ function activate(context) {
 
             // Use folder name as dest — no leading slash to avoid MSYS2/Git Bash
             // path conversion (which turns /foo into C:/Program Files/Git/foo).
-            // _normalize_dest() in mpremotesubpro.py adds the leading slash.
+            // _normalize_dest() in mps_backend.py adds the leading slash.
             const dest = path.basename(folderPath);
 
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const baseDest = isXBeeDevice() ? `/flash/${dest}` : dest;
             const folderArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', folderPath, '--dest', baseDest];
             const onFolderDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
-            if (gRemoteDevicePort.startsWith('ws:')) {
-                _runUploadQueued(venvPython, folderArgs, onFolderDone);
-            } else {
-                runUpload(venvPython, folderArgs, onFolderDone);
-            }
+            _runUploadQueued(venvPython, folderArgs, onFolderDone);
         })
     );
 
@@ -1026,16 +1039,12 @@ function activate(context) {
 
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const baseDest = isXBeeDevice() ? '/flash' : '';
             const projArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', baseDest];
             const onProjDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
-            if (gRemoteDevicePort.startsWith('ws:')) {
-                _runUploadQueued(venvPython, projArgs, onProjDone);
-            } else {
-                runUpload(venvPython, projArgs, onProjDone);
-            }
+            _runUploadQueued(venvPython, projArgs, onProjDone);
         })
     );
 
@@ -1082,7 +1091,22 @@ function activate(context) {
                 placeHolder: 'Choose run transport'
             });
             if (!pick) return;
-            gRemoteDevicePort = /** @type {any} */ (pick).port;
+            const newPort = /** @type {any} */ (pick).port;
+            gRemoteDevicePort = newPort;
+            
+            // Persist to device.cfg if we have a project
+            if (gDeviceCodeDir) {
+                const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                await updateCfgComponent(cfgPath, 'device', 'port', newPort);
+
+                // Also update deviceId (VID:PID) so getValidDevicePort doesn't flip it back
+                const devices = await getConnectedDevices();
+                const matched = devices.find(d => d.port === newPort);
+                if (matched && matched.vidpid && matched.vidpid !== '0000:0000') {
+                    await updateCfgComponent(cfgPath, 'device', 'deviceId', matched.vidpid);
+                }
+            }
+
             updateDeviceStatusBar();
             if (deviceFileExplorer) {
                 const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
@@ -1091,26 +1115,141 @@ function activate(context) {
         })
     );
 
+    // Flash Debug Firmware — board-aware. Each board has its own asset name and
+    // flash method. Currently Pico 2 W is fully supported; ESP32-S3 is a stub.
+    const DEBUG_BOARDS = [
+        {
+            id: 'pico2w',
+            label: 'Raspberry Pi Pico 2 W',
+            detail: 'RP2350 — UF2 drag-and-drop via BOOTSEL',
+            asset: 'firmware.uf2',
+            method: 'uf2',
+            available: true,
+        },
+        {
+            id: 'pico-w',
+            label: 'Raspberry Pi Pico W',
+            detail: 'RP2040 — coming soon',
+            asset: 'firmware-picow.uf2',
+            method: 'uf2',
+            available: false,
+        },
+        {
+            id: 'esp32-s3',
+            label: 'ESP32-S3',
+            detail: 'esptool.py flash — coming in v0.2',
+            asset: 'firmware-esp32s3.bin',
+            method: 'esptool',
+            available: false,
+        },
+    ];
+    const RELEASE_BASE = 'https://github.com/niwantha33/micropython-debugger/releases/latest/download';
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.flashDebugFirmware', async () => {
+            const pick = await vscode.window.showQuickPick(
+                DEBUG_BOARDS.map(b => ({
+                    label: (b.available ? '$(check) ' : '$(circle-slash) ') + b.label,
+                    description: b.available ? '' : '(not available yet)',
+                    detail: b.detail,
+                    board: b,
+                })),
+                { placeHolder: 'Select target board for debug firmware' }
+            );
+            if (!pick) return;
+            const board = pick.board;
+            if (!board.available) {
+                vscode.window.showInformationMessage(`${board.label} is not supported yet. Pico 2 W is the only board for v0.1.`);
+                return;
+            }
+            if (board.method !== 'uf2') {
+                vscode.window.showWarningMessage(`Flash method "${board.method}" not implemented yet.`);
+                return;
+            }
+            const url = `${RELEASE_BASE}/${board.asset}`;
+            const out = vscode.window.createOutputChannel('Flash Debug Firmware');
+            out.show(true);
+            out.appendLine(`Target: ${board.label}`);
+            out.appendLine('Downloading firmware from:');
+            out.appendLine('  ' + url);
+            const tmp = path.join(require('os').tmpdir(), `mpy-debugger-${board.id}.uf2`);
+            try {
+                await downloadFile(url, tmp);
+                out.appendLine('Downloaded to ' + tmp);
+            } catch (e) {
+                out.appendLine('ERROR: ' + e.message);
+                vscode.window.showErrorMessage('Download failed: ' + e.message);
+                return;
+            }
+
+            // Find a BOOTSEL drive
+            const drive = await findPicoBootselDrive();
+            if (!drive) {
+                const pick = await vscode.window.showInformationMessage(
+                    'Firmware downloaded. Hold BOOTSEL on your Pico, plug USB in, then click Retry.',
+                    'Retry', 'Open folder', 'Cancel'
+                );
+                if (pick === 'Open folder') {
+                    vscode.env.openExternal(vscode.Uri.file(path.dirname(tmp)));
+                    return;
+                }
+                if (pick === 'Retry') {
+                    return vscode.commands.executeCommand('micropython-ide.flashDebugFirmware');
+                }
+                return;
+            }
+            try {
+                const target = path.join(drive, 'firmware.uf2');
+                require('fs').copyFileSync(tmp, target);
+                out.appendLine('Copied to ' + target);
+                out.appendLine('Pico will reboot now.');
+                vscode.window.showInformationMessage('Firmware flashed. Pico is rebooting.');
+            } catch (e) {
+                out.appendLine('Copy failed: ' + e.message);
+                vscode.window.showErrorMessage('Copy to Pico failed: ' + e.message);
+            }
+        })
+    );
+
     // Start Debug (placeholder — coming soon)
     context.subscriptions.push(
-        vscode.commands.registerCommand('micropython-ide.startDebug', () => {
-            vscode.window.showInformationMessage(
-                'Debug support is coming soon! Stay tuned for future updates.'
-            );
+        vscode.commands.registerCommand('micropython-ide.startDebug', async () => {
+            const venvFolder = getVenvPythonPathFolder();
+            const venvPython = getVenvPythonPath(venvFolder);
+            await startDebugger(context, gRemoteDevicePort, venvPython);
         })
     );
 
     // Update Device Port (placeholder — coming soon)
+    // Update Device Port (placeholder - coming soon)
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.updateDevicePort', async () => {
             const port = await vscode.window.showInputBox({
                 prompt: 'Enter the device port manually',
                 placeHolder: 'e.g. COM3, /dev/ttyUSB0',
-                value: gRemoteDevicePort || ''
+                value: gRemoteDevicePort || '-'
             });
             if (port) {
                 gRemoteDevicePort = port;
+
+                // Persist to device.cfg if we have a project
+                if (gDeviceCodeDir) {
+                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                    await updateCfgComponent(cfgPath, 'device', 'port', port);
+
+                    // Also update deviceId (VID:PID) to prevent snap-back to old port
+                    const devices = await getConnectedDevices();
+                    const matched = devices.find(d => d.port === port);
+                    if (matched && matched.vidpid && matched.vidpid !== '0000:0000') {
+                        await updateCfgComponent(cfgPath, 'device', 'deviceId', matched.vidpid);
+                    }
+                }
+
                 updateDeviceStatusBar();
+                if (deviceFileExplorer) {
+                    const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
+                    deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
+                }
                 vscode.window.showInformationMessage(`Device port set to: ${port}`);
             }
         })
@@ -1176,7 +1315,7 @@ function activate(context) {
                     if (autoSync) {
                         // Auto-sync enabled — do it silently
                         const result = syncFromCircuitPyDrive(drive, localDest);
-                        outputChannel.appendLine(`🔄 Auto-sync: ${result.copied} file(s) copied from ${drive} to local.`);
+                        outputChannel.appendLine(`[SUCCESS] Auto-sync: ${result.copied} file(s) copied from ${drive} to local.`);
                         outputChannel.show(true);
                     } else {
                         // Offer sync via notification
@@ -1188,14 +1327,14 @@ function activate(context) {
                         );
                         if (choice === 'Sync Now') {
                             const result = syncFromCircuitPyDrive(drive, localDest);
-                            outputChannel.appendLine(`🔄 Sync: ${result.copied} file(s) copied from ${drive} to local.`);
-                            if (result.errors.length) result.errors.forEach(e => outputChannel.appendLine(`❌ ${e}`));
+                            outputChannel.appendLine(`[SUCCESS] Sync: ${result.copied} file(s) copied from ${drive} to local.`);
+                            if (result.errors.length) result.errors.forEach(e => outputChannel.appendLine(`[ERROR] ${e}`));
                             outputChannel.show(true);
                         } else if (choice === 'Enable Auto-Sync') {
                             await vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
                                 .update('autoSyncAfterInstall', true, vscode.ConfigurationTarget.Global);
                             const result = syncFromCircuitPyDrive(drive, localDest);
-                            outputChannel.appendLine(`🔄 Sync: ${result.copied} file(s) copied. Auto-sync enabled for future installs.`);
+                            outputChannel.appendLine(`[SUCCESS] Sync: ${result.copied} file(s) copied. Auto-sync enabled for future installs.`);
                             outputChannel.show(true);
                         }
                     }
@@ -1209,8 +1348,7 @@ function activate(context) {
                     afterInstall
                 );
             } else {
-                const terminal = getMpremoteTerminal();
-                await openPackageManager(context, gRemoteDevicePort, terminal);
+                await openPackageManager(context, gRemoteDevicePort, runPythonProcess);
             }
             setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 5000);
         })
@@ -1242,11 +1380,17 @@ function activate(context) {
         })
     );
 
-    // Open Device Dashboard Webview Panel
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.openDeviceDashboard', async () => {
-            await openDeviceDashboard(context, outputChannel, gRemoteDevicePort, (newPort) => {
+            await openDeviceDashboard(context, outputChannel, gRemoteDevicePort, async (newPort) => {
                 gRemoteDevicePort = newPort;
+
+                // Persist to device.cfg if we have a project
+                if (gDeviceCodeDir) {
+                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                    await updateCfgComponent(cfgPath, 'device', 'port', newPort);
+                }
+
                 updateDeviceStatusBar();
                 if (deviceFileExplorer) {
                     const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
@@ -1282,14 +1426,10 @@ function activate(context) {
             }
 
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const dlArgs = [scriptPath, '--python', venvPython, 'download', '--port', gRemoteDevicePort, '--dest', dest];
 
-            if (gRemoteDevicePort.startsWith('ws:')) {
-                _runDownloadQueued(venvPython, dlArgs);
-            } else {
-                runDownload(venvPython, dlArgs);
-            }
+            _runDownloadQueued(venvPython, dlArgs);
         })
     );
 
@@ -1398,6 +1538,31 @@ function activate(context) {
         })
     );
 
+    // Rename a file or folder on the device
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.renameDeviceFile', async (item) => {
+            if (item && item.devicePath) {
+                await renameDeviceFile(gRemoteDevicePort, item.devicePath, deviceFileExplorer);
+            }
+        })
+    );
+
+    // Upload files directly to a folder
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.uploadToDeviceFolder', async (item) => {
+            const path = item ? item.devicePath : '/';
+            await uploadToDeviceFolder(gRemoteDevicePort, path, deviceFileExplorer);
+        })
+    );
+
+    // Create a new folder
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.newDeviceFolder', async (item) => {
+            const path = item ? item.devicePath : '/';
+            await newDeviceFolder(gRemoteDevicePort, path, deviceFileExplorer);
+        })
+    );
+
     // ── Listen for terminal close events ─────────────────────────────────
 
     context.subscriptions.push(
@@ -1424,7 +1589,7 @@ function activate(context) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const terminal = getMpremoteTerminal();
-            const scriptPath = path.join(context.extensionPath, 'src', 'mpremotesubpro.py');
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
 
             const cmd = [
                 `"${venvPython}"`, `"${scriptPath}"`,
@@ -1506,12 +1671,20 @@ function createStatusBar(context) {
     context.subscriptions.push(stopButton);
 
     // 6. Flash firmware button
-    const flashButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    const flashButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
     flashButton.text = '$(flame) Flash';
     flashButton.tooltip = 'Flash MicroPython firmware to device';
     flashButton.command = 'micropython-ide.flashFirmware';
     flashButton.show();
     context.subscriptions.push(flashButton);
+
+    // 6.5 Start MPy Debugger Button
+    const startDebugButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.5);
+    startDebugButton.text = '$(debug-alt) Start Debug';
+    startDebugButton.tooltip = 'Upload debugger files + start live debugger panel';
+    startDebugButton.command = 'micropython-ide.startDebug';
+    startDebugButton.show();
+    context.subscriptions.push(startDebugButton);
 
     // 7. Device Dashboard Button
     const dashboardButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);

@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and debug - MicroPython, CircuitPython, and XBee on real hardware",
-  "version": "0.8.6",
+  "version": "1.0.0",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {
@@ -20,6 +20,7 @@
   },
   "keywords": [
     "micropython",
+    "micropython debug",    
     "circuitpython",
     "micropython studio",
     "circuitpython studio",
@@ -83,7 +84,7 @@
     "viewsWelcome": [
       {
         "view": "micropython-ide-launch-view",
-        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(hubot) Enter Private AI Assistance](command:micropython-ide.enterAiAssistance)\n\n──────────────────────────\n\n[$(bug) Start Debug](command:micropython-ide.startDebug)",
+        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(hubot) Enter Private AI Assistance](command:micropython-ide.enterAiAssistance)\n\n──────────────────────────\n\n[$(bug) Start Debug](command:micropython-ide.startDebug)\n[$(cloud-download) Flash Debug Firmware](command:micropython-ide.flashDebugFirmware)",
         "when": "true"
       }
     ],
@@ -141,6 +142,11 @@
       {
         "command": "micropython-ide.startDebug",
         "title": "MicroPython: Start Debug Session",
+        "category": "MicroPython Studio"
+      },
+      {
+        "command": "micropython-ide.flashDebugFirmware",
+        "title": "MicroPython: Flash Debug Firmware (download + write)",
         "category": "MicroPython Studio"
       },
       {
@@ -230,6 +236,24 @@
         "title": "MicroPython: Download Files from Device",
         "category": "MicroPython Studio",
         "icon": "$(cloud-download)"
+      },
+      {
+        "command": "micropython-ide.renameDeviceFile",
+        "title": "MicroPython: Rename",
+        "category": "MicroPython Studio",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "micropython-ide.uploadToDeviceFolder",
+        "title": "MicroPython: Upload to This Folder",
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "micropython-ide.newDeviceFolder",
+        "title": "MicroPython: New Folder",
+        "category": "MicroPython Studio",
+        "icon": "$(new-folder)"
       }
     ],
     "menus": {
@@ -382,6 +406,21 @@
           "command": "micropython-ide.deleteDeviceFolder",
           "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
           "group": "context"
+        },
+        {
+          "command": "micropython-ide.renameDeviceFile",
+          "when": "view == micropython-ide-device-files && (viewItem == deviceFile || viewItem == deviceFolder)",
+          "group": "micropython@1"
+        },
+        {
+          "command": "micropython-ide.uploadToDeviceFolder",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
+          "group": "micropython@2"
+        },
+        {
+          "command": "micropython-ide.newDeviceFolder",
+          "when": "view == micropython-ide-device-files && viewItem == deviceFolder",
+          "group": "micropython@3"
         }
       ]
     }

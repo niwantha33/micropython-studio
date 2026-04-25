@@ -251,6 +251,8 @@ async function openWebReplTerminal(context, devicePort) {
 
     panel.webview.html = getHtml(ip, csp, termJsUri, fileSaverUri, cssUri);
 
+    // ... (rest of the client setup logic remains same)
+
     // Connect WebREPL in extension host
     const client = new WebReplClient(ip, password);
 
@@ -511,6 +513,10 @@ window.onload = function() {
     term.open(document.getElementById('term'));
     term.on('data', function(data) {
         var bytes = Array.from(new TextEncoder().encode(data));
+        // Translate DEL (0x7F) -> BS (0x08) for MicroPython REPL compatibility
+        for (var i = 0; i < bytes.length; i++) {
+            if (bytes[i] === 0x7F) bytes[i] = 0x08;
+        }
         vscodeApi.postMessage({ type: 'input', data: bytes });
     });
     
@@ -540,41 +546,8 @@ window.addEventListener('message', function(event) {
             txt.textContent = 'DISCONNECTED';
             term.write('\\x1b[38;5;203m✘ Disconnected: ' + (msg.reason || 'Server closed') + '\\x1b[m\\r\\n');
         }
-    } else if (msg.type === 'fileStatus') {
-        document.getElementById('file-status').innerHTML = msg.html;
-    } else if (msg.type === 'fileData') {
-        saveAs(new Blob([new Uint8Array(msg.bytes)], {type:'application/octet-stream'}), msg.name);
     }
 });
-
-// --- File transfer ---
-var _putName = null, _putData = null;
-
-document.getElementById('put-file-select').addEventListener('change', function(evt) {
-    var f = evt.target.files[0];
-    if (!f) return;
-    _putName = f.name;
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        _putData = new Uint8Array(e.target.result);
-        document.getElementById('put-file-list').textContent = f.name + ' (' + (_putData.length/1024).toFixed(1) + ' KB)';
-        document.getElementById('put-file-button').disabled = false;
-    };
-    reader.readAsArrayBuffer(f);
-});
-
-function putFile() {
-    if (!_putName || !_putData) return;
-    document.getElementById('file-status').innerHTML = '<span class="file-status-icon">⌛</span> Sending...';
-    vscodeApi.postMessage({ type: 'putFile', name: _putName, bytes: Array.from(_putData) });
-}
-
-function getFile() {
-    var name = document.getElementById('get_filename').value.trim();
-    if (!name) return;
-    document.getElementById('file-status').innerHTML = '<span class="file-status-icon">⌛</span> Requesting...';
-    vscodeApi.postMessage({ type: 'getFile', name });
-}
 </script>
 </body>
 </html>`;

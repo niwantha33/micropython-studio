@@ -2,27 +2,22 @@
 
 /**
  * wsQueue.js
- * Singleton promise-chain queue for WebSocket device connections.
+ * Singleton promise-chain queue for device operations (Serial and WebSocket).
  *
  * MicroPython WebREPL only supports ONE concurrent WebSocket connection.
- * If two operations both try to open ws: at the same time the device
- * rejects the second one immediately.
+ * Similarly, Serial COM ports on Windows can be unstable or "Busy" if
+ * multiple processes (File Explorer, Dashboard, etc.) try to open them at once.
  *
- * Every ws: subprocess call (gatherDeviceMetrics, runDeviceScript, upload,
- * download, ls, read, delete …) must be wrapped with wsQueue.run(fn) so
- * they are serialised and never overlap.
+ * Every subprocess call (gatherDeviceMetrics, runDeviceScript, upload,
+ * download, ls, read, delete …) should be wrapped with wsQueue.run(fn) so
+ * they are serialised and never overlap on the same device.
  *
  * Usage:
- *   const wsQueue = require('./wsQueue');
- *   // Only queue when the port is ws:
- *   if (port.startsWith('ws:')) {
- *     result = await wsQueue.run(() => doWsOperation());
- *   } else {
- *     result = await doOperation();
- *   }
+ *   const deviceQueue = require('./wsQueue');
+ *   result = await deviceQueue.run(() => doDeviceOperation());
  */
 
-class WsConnectionQueue {
+class DeviceOperationQueue {
   constructor() {
     /** @type {Promise<void>} always resolves — never rejects */
     this._tail = Promise.resolve();
@@ -30,7 +25,7 @@ class WsConnectionQueue {
   }
 
   /**
-   * Enqueue an async operation behind any currently-running ws: operations.
+   * Enqueue an async operation behind any currently-running device operations.
    *
    * The callback `fn` is only called after all previously enqueued operations
    * have settled (resolved OR rejected).  The returned promise resolves/rejects
@@ -61,4 +56,4 @@ class WsConnectionQueue {
   }
 }
 
-module.exports = new WsConnectionQueue();
+module.exports = new DeviceOperationQueue();

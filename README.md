@@ -1,11 +1,21 @@
-# 🚀 MicroPython Studio - VS Code Extension
-### ✨ Supporting MicroPython, CircuitPython & XBee - Local Private AI Assistant ✨
+# MicroPython Studio - VS Code Extension
+### Supporting MicroPython, CircuitPython & XBee - Local Private AI Assistant
+
+> [!IMPORTANT]
+
+> **Major Migration (v1.0.0)**: A live, bytecode-level debugger for MicroPython on the Raspberry Pi Pico 2 W.
+  Set breakpoints, step through code, inspect named locals, view the call stack,
+  and use **conditional breakpoints** — all on a running board, over USB, with a
+  VS Code UI.
+> No JTAG. No `sys.settrace`. No print-debugging.
+
+> **Major Migration (v0.9.0)**: We have transitioned from standard `mpremote` subprocesses to a custom, high-performance `mps` backend. This migration resolves critical serial port conflicts and "COM port busy" errors on dual-CDC devices like the Raspberry Pi Pico 2 W.
+
 
 [![MicroPython](https://img.shields.io/badge/MicroPython-v1.20%2B-blue?logo=micropython&logoColor=white)](https://micropython.org)
 [![CircuitPython](https://img.shields.io/badge/CircuitPython-v10.x-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
 [![XBee](https://img.shields.io/badge/XBee-MicroPython-orange)](https://www.digi.com/xbee)
-[![VS Marketplace Downloads](https://img.shields.io/visual-studio-marketplace/d/niwantha33.micropython-studio?label=downloads&color=brightgreen)](https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio)
-[![VS Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/niwantha33.micropython-studio?label=version)](https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio)
+
 
 <p >
   <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/micro_ai.png" alt="project" width="400">
@@ -74,7 +84,10 @@ A powerful IDE extension for MicroPython development with hardware integration, 
 | 21 | Read file from device | Click a file in the tree | File contents open in editor (read-only) |
 | 22 | Delete file | Right-click file → *Delete File* | Confirm dialog, file removed, tree refreshes |
 | 23 | Delete folder (with contents) | Right-click folder → *Delete Folder* | Confirm dialog, folder + all contents removed |
-| 24 | Refresh tree | Click refresh icon in panel header | Tree re-reads device filesystem |
+| 24 | Rename file/folder | Right-click → *Rename* | Rename items directly on hardware |
+| 25 | New folder | Right-click folder → *New Folder* | Create subdirectories on device |
+| 26 | Upload to specific folder | Right-click folder → *Upload to This Folder* | Select and upload files directly into that directory |
+| 27 | Refresh tree | Click refresh icon in panel header | Tree re-reads device filesystem |
 
 ### Tools
 
@@ -133,7 +146,22 @@ The extension contributes the following settings:
 
 ## Release Notes
 
-### 0.4.0 (Initial Release)
+### 0.9.0 (mpremote to mps migration)
+- **New Features**:
+  - **Major Migration**: Successfully migrated all core operations from `mpremote` subprocesses to the dedicated **MicroPython Studio (mps)** backend. This provides sub-second responsiveness and absolute connection stability.
+  - **Advanced File Management**: Added **Rename**, **New Folder**, and **Upload to Specific Folder** support in the Device File Explorer.
+  - **Professional Logging**: Transitioned all terminal status logs to a clean, ASCII-only format for 100% compatibility with Windows terminals.
+- **Improved**:
+  - **Stability**: Eliminated the "I/O operation on closed file" and "COM port busy" crashes common with dual-CDC devices (RP2040/RP2350).
+  - **WebREPL Console**: Redesigned for professional focus, removing redundant file-transfer panels in favor of the unified File Explorer.
+  - **CircuitPython Stability**: Faster and more reliable file listings via local filesystem mapping when available.
+- **Fixed**:
+  - Resolved serial port race conditions between background telemetry and user commands.
+  - Scrubbed all problematic Unicode emojis from backend processes to prevent encoding failures.
+
+---
+
+### 0.4.0 (Initial Public Release)
 
 - **Core Features**:
   - Project creation wizard

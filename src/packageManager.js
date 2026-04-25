@@ -3,6 +3,7 @@ const https = require('https');
 const path = require('path');
 const { exec } = require('child_process');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const wsQueue = require('./wsQueue');
 
 
 /**
@@ -53,16 +54,16 @@ async function fetchXBeePackageIndex() {
  * Opens a QuickPick UI allowing the user to search and select a package to install
  * @param {vscode.ExtensionContext} context 
  * @param {string} currentDevicePort The currently connected COM port (e.g. COM3)
- * @param {vscode.Terminal} terminal The active terminal to send the command to
+ * @param {function} runProcess Function to run a python process (usually runPythonProcess)
  */
-async function openPackageManager(context, currentDevicePort, terminal) {
+async function openPackageManager(context, currentDevicePort, runProcess) {
     if (!currentDevicePort) {
         vscode.window.showWarningMessage('No device connected. Please connect a device and run "Refresh Device Files" first.');
         return;
     }
 
-    if (!terminal) {
-        vscode.window.showErrorMessage('Terminal is not available.');
+    if (!runProcess) {
+        vscode.window.showErrorMessage('Process runner is not available.');
         return;
     }
 
@@ -113,29 +114,28 @@ async function openPackageManager(context, currentDevicePort, terminal) {
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
 
-            // Warn user to close the Shell terminal first — on Windows, an open
-            // mpremote REPL session holds the serial port and will cause a
-            // KeyboardInterrupt when a second mpremote process tries to connect.
             const answer = await vscode.window.showWarningMessage(
-                `Ready to install "${selected.pkgName}". Make sure the MicroPython Shell terminal is closed first — an open Shell holds the COM port and will cause the install to fail.`,
+                `Ready to install "${selected.pkgName}" on device. This operation is queued and will run securely.`,
                 { modal: true },
                 'Install Now',
                 'Cancel'
             );
             if (answer !== 'Install Now') return;
 
-            // Command: mpremote connect <port> mip install <pkg>
-            let installCmd;
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
+            let mipArgs;
             if (selected.isDigi) {
-                // Install from Digi GitHub: mpremote connect <port> mip install github:digidotcom/xbee-micropython/lib/<pkg>
-                installCmd = `"${venvPython}" -m mpremote connect ${currentDevicePort} mip install github:digidotcom/xbee-micropython/lib/${selected.pkgName}`;
+                const pkgPath = `github:digidotcom/xbee-micropython/lib/${selected.pkgName}`;
+                mipArgs = [scriptPath, '--python', venvPython, 'mip', '--port', currentDevicePort, '--package', pkgPath];
             } else {
-                installCmd = `"${venvPython}" -m mpremote connect ${currentDevicePort} mip install ${selected.pkgName}`;
+                mipArgs = [scriptPath, '--python', venvPython, 'mip', '--port', currentDevicePort, '--package', selected.pkgName];
             }
 
-            terminal.show();
-            terminal.sendText(installCmd);
-            vscode.window.showInformationMessage(`Installing ${selected.pkgName}... Check the terminal for progress.`);
+            wsQueue.run(() => new Promise((resolve) => {
+                runProcess(venvPython, mipArgs, resolve);
+            }));
+
+            vscode.window.showInformationMessage(`Installation of ${selected.pkgName} started. Check Output Panel for progress.`);
         }
     } catch (err) {
         vscode.window.showErrorMessage(`Failed to load Package Manager: ${err.message}`);
