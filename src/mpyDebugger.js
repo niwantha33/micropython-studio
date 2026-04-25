@@ -362,6 +362,7 @@ async function uploadDebuggerFiles(context, replPort, venvPython) {
         }
     }
     out.appendLine('Files uploaded. Now:');
+    out.appendLine('  1. Install usb-device-cdc using Package Install:');
     out.appendLine('  1. Open the Shell terminal');
     out.appendLine('  2. Reset the board (Ctrl-D in REPL) so boot.py runs');
     out.appendLine('  3. Type:  import trace_pump; trace_pump.start()');
