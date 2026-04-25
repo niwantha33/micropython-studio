@@ -1115,38 +1115,31 @@ function activate(context) {
         })
     );
 
-    // Flash Debug Firmware — board-aware. Each board has its own asset name and
-    // flash method. Currently Pico 2 W is fully supported; ESP32-S3 is a stub.
-    const DEBUG_BOARDS = [
-        {
-            id: 'pico2w',
-            label: 'Raspberry Pi Pico 2 W',
-            detail: 'RP2350 — UF2 drag-and-drop via BOOTSEL',
-            asset: 'firmware.uf2',
-            method: 'uf2',
-            available: true,
-        },
-        {
-            id: 'pico-w',
-            label: 'Raspberry Pi Pico W',
-            detail: 'RP2040 — coming soon',
-            asset: 'firmware-picow.uf2',
-            method: 'uf2',
-            available: false,
-        },
-        {
-            id: 'esp32-s3',
-            label: 'ESP32-S3',
-            detail: 'esptool.py flash — coming in v0.2',
-            asset: 'firmware-esp32s3.bin',
-            method: 'esptool',
-            available: false,
-        },
-    ];
-    const RELEASE_BASE = 'https://github.com/niwantha33/micropython-debugger/releases/latest/download';
+    // Flash Debug Firmware — board list and download URL come from
+    // src/debug_firmware.json so users can edit without touching code.
+    function loadDebugFirmwareConfig() {
+        const fs = require('fs');
+        const cfgPath = path.join(context.extensionPath, 'src', 'debug_firmware.json');
+        try {
+            const raw = fs.readFileSync(cfgPath, 'utf8');
+            const cfg = JSON.parse(raw);
+            return {
+                RELEASE_BASE: cfg.release_base,
+                DEBUG_BOARDS: cfg.boards || [],
+            };
+        } catch (e) {
+            vscode.window.showErrorMessage('Failed to load debug_firmware.json: ' + e.message);
+            return { RELEASE_BASE: '', DEBUG_BOARDS: [] };
+        }
+    }
 
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.flashDebugFirmware', async () => {
+            const { RELEASE_BASE, DEBUG_BOARDS } = loadDebugFirmwareConfig();
+            if (!RELEASE_BASE || DEBUG_BOARDS.length === 0) {
+                vscode.window.showErrorMessage('debug_firmware.json is missing or invalid.');
+                return;
+            }
             const pick = await vscode.window.showQuickPick(
                 DEBUG_BOARDS.map(b => ({
                     label: (b.available ? '$(check) ' : '$(circle-slash) ') + b.label,

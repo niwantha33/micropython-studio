@@ -236,6 +236,10 @@ function openDebuggerPanel(context, port) {
             panel.webview.postMessage({ evt: 'sent', op: `set_bp ${modName}.${info.func}:${line1} (rel=${relLine})` });
             return;
         }
+        if (msg.op === 'flash_firmware') {
+            vscode.commands.executeCommand('micropython-ide.flashDebugFirmware');
+            return;
+        }
         if (msg.op === 'goto_frame') {
             const tgt = msg.target; // { fsPath, line }
             if (tgt && tgt.fsPath) {
@@ -422,6 +426,7 @@ button:hover { background: #3d3d3d; }
   <button onclick="send('locals')">{ } Locals (l)</button>
   <button onclick="send('call_stack')">☰ Call Stack (k)</button>
   <button onclick="send('set_bp_here')">● Set BP at cursor</button>
+  <button onclick="send('flash_firmware')" style="margin-left:12px">⬇ Download Firmware</button>
   <button onclick="document.getElementById('log').innerHTML=''">Clear</button>
 </div>
 <div id="log"></div>
