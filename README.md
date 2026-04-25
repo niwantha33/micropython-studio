@@ -2,13 +2,20 @@
 ### Supporting MicroPython, CircuitPython & XBee - Local Private AI Assistant
 
 > [!IMPORTANT]
+
+> **Major Migration (v1.0.0)**: A live, bytecode-level debugger for MicroPython on the Raspberry Pi Pico 2 W.
+  Set breakpoints, step through code, inspect named locals, view the call stack,
+  and use **conditional breakpoints** — all on a running board, over USB, with a
+  VS Code UI.
+> No JTAG. No `sys.settrace`. No print-debugging.
+
 > **Major Migration (v0.9.0)**: We have transitioned from standard `mpremote` subprocesses to a custom, high-performance `mps` backend. This migration resolves critical serial port conflicts and "COM port busy" errors on dual-CDC devices like the Raspberry Pi Pico 2 W.
+
 
 [![MicroPython](https://img.shields.io/badge/MicroPython-v1.20%2B-blue?logo=micropython&logoColor=white)](https://micropython.org)
 [![CircuitPython](https://img.shields.io/badge/CircuitPython-v10.x-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
 [![XBee](https://img.shields.io/badge/XBee-MicroPython-orange)](https://www.digi.com/xbee)
-[![VS Marketplace Downloads](https://img.shields.io/visual-studio-marketplace/d/niwantha33.micropython-studio?label=downloads&color=brightgreen)](https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio)
-[![VS Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/niwantha33.micropython-studio?label=version)](https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio)
+
 
 <p >
   <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/micro_ai.png" alt="project" width="400">

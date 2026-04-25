@@ -25,11 +25,62 @@ const { getConnectedDevices } = require('./runCommand');
 const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
 
+// Download a URL to a local path, following redirects.
+function downloadFile(url, dest, redirects = 5) {
+    const https = require('https');
+    const fs = require('fs');
+    return new Promise((resolve, reject) => {
+        const req = https.get(url, (res) => {
+            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
+                res.resume();
+                return resolve(downloadFile(res.headers.location, dest, redirects - 1));
+            }
+            if (res.statusCode !== 200) {
+                res.resume();
+                return reject(new Error('HTTP ' + res.statusCode));
+            }
+            const file = fs.createWriteStream(dest);
+            res.pipe(file);
+            file.on('finish', () => file.close(() => resolve(dest)));
+            file.on('error', reject);
+        });
+        req.on('error', reject);
+        req.setTimeout(30000, () => req.destroy(new Error('timeout')));
+    });
+}
+
+// Detect a Pico in BOOTSEL mode by looking for a drive containing INFO_UF2.TXT
+// with a Raspberry Pi RP2350 / RP2040 board ID. Returns the mount path or null.
+async function findPicoBootselDrive() {
+    const fs = require('fs');
+    const path = require('path');
+    const candidates = [];
+    if (process.platform === 'win32') {
+        for (let c = 67; c <= 90; c++) candidates.push(String.fromCharCode(c) + ':\\');
+    } else if (process.platform === 'darwin') {
+        candidates.push('/Volumes/RPI-RP2', '/Volumes/RP2350');
+    } else {
+        const u = process.env.USER || 'user';
+        candidates.push(`/media/${u}/RPI-RP2`, `/media/${u}/RP2350`, `/run/media/${u}/RPI-RP2`, `/run/media/${u}/RP2350`);
+    }
+    for (const d of candidates) {
+        try {
+            const info = path.join(d, 'INFO_UF2.TXT');
+            if (fs.existsSync(info)) {
+                const txt = fs.readFileSync(info, 'utf8');
+                if (/RP2350|RP2040|Raspberry Pi/i.test(txt)) return d;
+            }
+        } catch (_) { /* skip */ }
+    }
+    return null;
+}
+
 // ─── Global State ────────────────────────────────────────────────────────────
 
 const outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
 
 let gMpremoteTerminal = null;
+let gShellTerminal = null;
 let gRemoteDevicePort = null;
 let gDeviceCodeDir = null;
 let gDeviceFirmware = 'MicroPython'; // 'MicroPython' | 'CircuitPython'
@@ -394,6 +445,15 @@ function activate(context) {
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
 
+    // Stop VS Code's Python extension from auto-typing the venv activate path
+    // into our REPL terminal. This setting is workspace-scoped.
+    try {
+        const cfg = vscode.workspace.getConfiguration('python');
+        if (cfg.get('terminal.activateEnvironment') !== false) {
+            cfg.update('terminal.activateEnvironment', false, vscode.ConfigurationTarget.Workspace);
+        }
+    } catch (_) { /* ignore */ }
+
     const getAIAssistanceContext = async () => {
         // 1. Determine the active project root based on the current editor
         const editor = vscode.window.activeTextEditor;
@@ -628,10 +688,27 @@ function activate(context) {
 
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
-
-            const terminal = getMpremoteTerminal();
             const helperPy = path.join(context.extensionPath, 'src', 'mps_backend.py');
-            sendCleanCommand(terminal, `"${venvPython}" "${helperPy}" --python "${venvPython}" shell --port ${gRemoteDevicePort}`);
+
+            // Dedicated terminal where the shell process IS python directly.
+            // This bypasses PowerShell/cmd, so VS Code's Python extension cannot
+            // inject venv-activation text into our REPL stdin.
+            if (gShellTerminal) {
+                try { gShellTerminal.dispose(); } catch (_) {}
+                gShellTerminal = null;
+            }
+            gShellTerminal = vscode.window.createTerminal({
+                name: `MicroPython Shell (${gRemoteDevicePort})`,
+                shellPath: venvPython,
+                shellArgs: [helperPy, '--python', venvPython, 'shell', '--port', gRemoteDevicePort],
+                env: {
+                    // Prevent VS Code Python ext from re-activating venv into this terminal.
+                    VSCODE_DISABLE_PYTHON_AUTO_ACTIVATE: '1',
+                    PYTHONUNBUFFERED: '1',
+                },
+                strictEnv: false,
+            });
+            gShellTerminal.show(true);
         })
     );
 
@@ -1034,6 +1111,102 @@ function activate(context) {
             if (deviceFileExplorer) {
                 const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
                 deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
+            }
+        })
+    );
+
+    // Flash Debug Firmware — board-aware. Each board has its own asset name and
+    // flash method. Currently Pico 2 W is fully supported; ESP32-S3 is a stub.
+    const DEBUG_BOARDS = [
+        {
+            id: 'pico2w',
+            label: 'Raspberry Pi Pico 2 W',
+            detail: 'RP2350 — UF2 drag-and-drop via BOOTSEL',
+            asset: 'firmware.uf2',
+            method: 'uf2',
+            available: true,
+        },
+        {
+            id: 'pico-w',
+            label: 'Raspberry Pi Pico W',
+            detail: 'RP2040 — coming soon',
+            asset: 'firmware-picow.uf2',
+            method: 'uf2',
+            available: false,
+        },
+        {
+            id: 'esp32-s3',
+            label: 'ESP32-S3',
+            detail: 'esptool.py flash — coming in v0.2',
+            asset: 'firmware-esp32s3.bin',
+            method: 'esptool',
+            available: false,
+        },
+    ];
+    const RELEASE_BASE = 'https://github.com/niwantha33/micropython-debugger/releases/latest/download';
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.flashDebugFirmware', async () => {
+            const pick = await vscode.window.showQuickPick(
+                DEBUG_BOARDS.map(b => ({
+                    label: (b.available ? '$(check) ' : '$(circle-slash) ') + b.label,
+                    description: b.available ? '' : '(not available yet)',
+                    detail: b.detail,
+                    board: b,
+                })),
+                { placeHolder: 'Select target board for debug firmware' }
+            );
+            if (!pick) return;
+            const board = pick.board;
+            if (!board.available) {
+                vscode.window.showInformationMessage(`${board.label} is not supported yet. Pico 2 W is the only board for v0.1.`);
+                return;
+            }
+            if (board.method !== 'uf2') {
+                vscode.window.showWarningMessage(`Flash method "${board.method}" not implemented yet.`);
+                return;
+            }
+            const url = `${RELEASE_BASE}/${board.asset}`;
+            const out = vscode.window.createOutputChannel('Flash Debug Firmware');
+            out.show(true);
+            out.appendLine(`Target: ${board.label}`);
+            out.appendLine('Downloading firmware from:');
+            out.appendLine('  ' + url);
+            const tmp = path.join(require('os').tmpdir(), `mpy-debugger-${board.id}.uf2`);
+            try {
+                await downloadFile(url, tmp);
+                out.appendLine('Downloaded to ' + tmp);
+            } catch (e) {
+                out.appendLine('ERROR: ' + e.message);
+                vscode.window.showErrorMessage('Download failed: ' + e.message);
+                return;
+            }
+
+            // Find a BOOTSEL drive
+            const drive = await findPicoBootselDrive();
+            if (!drive) {
+                const pick = await vscode.window.showInformationMessage(
+                    'Firmware downloaded. Hold BOOTSEL on your Pico, plug USB in, then click Retry.',
+                    'Retry', 'Open folder', 'Cancel'
+                );
+                if (pick === 'Open folder') {
+                    vscode.env.openExternal(vscode.Uri.file(path.dirname(tmp)));
+                    return;
+                }
+                if (pick === 'Retry') {
+                    return vscode.commands.executeCommand('micropython-ide.flashDebugFirmware');
+                }
+                return;
+            }
+            try {
+                const target = path.join(drive, 'firmware.uf2');
+                require('fs').copyFileSync(tmp, target);
+                out.appendLine('Copied to ' + target);
+                out.appendLine('Pico will reboot now.');
+                vscode.window.showInformationMessage('Firmware flashed. Pico is rebooting.');
+            } catch (e) {
+                out.appendLine('Copy failed: ' + e.message);
+                vscode.window.showErrorMessage('Copy to Pico failed: ' + e.message);
             }
         })
     );
@@ -1498,7 +1671,7 @@ function createStatusBar(context) {
     context.subscriptions.push(stopButton);
 
     // 6. Flash firmware button
-    const flashButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    const flashButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
     flashButton.text = '$(flame) Flash';
     flashButton.tooltip = 'Flash MicroPython firmware to device';
     flashButton.command = 'micropython-ide.flashFirmware';

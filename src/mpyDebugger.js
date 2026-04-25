@@ -13,6 +13,8 @@ let bpDisposable = null;
 const bpSlotMap = new Map(); // key "module:func:line" -> slot (filled on reply)
 const pendingBpReplies = []; // queue of {key, fsPath, line1}
 const ipToLoc = new Map();   // ip -> {fsPath, line1}
+const ipToCond = new Map();  // ip -> condition string (optional)
+let pendingCondEval = null;  // { ip, cond, names } while awaiting locals reply
 let hlDeco = null;            // TextEditorDecorationType for current line
 let lastHlEditor = null;
 
@@ -21,7 +23,7 @@ let lastHlEditor = null;
 function findEnclosingFunction(text, line) {
     const lines = text.split(/\r?\n/);
     for (let i = Math.min(line - 1, lines.length - 1); i >= 0; i--) {
-        const m = lines[i].match(/^\s*def\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/);
+        const m = lines[i].match(/^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/);
         if (m) {
             const args = m[2].split(',').map(s => s.trim().split(/[:=]/)[0].trim()).filter(Boolean);
             return { func: m[1], defLine: i + 1, args };
@@ -101,22 +103,88 @@ function openDebuggerPanel(context, port) {
                 const msg = JSON.parse(line);
                 // Capture slot numbers from reply text: "bp N @ mod.func:line ip=..."
                 if (msg.evt === 'reply' && typeof msg.text === 'string') {
-                    const m = msg.text.match(/^bp (\d+) @ ([^:]+):(\d+) ip=(\d+)/);
+                    const m = msg.text.match(/^bp (\d+) @ ([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
                     if (m && pendingBpReplies.length) {
                         const info = pendingBpReplies.shift();
                         bpSlotMap.set(info.key, parseInt(m[1], 10));
-                        ipToLoc.set(parseInt(m[4], 10), { fsPath: info.fsPath, line1: info.line1, fnKey: info.fnKey });
+                        const bpIp = parseInt(m[4], 10);
+                        ipToLoc.set(bpIp, { fsPath: info.fsPath, line1: info.line1, fnKey: info.fnKey });
+                        if (info.cond) ipToCond.set(bpIp, info.cond);
+                        if (m[5]) {
+                            const funPtr = m[5];
+                            panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
+                        }
                     }
                 }
                 if (msg.evt === 'bp_hit') {
                     const loc = ipToLoc.get(msg.ip);
+                    const cond = ipToCond.get(msg.ip);
+                    if (cond && loc) {
+                        // Defer UI surface; ask for locals, evaluate, then decide.
+                        pendingCondEval = { ip: msg.ip, cond, loc, names: localNamesByFn.get(loc.fnKey) || [] };
+                        try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
+                        continue; // do not forward bp_hit yet
+                    }
                     if (loc) {
                         highlightLine(loc.fsPath, loc.line1);
                         panel.webview.postMessage({ evt: 'names', names: localNamesByFn.get(loc.fnKey) || [] });
                     }
                     panel.webview.postMessage({ evt: 'status', paused: true });
-                    // auto-fetch locals
                     try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
+                }
+                if (msg.evt === 'reply' && pendingCondEval && typeof msg.text === 'string' && msg.text.startsWith('frame=')) {
+                    const pe = pendingCondEval;
+                    pendingCondEval = null;
+                    const fm = msg.text.match(/frame=\(([^)]+)\)\s+state=\[(.*)\]$/);
+                    let passed = false, err = null;
+                    if (fm) {
+                        const n = parseInt(fm[1].split(',')[0]);
+                        // split state respecting quotes
+                        const raw = fm[2];
+                        const parts = [];
+                        let cur = '', q = null, depth = 0;
+                        for (let i = 0; i < raw.length; i++) {
+                            const c = raw[i];
+                            if (q) { cur += c; if (c === q && raw[i-1] !== '\\') q = null; continue; }
+                            if (c === "'" || c === '"') { q = c; cur += c; continue; }
+                            if (c === '[' || c === '(') { depth++; cur += c; continue; }
+                            if (c === ']' || c === ')') { depth--; cur += c; continue; }
+                            if (c === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; continue; }
+                            cur += c;
+                        }
+                        if (cur.trim()) parts.push(cur.trim());
+                        const args = {};
+                        for (let i = 0; i < pe.names.length; i++) {
+                            const idx = n - 1 - i;
+                            let v = (idx >= 0 && idx < parts.length) ? parts[idx] : 'null';
+                            v = v.replace(/\bNone\b/g, 'null').replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false');
+                            try { args[pe.names[i]] = eval('(' + v + ')'); } catch (_) { args[pe.names[i]] = v; }
+                        }
+                        let js = pe.cond
+                            .replace(/\band\b/g, '&&').replace(/\bor\b/g, '||').replace(/\bnot\b/g, '!')
+                            .replace(/\bNone\b/g, 'null').replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false');
+                        try {
+                            const fn = new Function(...pe.names, 'return (' + js + ')');
+                            passed = !!fn(...pe.names.map(k => args[k]));
+                        } catch (e) { err = String(e); }
+                    }
+                    if (!passed) {
+                        if (err) panel.webview.postMessage({ evt: 'error', msg: 'cond error: ' + err + ' → pausing' });
+                        if (err) { /* fall through to pause */ }
+                        else {
+                            panel.webview.postMessage({ evt: 'sent', op: `cond false @ ip=0x${pe.ip.toString(16)} → resume` });
+                            try { bridge.stdin.write(JSON.stringify({ op: 'continue' }) + '\n'); } catch (e) {}
+                            continue; // swallow reply
+                        }
+                    }
+                    // surface the pause we previously suppressed
+                    if (pe.loc) {
+                        highlightLine(pe.loc.fsPath, pe.loc.line1);
+                        panel.webview.postMessage({ evt: 'names', names: pe.names });
+                    }
+                    panel.webview.postMessage({ evt: 'bp_hit', ip: pe.ip });
+                    panel.webview.postMessage({ evt: 'status', paused: true });
+                    // forward the reply so locals table renders
                 }
                 if (msg.evt === 'sent' && (msg.op === 'continue' || (msg.op && msg.op.startsWith && msg.op.startsWith('step')))) {
                     clearHighlight();
@@ -162,10 +230,23 @@ function openDebuggerPanel(context, port) {
             const key = `${modName}:${info.func}:${line1}`;
             const names = extractLocalNames(text, info.defLine, info.args);
             localNamesByFn.set(`${modName}:${info.func}`, names);
-            pendingBpReplies.push({ key, fsPath: ed.document.fileName, line1, fnKey: `${modName}:${info.func}` });
+            pendingBpReplies.push({ key, fsPath: ed.document.fileName, line1, fnKey: `${modName}:${info.func}`, defLine: info.defLine });
             const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
             bridge.stdin.write(JSON.stringify(out) + '\n');
             panel.webview.postMessage({ evt: 'sent', op: `set_bp ${modName}.${info.func}:${line1} (rel=${relLine})` });
+            return;
+        }
+        if (msg.op === 'goto_frame') {
+            const tgt = msg.target; // { fsPath, line }
+            if (tgt && tgt.fsPath) {
+                vscode.workspace.openTextDocument(tgt.fsPath).then(doc => {
+                    vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One }).then(ed => {
+                        const r = new vscode.Range(Math.max(0, (tgt.line || 1) - 1), 0, Math.max(0, (tgt.line || 1) - 1), 0);
+                        ed.revealRange(r, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+                        ed.selection = new vscode.Selection(r.start, r.start);
+                    });
+                });
+            }
             return;
         }
         bridge.stdin.write(JSON.stringify(msg) + '\n');
@@ -193,12 +274,26 @@ function openDebuggerPanel(context, port) {
                 const key = `${modName}:${info.func}:${line1}`;
                 const names = extractLocalNames(text, info.defLine, info.args);
                 localNamesByFn.set(`${modName}:${info.func}`, names);
-                pendingBpReplies.push({ key, fsPath, line1, fnKey: `${modName}:${info.func}` });
+                const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
+                pendingBpReplies.push({ key, fsPath, line1, fnKey: `${modName}:${info.func}`, cond, defLine: info.defLine });
                 const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
                 bridge.stdin.write(JSON.stringify(out) + '\n');
-                panel.webview.postMessage({ evt: 'sent', op: `set_bp ${key} rel=${relLine}` });
+                panel.webview.postMessage({ evt: 'sent', op: `set_bp ${key} rel=${relLine}${cond ? ' cond=' + cond : ''}` });
             } catch (e) {
                 panel.webview.postMessage({ evt: 'error', msg: String(e) });
+            }
+        }
+        for (const bp of ev.changed) {
+            if (!(bp instanceof vscode.SourceBreakpoint)) continue;
+            const fsPath = bp.location.uri.fsPath;
+            if (!fsPath.endsWith('.py')) continue;
+            const line1 = bp.location.range.start.line + 1;
+            const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
+            for (const [ip, l] of ipToLoc.entries()) {
+                if (l.fsPath === fsPath && l.line1 === line1) {
+                    if (cond) ipToCond.set(ip, cond); else ipToCond.delete(ip);
+                    panel.webview.postMessage({ evt: 'sent', op: `cond ${path.basename(fsPath)}:${line1} = ${cond || '(none)'}` });
+                }
             }
         }
         for (const bp of ev.removed) {
@@ -212,6 +307,10 @@ function openDebuggerPanel(context, port) {
                 if (k.startsWith(`${modName}:`) && k.endsWith(`:${line1}`)) {
                     bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
                     bpSlotMap.delete(k);
+                    // also drop any ipToCond entries for this location
+                    for (const [ip, l] of ipToLoc.entries()) {
+                        if (l.fsPath === fsPath && l.line1 === line1) ipToCond.delete(ip);
+                    }
                     break;
                 }
             }
@@ -331,6 +430,7 @@ button:hover { background: #3d3d3d; }
 const vscode = acquireVsCodeApi();
 const log = document.getElementById('log');
 let currentNames = [];
+const funNames = {};
 function add(cls, text) {
   const line = document.createElement('div');
   line.className = cls;
@@ -339,6 +439,15 @@ function add(cls, text) {
   log.scrollTop = log.scrollHeight;
 }
 function send(op) { vscode.postMessage({op}); }
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a[data-fun]');
+  if (!a) return;
+  e.preventDefault();
+  const rec = funNames[a.getAttribute('data-fun')];
+  if (rec && rec.fsPath) {
+    vscode.postMessage({ op: 'goto_frame', target: { fsPath: rec.fsPath, line: rec.defLine } });
+  }
+});
 window.addEventListener('message', (e) => {
   const m = e.data;
   if (m.evt === 'bp_hit') add('bp', 'BP_HIT  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
@@ -354,7 +463,12 @@ window.addEventListener('message', (e) => {
       while ((mm = re.exec(inner)) !== null) frames.push({fun: mm[1], ip: parseInt(mm[2])});
       let html = '<table>';
       frames.forEach((f, i) => {
-        html += '<tr><td class="k">#' + i + '</td><td>fun=0x' + parseInt(f.fun).toString(16) + ' ip=0x' + f.ip.toString(16).padStart(4,'0') + '</td></tr>';
+        const rec = funNames[f.fun];
+        if (rec) {
+          html += '<tr><td class="k">#' + i + '</td><td><a href="#" data-fun="' + f.fun + '" style="color:#88c0ff;text-decoration:underline">' + rec.name + '</a> <span style="color:#888">ip=0x' + f.ip.toString(16).padStart(4,'0') + '</span></td></tr>';
+        } else {
+          html += '<tr><td class="k">#' + i + '</td><td><span style="color:#888">fun=0x' + parseInt(f.fun).toString(16) + ' ip=0x' + f.ip.toString(16).padStart(4,'0') + '</span></td></tr>';
+        }
       });
       html += '</table>';
       document.getElementById('stack-body').innerHTML = frames.length ? html : '(empty)';
@@ -395,6 +509,7 @@ window.addEventListener('message', (e) => {
   else if (m.evt === 'closed') add('err', '(bridge closed)');
   else if (m.evt === 'open') add('reply', 'connected to ' + m.port);
   else if (m.evt === 'names') { currentNames = m.names || []; }
+  else if (m.evt === 'fun_name') { funNames[m.fun] = { name: m.name, fsPath: m.fsPath, defLine: m.defLine }; }
   else if (m.evt === 'status') {
     const el = document.getElementById('status');
     if (m.paused) { el.textContent = '⏸ PAUSED'; el.style.color = '#ffa500'; }

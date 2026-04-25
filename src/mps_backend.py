@@ -1991,7 +1991,7 @@ def cmd_shell(python_exe, port):
     time.sleep(0.5)
     
     print(f" [SUCCESS] Connected to MicroPython at {port}")
-    print("Use Ctrl-] or Ctrl-x to exit this shell")
+    print("Use Ctrl-] or Ctrl-x to exit this shell. If '>>>' is not visible, press Enter.")
     
     # Custom pyserial shell with DEL->BS translation so Backspace works on
     # Windows. Exit with Ctrl-] or Ctrl-X.
@@ -2023,6 +2023,30 @@ def cmd_shell(python_exe, port):
 
     t = threading.Thread(target=reader, daemon=True)
     t.start()
+
+    # Drain anything VS Code's Python extension auto-types into our pty
+    # (e.g. the venv activate path). We swallow the first ~700ms of stdin
+    # so it never reaches the device's REPL.
+    _drain_until = time.time() + 0.7
+    if os.name == 'nt':
+        try:
+            import msvcrt as _m0
+            while time.time() < _drain_until:
+                if _m0.kbhit():
+                    _m0.getch()
+                else:
+                    time.sleep(0.02)
+        except Exception:
+            pass
+    else:
+        try:
+            import select as _sel
+            while time.time() < _drain_until:
+                r, _, _ = _sel.select([sys.stdin], [], [], 0.05)
+                if r:
+                    os.read(sys.stdin.fileno(), 4096)
+        except Exception:
+            pass
 
     # Try to put stdin in raw mode so keystrokes pass through byte-by-byte.
     # On Windows use msvcrt; on POSIX use termios+tty.
