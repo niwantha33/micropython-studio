@@ -29,15 +29,15 @@
     {
       "id": "esp32-s3",
       "label": "ESP32-S3",
-      "detail": "esptool.py flash — coming in v0.2",
+      "detail": "esptool.py flash",
       "asset": "ESP32S3/firmware.bin",
       "method": "esptool",
-      "available": false
+      "available": true
     },
     {
       "id": "esp32-s2",
       "label": "ESP32-S2",
-      "detail": "esptool.py flash — coming in v0.2",
+      "detail": "esptool.py flash",
       "asset": "ESP32S2/firmware.bin",
       "method": "esptool",
       "available": false
