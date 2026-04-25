@@ -1,0 +1,54 @@
+{
+  "_comment": "Edit this file to change firmware download sources. No JS edit needed; reload VS Code window after changes.",
+  "release_base": "https://raw.githubusercontent.com/niwantha33/micropython_live_dbg_firmware/main",
+  "boards": [
+    {
+      "id": "pico2w",
+      "label": "Raspberry Pi Pico 2 W",
+      "detail": "RP2350 — UF2 drag-and-drop via BOOTSEL",
+      "asset": "Pico2w/firmware.uf2",
+      "method": "uf2",
+      "available": true
+    },
+    {
+      "id": "picow",
+      "label": "Raspberry Pi Pico W",
+      "detail": "RP2040 — coming soon",
+      "asset": "Picow/firmware.uf2",
+      "method": "uf2",
+      "available": false
+    },
+    {
+      "id": "pico",
+      "label": "Raspberry Pi Pico",
+      "detail": "RP2040 — coming soon",
+      "asset": "Pico/firmware.uf2",
+      "method": "uf2",
+      "available": false
+    },
+    {
+      "id": "esp32-s3",
+      "label": "ESP32-S3",
+      "detail": "esptool.py flash — coming in v0.2",
+      "asset": "ESP32S3/firmware.bin",
+      "method": "esptool",
+      "available": false
+    },
+    {
+      "id": "esp32-s2",
+      "label": "ESP32-S2",
+      "detail": "esptool.py flash — coming in v0.2",
+      "asset": "ESP32S2/firmware.bin",
+      "method": "esptool",
+      "available": false
+    },
+    {
+      "id": "esp32-c3",
+      "label": "ESP32-C3",
+      "detail": "esptool.py flash — later",
+      "asset": "ESP32C3/firmware.bin",
+      "method": "esptool",
+      "available": false
+    }
+  ]
+}
