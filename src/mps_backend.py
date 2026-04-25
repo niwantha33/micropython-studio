@@ -864,22 +864,26 @@ l()
             # Strategy A: one-shot for ALL sizes (chunked path had a corruption
             # bug where chunk-write echoes occasionally interleaved into the
             # file content). Slower for very large files but reliable.
-            if True or len(data) <= 512:
+            if True:
+                # Build one raw-paste script with many small unhexlify() calls.
+                # Single giant string literals choke the parser on ESP32-S3.
                 hex_str = binascii.hexlify(data).decode()
-                one_shot_code = (
-                    f"import binascii, os, time\n"
-                    f"try: os.remove({dest!r})\n"
-                    f"except: pass\n"
-                    f"time.sleep(0.01)\n"
-                    f"try:\n"
-                    f" _f=open({dest!r},'wb')\n"
-                    f" _f.write(binascii.unhexlify({hex_str!r}))\n"
-                    f" _f.close()\n"
-                    f"except Exception as e: print('FAIL:', e)"
-                )
-                rc, stdout, _ = self._exec_raw_no_exit(one_shot_code)
-                if b'FAIL:' in stdout: return 1
-                return rc
+                CHUNK = 1024
+                lines = [
+                    "import binascii as _b, os as _o",
+                    f"try: _o.remove({dest!r})",
+                    "except: pass",
+                    f"_f=open({dest!r},'wb')",
+                ]
+                for i in range(0, len(hex_str), CHUNK):
+                    lines.append(f"_f.write(_b.unhexlify({hex_str[i:i+CHUNK]!r}))")
+                lines.append("_f.close()")
+                lines.append("print('OK_PUT')")
+                code = "\n".join(lines)
+                rc, stdout, _ = self._exec_raw_no_exit(code, timeout=60)
+                if b'OK_PUT' not in stdout:
+                    return 1
+                return 0
 
             # Initial cleanup and open
             setup_code = (
@@ -934,9 +938,9 @@ l()
         dirs = sorted(list(all_dirs))
         
         # Enter raw REPL once
-        sys.stderr.write("DEBUG: Entering raw REPL for bulk upload...\n")
+        if MPS_DEBUG: sys.stderr.write("DEBUG: Entering raw REPL for bulk upload...\n"))
         if not self.enter_raw_repl(soft_reset=False):
-            sys.stderr.write("DEBUG: Failed to enter raw REPL normally, trying soft reset...\n")
+            if MPS_DEBUG: sys.stderr.write("DEBUG: Failed to enter raw REPL normally, trying soft reset...\n"))
             if not self.enter_raw_repl(soft_reset=True):
                 raise Exception(f"Could not enter raw REPL for directory upload")
 
@@ -972,32 +976,37 @@ for d in {all_target_dirs!r}:
                 # So we inline the logic here to stay in the SAME raw REPL session
                 self._put_file_internal(f, remote_path)
         finally:
-            sys.stderr.write("DEBUG: Exiting raw REPL.\n")
+            if MPS_DEBUG: sys.stderr.write("DEBUG: Exiting raw REPL.\n"))
             self.serial.write(b'\x02') # Exit raw REPL
 
     def _put_file_internal(self, source_path: Path, remote_path: str):
         """Internal helper for uploading a file while ALREADY in raw REPL mode.
-        One-shot hex transfer via raw-paste flow control — same path as put_file."""
+        Builds one raw-paste script that writes the file in many small
+        unhexlify() calls — avoids the device's parser blowing up on a giant
+        single string literal (failure mode on ESP32-S3 for >20KB files)."""
         import binascii
         data = source_path.read_bytes()
         dest = remote_path.replace('\\', '/')
         hex_str = binascii.hexlify(data).decode()
-        one_shot = (
-            f"import binascii, os, time\n"
-            f"try: os.remove({dest!r})\n"
-            f"except: pass\n"
-            f"time.sleep(0.01)\n"
-            f"try:\n"
-            f" _f=open({dest!r},'wb')\n"
-            f" _f.write(binascii.unhexlify({hex_str!r}))\n"
-            f" _f.close()\n"
-            f"except Exception as e: print('FAIL:', e)"
-        )
-        rc, stdout, _ = self._exec_raw_no_exit(one_shot)
-        if b'FAIL:' in stdout:
-            sys.stderr.write(f"   [ERROR] Upload of {dest} reported FAIL\n")
+
+        CHUNK = 1024  # 512 bytes binary per write call
+        lines = [
+            "import binascii as _b, os as _o",
+            f"try: _o.remove({dest!r})",
+            "except: pass",
+            f"_f=open({dest!r},'wb')",
+        ]
+        for i in range(0, len(hex_str), CHUNK):
+            lines.append(f"_f.write(_b.unhexlify({hex_str[i:i+CHUNK]!r}))")
+        lines.append("_f.close()")
+        lines.append("print('OK_PUT')")
+        code = "\n".join(lines)
+
+        rc, stdout, _ = self._exec_raw_no_exit(code, timeout=60)
+        if b'OK_PUT' not in stdout:
+            sys.stderr.write(f"   [ERROR] Upload of {dest} did not finish (no OK_PUT)\n")
             return 1
-        return rc
+        return 0
 
     def get_file(self, remote_path: str, local_path: Path):
         """Download a file using hex-encoding bracketed by sentinel markers.
@@ -1181,16 +1190,16 @@ print("<<MIP_DONE>>")
         # Check for success message in addition to return code
         # (MicroPython sys.exit(1) doesn't always signal properly in raw REPL stderr)
         if rc == 0 and is_success and not is_network_error:
-            sys.stderr.write("DEBUG: On-device installation check complete.\n")
+            if MPS_DEBUG: sys.stderr.write("DEBUG: On-device installation check complete.\n"))
             sys.exit(0)
 
     if not is_network_error:
-        sys.stderr.write(f"DEBUG: On-device installation failed with code {rc}. No network error detected.\n")
+        if MPS_DEBUG: sys.stderr.write(f"DEBUG: On-device installation failed with code {rc}. No network error detected.\n"))
         print(f"On-device installation failed.", file=sys.stderr)
         sys.exit(rc)
 
     # ── Fallback: PC-side download ─────────────────────────────────────────
-    sys.stderr.write("DEBUG: Device has no network. Starting PC-side fallback...\n")
+    if MPS_DEBUG: sys.stderr.write("DEBUG: Device has no network. Starting PC-side fallback...\n"))
     print(f"Device has no network. Falling back to PC-side download...", file=sys.stderr)
     try:
         import mpremote.mip
@@ -1207,7 +1216,7 @@ print("<<MIP_DONE>>")
         try:
             # We use a custom transport to download to the local dir
             transport = LocalTransport(target_dir)
-            sys.stderr.write(f"DEBUG: Using mpremote.mip for PC-side download...\n")
+            if MPS_DEBUG: sys.stderr.write(f"DEBUG: Using mpremote.mip for PC-side download...\n"))
             mpremote.mip._install_package(
                 transport,
                 package,
@@ -1217,9 +1226,9 @@ print("<<MIP_DONE>>")
                 False # mpy (force .py)
             )
         except Exception as e:
-            sys.stderr.write(f"DEBUG: mpremote.mip failed: {e}\n")
+            if MPS_DEBUG: sys.stderr.write(f"DEBUG: mpremote.mip failed: {e}\n"))
             if "digidotcom" in package.lower():
-                sys.stderr.write("DEBUG: Falling back to manual GitHub API download for Digi library...\n")
+                if MPS_DEBUG: sys.stderr.write("DEBUG: Falling back to manual GitHub API download for Digi library...\n"))
                 _download_digi_repo_folder(package, target_dir)
             else:
                 print(f"PC-side download failed: {e}", file=sys.stderr)
@@ -1263,7 +1272,7 @@ def _download_digi_repo_folder(package_url: str, target_dir: Path):
     path_in_repo = "/".join(parts[2:])
     
     api_url = f"https://api.github.com/repos/{org}/{repo}/contents/{path_in_repo}"
-    sys.stderr.write(f"DEBUG: Fetching directory listing from {api_url}\n")
+    if MPS_DEBUG: sys.stderr.write(f"DEBUG: Fetching directory listing from {api_url}\n"))
     
     try:
         headers = {"User-Agent": "MicroPython-Studio-IDE"}

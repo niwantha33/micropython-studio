@@ -82,7 +82,7 @@ def _pump():
                         text = "no code on %s.%s line %d" % (mn, fn, line)
                     else:
                         slot = dbg.set_bp(func, ip)
-                        text = "bp %d @ %s.%s:%d ip=%d" % (slot, mn, fn, line, ip)
+                        text = "bp %d @ %s.%s:%d ip=%d fun=%d" % (slot, mn, fn, line, ip, id(func))
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
@@ -97,6 +97,19 @@ def _pump():
                     slot = cmd_buf[3]
                     dbg.clear_bp(slot)
                     text = "cleared bp %d" % slot
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x17:
+                # call_stack: return list of (fun_bc_ptr, ip_off)
+                try:
+                    stack = dbg.call_stack()
+                    text = "stack=" + repr(stack)
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
