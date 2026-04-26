@@ -401,7 +401,7 @@ function updateDeviceStatusBar() {
     if (gRemoteDevicePort) {
         const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
         const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : gRemoteDevicePort;
-        deviceStatusBarItem.text = `[OK] ${portLabel}`;
+        deviceStatusBarItem.text = `${portLabel}`;
         deviceStatusBarItem.tooltip = `Connected to ${gRemoteDevicePort}`;
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
@@ -694,7 +694,7 @@ function activate(context) {
             // This bypasses PowerShell/cmd, so VS Code's Python extension cannot
             // inject venv-activation text into our REPL stdin.
             if (gShellTerminal) {
-                try { gShellTerminal.dispose(); } catch (_) {}
+                try { gShellTerminal.dispose(); } catch (_) { }
                 gShellTerminal = null;
             }
             gShellTerminal = vscode.window.createTerminal({
@@ -720,6 +720,10 @@ function activate(context) {
                 vscode.window.showWarningMessage('No file selected to run.');
                 return;
             }
+
+            vscode.window.showInformationMessage(
+                "💡 Note: If you have Dual-CDC or Debugger mode enabled, avoid using the 'Run' command. Please use the Shell to run your application instead."
+            );
 
             const fileName = path.basename(filePath);
 
@@ -753,7 +757,7 @@ function activate(context) {
                     `--file "${filePath}"`,
                     `--no-reset`
                 ].join(' ');
-                await sendCleanCommand(terminal, cpCmd);          
+                await sendCleanCommand(terminal, cpCmd);
                 return;
             }
 
@@ -907,9 +911,30 @@ function activate(context) {
                     }
                 }
             }
-        } catch (e) {}
+        } catch (e) { }
         return false;
     }
+
+    // Hard Reset Device (DTR/RTS)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.hardResetDevice', async () => {
+            if (!gRemoteDevicePort) {
+                vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
+                return;
+            }
+            const venvFolder = getVenvPythonPathFolder();
+            const venvPython = getVenvPythonPath(venvFolder);
+            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
+            const hrArgs = [scriptPath, '--python', venvPython, 'hard_reset', '--port', gRemoteDevicePort];
+
+            vscode.window.showInformationMessage(`Sending hard reset to ${gRemoteDevicePort}...`);
+            try {
+                await wsQueue.run(() => _spawnAsync(venvPython, hrArgs));
+            } catch (e) {
+                vscode.window.showErrorMessage(`Hard reset failed: ${e.message}`);
+            }
+        })
+    );
 
     // Upload current file to device root
     context.subscriptions.push(
@@ -1093,7 +1118,7 @@ function activate(context) {
             if (!pick) return;
             const newPort = /** @type {any} */ (pick).port;
             gRemoteDevicePort = newPort;
-            
+
             // Persist to device.cfg if we have a project
             if (gDeviceCodeDir) {
                 const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
@@ -1341,7 +1366,7 @@ function activate(context) {
                     afterInstall
                 );
             } else {
-                await openPackageManager(context, gRemoteDevicePort, runPythonProcess);
+                await openPackageManager(context, gRemoteDevicePort, runPythonProcess, isXBeeDevice());
             }
             setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 5000);
         })

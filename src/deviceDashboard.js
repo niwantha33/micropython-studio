@@ -52,7 +52,11 @@ try:
 except:
     print("unknown")
 print(sys.platform)
-print('.'.join(map(str, sys.implementation.version)))
+try:
+    _v = getattr(sys.implementation, 'version', sys.implementation[1])
+    print('.'.join(map(str, _v)))
+except Exception:
+    print("unknown")
 try:
     import machine
     print(machine.freq() if hasattr(machine, 'freq') else 0)

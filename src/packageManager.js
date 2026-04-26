@@ -55,8 +55,9 @@ async function fetchXBeePackageIndex() {
  * @param {vscode.ExtensionContext} context 
  * @param {string} currentDevicePort The currently connected COM port (e.g. COM3)
  * @param {function} runProcess Function to run a python process (usually runPythonProcess)
+ * @param {boolean} isXBee Whether the connected device is an XBee
  */
-async function openPackageManager(context, currentDevicePort, runProcess) {
+async function openPackageManager(context, currentDevicePort, runProcess, isXBee = false) {
     if (!currentDevicePort) {
         vscode.window.showWarningMessage('No device connected. Please connect a device and run "Refresh Device Files" first.');
         return;
@@ -124,11 +125,13 @@ async function openPackageManager(context, currentDevicePort, runProcess) {
 
             const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             let mipArgs;
+            const destPath = isXBee ? '/flash/lib' : '/lib';
+
             if (selected.isDigi) {
                 const pkgPath = `github:digidotcom/xbee-micropython/lib/${selected.pkgName}`;
-                mipArgs = [scriptPath, '--python', venvPython, 'mip', '--port', currentDevicePort, '--package', pkgPath];
+                mipArgs = [scriptPath, '--python', venvPython, 'mip', '--port', currentDevicePort, '--package', pkgPath, '--dest', destPath];
             } else {
-                mipArgs = [scriptPath, '--python', venvPython, 'mip', '--port', currentDevicePort, '--package', selected.pkgName];
+                mipArgs = [scriptPath, '--python', venvPython, 'mip', '--port', currentDevicePort, '--package', selected.pkgName, '--dest', destPath];
             }
 
             wsQueue.run(() => new Promise((resolve) => {
