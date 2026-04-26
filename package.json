@@ -1,8 +1,8 @@
 {
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
-  "description": "MicroPython Studio for VS Code — write, deploy, and debug - MicroPython, CircuitPython, and XBee on real hardware",
-  "version": "1.1.1",
+  "description": "MicroPython Studio for VS Code — write, deploy, and live debug - MicroPython, CircuitPython, and XBee on real hardware",
+  "version": "1.1.2",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {
@@ -250,6 +250,12 @@
         "icon": "$(cloud-upload)"
       },
       {
+        "command": "micropython-ide.hardResetDevice",
+        "title": "MicroPython: Hard Reset Device",
+        "category": "MicroPython Studio",
+        "icon": "$(debug-restart)"
+      },
+      {
         "command": "micropython-ide.newDeviceFolder",
         "title": "MicroPython: New Folder",
         "category": "MicroPython Studio",
@@ -382,6 +388,11 @@
         },
         {
           "command": "micropython-ide.downloadFromDevice",
+          "when": "view == micropython-ide-device-files",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.hardResetDevice",
           "when": "view == micropython-ide-device-files",
           "group": "navigation"
         }

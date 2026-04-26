@@ -14,6 +14,9 @@ import json
 import urllib.request
 
 from ollama_helper import OllamaHelper
+
+MPS_DEBUG = os.environ.get('MPS_DEBUG') == '1'
+
 # ---------------------------------------------------------------------------
 # UI Helpers for Professional Terminal Output
 # ---------------------------------------------------------------------------
@@ -713,7 +716,7 @@ class SerialConnection:
         # where the slow chunked path would overflow the device RX buffer.
         # Small commands (ls, file ops) use the safer original path.
         used_paste = False
-        if len(code_buf) > 4096:
+        if len(code_buf) > 1024 * 64:
             used_paste = self._send_code_raw_paste(code_buf)
         if not used_paste:
             chunk_size = 128
@@ -852,7 +855,8 @@ l()
 
         # 1. Enter raw REPL once for the entire file transfer
         if not self.enter_raw_repl(soft_reset=False):
-            if not self.enter_raw_repl(soft_reset=True):
+            time.sleep(0.5)
+            if not self.enter_raw_repl(soft_reset=False):
                 raise Exception(f"Could not enter raw REPL for {dest}")
 
         try:
@@ -938,10 +942,11 @@ l()
         dirs = sorted(list(all_dirs))
         
         # Enter raw REPL once
-        if MPS_DEBUG: sys.stderr.write("DEBUG: Entering raw REPL for bulk upload...\n"))
+        if MPS_DEBUG: sys.stderr.write("INFO: Entering raw REPL for bulk upload...\n")
         if not self.enter_raw_repl(soft_reset=False):
-            if MPS_DEBUG: sys.stderr.write("DEBUG: Failed to enter raw REPL normally, trying soft reset...\n"))
-            if not self.enter_raw_repl(soft_reset=True):
+            if MPS_DEBUG: sys.stderr.write("INFO: Failed to enter raw REPL normally, retrying...\n")
+            time.sleep(0.5)
+            if not self.enter_raw_repl(soft_reset=False):
                 raise Exception(f"Could not enter raw REPL for directory upload")
 
         try:
@@ -971,12 +976,12 @@ for d in {all_target_dirs!r}:
             for i, f in enumerate(files, 1):
                 rel = str(f.relative_to(source_dir)).replace('\\', '/')
                 remote_path = f"{remote_dir}/{rel}"
-                sys.stderr.write(f"DEBUG: [{i}/{len(files)}] Uploading {rel} -> {remote_path}\n")
+                sys.stderr.write(f"INFO: [{i}/{len(files)}] Uploading {rel} -> {remote_path}\n")
                 # We can't use put_file directly because it manages its own raw REPL session
                 # So we inline the logic here to stay in the SAME raw REPL session
                 self._put_file_internal(f, remote_path)
         finally:
-            if MPS_DEBUG: sys.stderr.write("DEBUG: Exiting raw REPL.\n"))
+            if MPS_DEBUG: sys.stderr.write("INFO: Exiting raw REPL.\n")
             self.serial.write(b'\x02') # Exit raw REPL
 
     def _put_file_internal(self, source_path: Path, remote_path: str):
@@ -1123,7 +1128,7 @@ def _acquire_port_friendly(python_exe, port, retries=4):
     return False
 
 
-def cmd_mip(python_exe: str, port: str, package: str, index: str = None):
+def cmd_mip(python_exe: str, port: str, package: str, index: str = None, dest: str = '/lib'):
     """Install a package on-device, falling back to PC-side download if needed."""
     sys.stderr.write(f"   Starting mip installation for '{package}' on {port}\n")
     sys.stderr.write(f"Installing '{package}' on device via mip...\n")
@@ -1143,8 +1148,8 @@ except ImportError:
 
 if _mip is not None:
     try:
-        print("mip.install({package!r})")
-        _mip.install({package!r}{f', index={index!r}' if index else ''})
+        print("mip.install({package!r}, target={dest!r})")
+        _mip.install({package!r}{f', index={index!r}' if index else ''}, target={dest!r})
         print("Installation successful!")
     except OSError as _e:
         print("NETWORK_ERROR")
@@ -1190,16 +1195,16 @@ print("<<MIP_DONE>>")
         # Check for success message in addition to return code
         # (MicroPython sys.exit(1) doesn't always signal properly in raw REPL stderr)
         if rc == 0 and is_success and not is_network_error:
-            if MPS_DEBUG: sys.stderr.write("DEBUG: On-device installation check complete.\n"))
+            if MPS_DEBUG: sys.stderr.write("INFO: On-device installation check complete.\n")
             sys.exit(0)
 
     if not is_network_error:
-        if MPS_DEBUG: sys.stderr.write(f"DEBUG: On-device installation failed with code {rc}. No network error detected.\n"))
+        if MPS_DEBUG: sys.stderr.write(f"INFO: On-device installation failed with code {rc}. No network error detected.\n")
         print(f"On-device installation failed.", file=sys.stderr)
         sys.exit(rc)
 
     # ── Fallback: PC-side download ─────────────────────────────────────────
-    if MPS_DEBUG: sys.stderr.write("DEBUG: Device has no network. Starting PC-side fallback...\n"))
+    if MPS_DEBUG: sys.stderr.write("INFO: Device has no network. Starting PC-side fallback...\n")
     print(f"Device has no network. Falling back to PC-side download...", file=sys.stderr)
     try:
         import mpremote.mip
@@ -1209,27 +1214,28 @@ print("<<MIP_DONE>>")
         sys.exit(1)
 
     with tempfile.TemporaryDirectory() as td:
-        target_dir = Path(td) / "lib"
-        target_dir.mkdir()
+        base_dir = Path(td)
         
         print(f"   Downloading package to PC...", file=sys.stderr)
         try:
             # We use a custom transport to download to the local dir
-            transport = LocalTransport(target_dir)
-            if MPS_DEBUG: sys.stderr.write(f"DEBUG: Using mpremote.mip for PC-side download...\n"))
+            transport = LocalTransport(base_dir)
+            if MPS_DEBUG: sys.stderr.write(f"INFO: Using mpremote.mip for PC-side download...\n")
             mpremote.mip._install_package(
                 transport,
                 package,
                 index or mpremote.mip._PACKAGE_INDEX,
-                "/lib",
+                dest,
                 None,  # version
                 False # mpy (force .py)
             )
         except Exception as e:
-            if MPS_DEBUG: sys.stderr.write(f"DEBUG: mpremote.mip failed: {e}\n"))
+            if MPS_DEBUG: sys.stderr.write(f"INFO: mpremote.mip failed: {e}\n")
             if "digidotcom" in package.lower():
-                if MPS_DEBUG: sys.stderr.write("DEBUG: Falling back to manual GitHub API download for Digi library...\n"))
-                _download_digi_repo_folder(package, target_dir)
+                if MPS_DEBUG: sys.stderr.write("INFO: Falling back to manual GitHub API download for Digi library...\n")
+                actual_target = base_dir / dest.lstrip('/')
+                actual_target.mkdir(parents=True, exist_ok=True)
+                _download_digi_repo_folder(package, actual_target)
             else:
                 print(f"PC-side download failed: {e}", file=sys.stderr)
                 sys.exit(1)
@@ -1238,18 +1244,13 @@ print("<<MIP_DONE>>")
         conn = SerialConnection(port)
         try:
             conn.connect()
-            # Find the actual files. mpremote.mip often creates a 'lib' folder inside target_dir.
-            # If target_dir/lib/lib exists, we want target_dir/lib/lib.
-            # If only target_dir/lib exists, we want target_dir/lib.
-            # Otherwise we want target_dir.
-            actual_source = target_dir
-            if (target_dir / "lib" / "lib").is_dir():
-                actual_source = target_dir / "lib" / "lib"
-            elif (target_dir / "lib").is_dir():
-                actual_source = target_dir / "lib"
+            actual_source = base_dir / dest.lstrip('/')
+            if not actual_source.exists() or not actual_source.is_dir():
+                print(f"Upload failed: No files downloaded to {actual_source}", file=sys.stderr)
+                sys.exit(1)
             
-            sys.stderr.write(f"   Finalizing upload from {actual_source} to /lib\n")
-            conn.put_directory(actual_source, "/lib")
+            sys.stderr.write(f"   Finalizing upload from {actual_source} to {dest}\n")
+            conn.put_directory(actual_source, dest)
             print(f"Package '{package}' installed successfully via PC fallback.")
             sys.exit(0)
         except Exception as e:
@@ -1272,7 +1273,7 @@ def _download_digi_repo_folder(package_url: str, target_dir: Path):
     path_in_repo = "/".join(parts[2:])
     
     api_url = f"https://api.github.com/repos/{org}/{repo}/contents/{path_in_repo}"
-    if MPS_DEBUG: sys.stderr.write(f"DEBUG: Fetching directory listing from {api_url}\n"))
+    if MPS_DEBUG: sys.stderr.write(f"INFO: Fetching directory listing from {api_url}\n")
     
     try:
         headers = {"User-Agent": "MicroPython-Studio-IDE"}
@@ -1824,8 +1825,9 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
     if source.is_file():
         remote = dest.rstrip('/') + '/' + source.name
         print(f"Uploading {source.name} -> {remote}", file=sys.stderr)
-        # Safety delay to prevent port conflict
-        time.sleep(0.1)
+        
+        if not _acquire_port_friendly(python_exe, port):
+            sys.exit(1)
 
         conn = SerialConnection(port)
         try:
@@ -1871,6 +1873,9 @@ def cmd_upload(python_exe, port, source, dest: str = '/', overwrite: bool = Fals
     print(f"Uploading {len(files)} file(s) from {source}", file=sys.stderr)
     print(f"Port: {port}", file=sys.stderr)
     print("-" * 50, file=sys.stderr)
+
+    if not _acquire_port_friendly(python_exe, port):
+        sys.exit(1)
 
     conn = SerialConnection(port)
     try:
@@ -2596,6 +2601,7 @@ def main():
     mip_p.add_argument('--port', required=True)
     mip_p.add_argument('--package', required=True, help='Package name')
     mip_p.add_argument('--index', help='Optional index URL')
+    mip_p.add_argument('--dest', default='/lib', help='Target directory on device')
 
     args = parser.parse_args()
 
@@ -2636,7 +2642,7 @@ def main():
     elif args.command == 'hard_reset':
         cmd_hard_reset(args.python, args.port)
     elif args.command == 'mip':
-        cmd_mip(args.python, args.port, args.package, args.index)
+        cmd_mip(args.python, args.port, args.package, args.index, args.dest)
     elif args.command == 'mkdir':
         cmd_mkdir(args.python, args.port, args.path)
     elif args.command == 'rename':
