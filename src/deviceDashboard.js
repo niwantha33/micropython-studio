@@ -4,6 +4,7 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { runMpremote } = require("./runCommand");
 const wsQueue = require("./wsQueue");
+const { scanWorkspacePins } = require("./pinScanner");
 const {
   updateCfgComponent,
   getVenvPythonPath,
@@ -66,6 +67,13 @@ except ImportError:
         print(microcontroller.cpu.frequency if hasattr(microcontroller, 'cpu') else 0)
     except ImportError:
         print(0)
+try:
+    if os and hasattr(os, 'uname'):
+        print(os.uname().machine)
+    else:
+        print(getattr(sys.implementation, '_machine', 'Unknown'))
+except Exception:
+    print("Unknown")
 
 # 2. RAM
 print("---RAM---")
@@ -177,7 +185,6 @@ except:
             ],
             { timeout: 60000 },
             (err, stdout, stderr) => {
-              console.log("[Dashboard Debug] rawOutput:", stdout);
               if (err || (stderr && stderr.includes("failed"))) {
                 outputChannel.appendLine(`[Dashboard Error] ${err || stderr}`);
                 vscode.window.showErrorMessage(`Dashboard: Failed to gather metrics. ${stderr || err}`);
@@ -246,6 +253,7 @@ except:
           freqHz > 0
             ? `${(freqHz / 1000000).toFixed(0)} <span class="unit">MHz</span>`
             : "Unknown";
+        metrics.machine = sysLines.length >= 5 ? sysLines[4] : "Unknown";
       }
 
       if (ramLines.length >= 2) {
@@ -374,9 +382,10 @@ try {
  * Priority: connected device sys.platform > device.cfg mcu field > first available key.
  * @param {string} platform  - sys.platform from device (e.g. 'rp2', 'esp32') or 'Unknown'
  * @param {string} mcuFromCfg - mcu value from device.cfg (e.g. 'rp2350', 'rp2_w', 'esp32')
+ * @param {string} machineStr - os.uname().machine from device (e.g. 'Raspberry Pi Pico 2 W with RP2350')
  * @returns {string} key into PINOUT_DATA
  */
-function resolvePinoutKey(platform, mcuFromCfg) {
+function resolvePinoutKey(platform, mcuFromCfg, machineStr) {
   // 1. device.cfg mcu is most specific — sys.platform returns 'rp2' for BOTH RP2040 and RP2350
   //    so cfg takes priority to get the correct board name
   if (mcuFromCfg) {
@@ -405,6 +414,15 @@ function resolvePinoutKey(platform, mcuFromCfg) {
     for (const [re, key] of aliases) {
       if (re.test(m) && PINOUT_DATA[key]) return key;
     }
+  }
+
+  // 1.5 Try to resolve via machine string (very useful for rp2/rp2350 ambiguity)
+  if (machineStr && machineStr !== "Unknown") {
+    const m = machineStr.toLowerCase();
+    if (m.includes("pico 2 w") || m.includes("rp2350 w") || m.includes("rp2350_w")) return "rp2350_w";
+    if (m.includes("pico 2") || m.includes("rp2350")) return "rp2350";
+    if (m.includes("pico w") || m.includes("rp2040 w") || m.includes("rp2_w")) return "rp2_w";
+    if (m.includes("pico") && m.includes("rp2040")) return "rp2";
   }
 
   // 2. Fall back to sys.platform from connected device
@@ -442,6 +460,21 @@ function getPinClass(pinName) {
 }
 
 /**
+ * Extract the GPIO number from a pin label string.
+ * e.g. "GP15" -> "15", "GP28_A2" -> "28", "IO23" -> "23", "D0/IO16" -> "16"
+ */
+function extractGpioNumber(pinLabel) {
+  let m = pinLabel.match(/GP(\d+)/i);
+  if (m) return m[1];
+  m = pinLabel.match(/IO(\d+)/i);
+  if (m) return m[1];
+  // Bare numeric labels (e.g. Teensy "0", "13")
+  m = pinLabel.match(/^(\d+)$/);
+  if (m) return m[1];
+  return null;
+}
+
+/**
  * Generate HTML for the pinout diagram
  * @param {string} pinoutKey - resolved key from resolvePinoutKey()
  */
@@ -455,9 +488,11 @@ function createPinoutHtml(pinoutKey) {
   // Generate Left Pins
   for (const pin of data.left) {
     const pClass = getPinClass(pin);
+    const gpioNum = extractGpioNumber(pin);
+    const gpioAttr = gpioNum !== null ? ` data-gpio="${gpioNum}"` : '';
     leftHtml += `
             <div class="pin-row">
-                <div class="pin left ${pClass}"><span class="pin-label">${pin}</span></div>
+                <div class="pin left ${pClass}"${gpioAttr}><span class="pin-label">${pin}</span></div>
             </div>
         `;
   }
@@ -465,9 +500,11 @@ function createPinoutHtml(pinoutKey) {
   // Generate Right Pins
   for (const pin of data.right) {
     const pClass = getPinClass(pin);
+    const gpioNum = extractGpioNumber(pin);
+    const gpioAttr = gpioNum !== null ? ` data-gpio="${gpioNum}"` : '';
     rightHtml += `
             <div class="pin-row">
-                <div class="pin right ${pClass}"><span class="pin-label">${pin}</span></div>
+                <div class="pin right ${pClass}"${gpioAttr}><span class="pin-label">${pin}</span></div>
             </div>
         `;
   }
@@ -479,10 +516,16 @@ function createPinoutHtml(pinoutKey) {
   return `
         <div class="pinout-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
             <span style="font-size:13px;font-weight:600;color:var(--text-main);">🧷 Pinout</span>
-            <select id="pinoutBoardSelect" onchange="switchPinout(this.value)"
-                style="background:#1e1e2e;color:#e2e8f0;border:1px solid rgba(99,102,241,0.3);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;">
-                ${boardOptions}
-            </select>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <button id="scanPinsBtn" class="btn-scan-pins" onclick="scanProjectPins()">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Scan Pins
+                </button>
+                <select id="pinoutBoardSelect" onchange="switchPinout(this.value)"
+                    style="background:#1e1e2e;color:#e2e8f0;border:1px solid rgba(99,102,241,0.3);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;">
+                    ${boardOptions}
+                </select>
+            </div>
         </div>
         <div class="pinout-wrapper">
             <div class="board-chip">
@@ -497,6 +540,15 @@ function createPinoutHtml(pinoutKey) {
                 <div class="legend-item"><div class="dot adc"></div>ADC</div>
                 <div class="legend-item"><div class="dot uart"></div>UART</div>
                 <div class="legend-item"><div class="dot ctrl"></div>CTRL</div>
+            </div>
+            <div id="pinScanStatus" class="pin-scan-status"></div>
+            <div id="pinUsageLegend" class="pin-usage-legend" style="display:none">
+                <div class="legend-item"><div class="dot pin-dot-out"></div>OUT</div>
+                <div class="legend-item"><div class="dot pin-dot-in"></div>IN</div>
+                <div class="legend-item"><div class="dot pin-dot-pwm"></div>PWM</div>
+                <div class="legend-item"><div class="dot pin-dot-adc"></div>ADC</div>
+                <div class="legend-item"><div class="dot pin-dot-i2c"></div>I2C</div>
+                <div class="legend-item"><div class="dot pin-dot-spi"></div>SPI</div>
             </div>
         </div>
     `;
@@ -776,7 +828,7 @@ function getWebviewContent(metrics) {
     display: flex;
     justify-content: space-between;
     box-shadow: 0 12px 28px -8px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04);
-    margin: 12px 0 18px 0;
+    margin: 12px 140px 18px 140px; /* Large horizontal margin to prevent tag clipping */
     padding: 20px 8px;
 }
 
@@ -1195,6 +1247,210 @@ function getWebviewContent(metrics) {
         }
         .webrepl-ip-label { font-size: 12px; color: #10b981; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
         .webrepl-ip-val   { font-size: 18px; font-weight: 700; font-family: "JetBrains Mono","Fira Code",monospace; }
+
+        /* ── Pin Usage Scan Overlay ─────────────────────────── */
+        .btn-scan-pins {
+            background: linear-gradient(135deg, rgba(99,102,241,0.2), rgba(139,92,246,0.2));
+            color: #a5b4fc;
+            border: 1px solid rgba(99,102,241,0.3);
+            border-radius: 6px;
+            padding: 3px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .btn-scan-pins:hover {
+            background: linear-gradient(135deg, rgba(99,102,241,0.35), rgba(139,92,246,0.35));
+            transform: translateY(-1px);
+            border-color: rgba(99,102,241,0.5);
+        }
+        .btn-scan-pins:active { transform: translateY(0); }
+        .btn-scan-pins.scanning {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+
+        .pin-scan-status {
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 8px;
+            min-height: 16px;
+        }
+
+        .pin-usage-legend {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 8px;
+            padding: 6px 14px;
+            background: rgba(99,102,241,0.06);
+            border: 1px solid rgba(99,102,241,0.12);
+            border-radius: 24px;
+        }
+
+        /* Usage mode dot colors */
+        .dot.pin-dot-out { background: linear-gradient(135deg, #10b981, #059669); }
+        .dot.pin-dot-in  { background: linear-gradient(135deg, #06b6d4, #0891b2); }
+        .dot.pin-dot-pwm { background: linear-gradient(135deg, #f97316, #ea580c); }
+        .dot.pin-dot-adc { background: linear-gradient(135deg, #a855f7, #9333ea); }
+        .dot.pin-dot-i2c { background: linear-gradient(135deg, #eab308, #ca8a04); }
+        .dot.pin-dot-spi { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+
+        /* Pin glow when in use */
+        .pin.pin-used { position: relative; }
+        .pin.pin-used::before {
+            content: '';
+            position: absolute;
+            inset: -3px;
+            border-radius: 4px;
+            opacity: 0.6;
+            animation: pinPulse 2s ease-in-out infinite;
+            pointer-events: none;
+        }
+        @keyframes pinPulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 0.8; }
+        }
+
+        .pin.pin-mode-OUT        { background: #10b981 !important; }
+        .pin.pin-mode-OUT::before { box-shadow: 0 0 8px 2px rgba(16,185,129,0.5); }
+        .pin.pin-mode-OUT .pin-label { color: #10b981 !important; }
+
+        .pin.pin-mode-IN         { background: #06b6d4 !important; }
+        .pin.pin-mode-IN::before  { box-shadow: 0 0 8px 2px rgba(6,182,212,0.5); }
+        .pin.pin-mode-IN .pin-label { color: #06b6d4 !important; }
+
+        .pin.pin-mode-PWM        { background: #f97316 !important; }
+        .pin.pin-mode-PWM::before { box-shadow: 0 0 8px 2px rgba(249,115,22,0.5); }
+        .pin.pin-mode-PWM .pin-label { color: #f97316 !important; }
+
+        .pin.pin-mode-ADC        { background: #a855f7 !important; }
+        .pin.pin-mode-ADC::before { box-shadow: 0 0 8px 2px rgba(168,85,247,0.5); }
+        .pin.pin-mode-ADC .pin-label { color: #a855f7 !important; }
+
+        .pin.pin-mode-I2C_SCL, .pin.pin-mode-I2C_SDA {
+            background: #eab308 !important;
+        }
+        .pin.pin-mode-I2C_SCL::before, .pin.pin-mode-I2C_SDA::before {
+            box-shadow: 0 0 8px 2px rgba(234,179,8,0.5);
+        }
+        .pin.pin-mode-I2C_SCL .pin-label, .pin.pin-mode-I2C_SDA .pin-label {
+            color: #eab308 !important;
+        }
+
+        .pin.pin-mode-SPI_SCK, .pin.pin-mode-SPI_MOSI, .pin.pin-mode-SPI_MISO {
+            background: #3b82f6 !important;
+        }
+        .pin.pin-mode-SPI_SCK::before, .pin.pin-mode-SPI_MOSI::before, .pin.pin-mode-SPI_MISO::before {
+            box-shadow: 0 0 8px 2px rgba(59,130,246,0.5);
+        }
+        .pin.pin-mode-SPI_SCK .pin-label, .pin.pin-mode-SPI_MOSI .pin-label, .pin.pin-mode-SPI_MISO .pin-label {
+            color: #3b82f6 !important;
+        }
+
+        .pin.pin-mode-USED       { background: #94a3b8 !important; }
+        .pin.pin-mode-USED::before { box-shadow: 0 0 8px 2px rgba(148,163,184,0.4); }
+        .pin.pin-mode-USED .pin-label { color: #e2e8f0 !important; }
+
+        /* Pin usage tooltip */
+        .pin-usage-tip {
+            position: absolute;
+            bottom: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(15,15,26,0.95);
+            border: 1px solid rgba(99,102,241,0.3);
+            color: #e2e8f0;
+            font-family: 'JetBrains Mono','Consolas',monospace;
+            font-size: 10px;
+            padding: 4px 8px;
+            border-radius: 6px;
+            white-space: nowrap;
+            pointer-events: none;
+            z-index: 100;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        .pin:hover .pin-usage-tip { opacity: 1; }
+
+        /* Pin usage annotation tag — visible label on the diagram */
+        .pin-usage-tag {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            display: inline-flex;
+            align-items: center;
+            gap: 0;
+            white-space: nowrap;
+            z-index: 10;
+            pointer-events: none;
+            animation: tagFadeIn 0.4s ease-out forwards;
+        }
+        @keyframes tagFadeIn {
+            from { opacity: 0; transform: translateY(-50%) translateX(4px); }
+            to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+        }
+        .pin.left .pin-usage-tag  { right: 80px; flex-direction: row; }
+        .pin.right .pin-usage-tag { left: 80px;  flex-direction: row; }
+
+        .tag-connector {
+            width: 16px;
+            height: 0;
+            border-top: 1px dashed currentColor;
+            opacity: 0.4;
+            flex-shrink: 0;
+        }
+        .tag-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', 'Consolas', monospace;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(4px);
+        }
+        .tag-file {
+            color: #94a3b8;
+            font-weight: 500;
+            font-size: 9px;
+            opacity: 0.85;
+        }
+        .tag-var {
+            color: #e2e8f0;
+            font-weight: 700;
+            font-size: 10px;
+        }
+        .tag-arrow {
+            opacity: 0.5;
+            font-size: 8px;
+        }
+        .tag-mode {
+            opacity: 0.9;
+            font-size: 9px;
+        }
+
+        /* Tag colors by mode */
+        .pin.pin-mode-OUT .tag-badge        { background: rgba(16,185,129,0.15); color: #10b981; }
+        .pin.pin-mode-IN .tag-badge         { background: rgba(6,182,212,0.15);  color: #06b6d4; }
+        .pin.pin-mode-PWM .tag-badge        { background: rgba(249,115,22,0.15); color: #f97316; }
+        .pin.pin-mode-ADC .tag-badge        { background: rgba(168,85,247,0.15); color: #a855f7; }
+        .pin.pin-mode-I2C_SCL .tag-badge,
+        .pin.pin-mode-I2C_SDA .tag-badge    { background: rgba(234,179,8,0.15);  color: #eab308; }
+        .pin.pin-mode-SPI_SCK .tag-badge,
+        .pin.pin-mode-SPI_MOSI .tag-badge,
+        .pin.pin-mode-SPI_MISO .tag-badge   { background: rgba(59,130,246,0.15); color: #3b82f6; }
+        .pin.pin-mode-USED .tag-badge       { background: rgba(148,163,184,0.12); color: #94a3b8; }
     </style>
 </head>
 <body>
@@ -1439,6 +1695,146 @@ function getWebviewContent(metrics) {
             vscode.postMessage({ command: 'switchPinout', boardKey });
         }
 
+        // ── Pin Usage Scan ───────────────────────────────────────────────────
+        function scanProjectPins() {
+            const btn = document.getElementById('scanPinsBtn');
+            if (btn) { btn.classList.add('scanning'); btn.innerHTML = '<div class="spinner" style="width:12px;height:12px;border-width:2px"></div> Scanning...'; }
+            const status = document.getElementById('pinScanStatus');
+            if (status) status.textContent = 'Scanning workspace for pin assignments...';
+            vscode.postMessage({ command: 'scanProjectPins' });
+        }
+
+        function applyPinMap(pinMap) {
+            // Clear previous highlights
+            document.querySelectorAll('.pin.pin-used').forEach(el => {
+                el.className = el.className.replace(/\bpin-used\b/g, '').replace(/\bpin-mode-[A-Z_]+\b/g, '').trim();
+                const tip = el.querySelector('.pin-usage-tip');
+                if (tip) tip.remove();
+                const tag = el.querySelector('.pin-usage-tag');
+                if (tag) tag.remove();
+            });
+
+            const keys = Object.keys(pinMap);
+            if (keys.length === 0) {
+                const status = document.getElementById('pinScanStatus');
+                if (status) status.innerHTML = '<span style="color:#94a3b8">No pin assignments found in workspace .py files.</span>';
+                const legend = document.getElementById('pinUsageLegend');
+                if (legend) legend.style.display = 'none';
+                return;
+            }
+
+            // Build a lookup: GPIO number string -> pin DOM element
+            // Match by label text (e.g. "GP15" -> 15, "IO23" -> 23, "D0/IO16" -> 16)
+            const gpioToEl = {};
+            document.querySelectorAll('.pin .pin-label').forEach(label => {
+                const text = label.textContent.trim();
+                let m = text.match(/GP(\d+)/i);
+                if (!m) m = text.match(/IO(\d+)/i);
+                if (!m) m = text.match(/^(\d+)$/);
+                if (m) {
+                    const pinDiv = label.closest('.pin') || label.parentElement;
+                    if (pinDiv) gpioToEl[m[1]] = pinDiv;
+                }
+            });
+
+            let matched = 0;
+            let unmapped = [];
+            for (const [gpio, info] of Object.entries(pinMap)) {
+                let pinEl = gpioToEl[gpio];
+                
+                // Fallback to data-gpio attribute matching
+                if (!pinEl) {
+                    const attrMatch = document.querySelector('.pin[data-gpio="' + gpio + '"]');
+                    if (attrMatch) pinEl = attrMatch;
+                }
+
+                if (!pinEl) {
+                    unmapped.push({ gpio, info });
+                    continue;
+                }
+                
+                matched++;
+                pinEl.classList.add('pin-used', 'pin-mode-' + info.mode);
+
+                // Add hover tooltip (file:line detail)
+                const tip = document.createElement('div');
+                tip.className = 'pin-usage-tip';
+                tip.textContent = info.mode + ' in ' + info.file + ':' + info.line;
+                pinEl.appendChild(tip);
+
+                // Add visible annotation tag on the diagram
+                const tag = document.createElement('div');
+                tag.className = 'pin-usage-tag';
+                const isLeft = pinEl.classList.contains('left');
+                const name = info.varName || '';
+                const modeShort = info.mode.replace('SPI_','').replace('I2C_','');
+                if (isLeft) {
+                    tag.innerHTML = '<span class="tag-badge">' +
+                        '<span class="tag-file">[' + info.file + ']</span> ' +
+                        (name ? '<span class="tag-var">' + name + '</span> ' : '') +
+                        '<span class="tag-arrow">\u25C4</span> ' +
+                        '<span class="tag-mode">' + modeShort + '</span>' +
+                        '</span>' +
+                        '<span class="tag-connector"></span>';
+                } else {
+                    tag.innerHTML = '<span class="tag-connector"></span>' +
+                        '<span class="tag-badge">' +
+                        '<span class="tag-mode">' + modeShort + '</span> ' +
+                        '<span class="tag-arrow">\u25BA</span>' +
+                        (name ? ' <span class="tag-var">' + name + '</span> ' : '') +
+                        '<span class="tag-file">[' + info.file + ']</span>' +
+                        '</span>';
+                }
+                pinEl.appendChild(tag);
+            }
+
+            // Create/Update Unmapped Pins Area
+            let unmappedContainer = document.getElementById('unmappedPinsArea');
+            if (!unmappedContainer) {
+                unmappedContainer = document.createElement('div');
+                unmappedContainer.id = 'unmappedPinsArea';
+                unmappedContainer.style.marginTop = '12px';
+                unmappedContainer.style.display = 'flex';
+                unmappedContainer.style.flexWrap = 'wrap';
+                unmappedContainer.style.gap = '8px';
+                unmappedContainer.style.justifyContent = 'center';
+                unmappedContainer.style.alignItems = 'center';
+                
+                const wrapper = document.querySelector('.pinout-wrapper');
+                const statusEl = document.getElementById('pinScanStatus');
+                if (wrapper && statusEl) {
+                    wrapper.insertBefore(unmappedContainer, statusEl);
+                }
+            }
+            unmappedContainer.innerHTML = '';
+
+            if (unmapped.length > 0) {
+                let unmappedHtml = '<div style="width:100%;text-align:center;font-size:11px;color:#94a3b8;margin-bottom:2px">Internal / Unmapped Pins:</div>';
+                for (const u of unmapped) {
+                    const modeShort = u.info.mode.replace('SPI_','').replace('I2C_','');
+                    const name = u.info.varName || '';
+                    unmappedHtml += '<div class="tag-badge" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 4px 8px; border-radius: 6px; font-family: \\'JetBrains Mono\\', \\'Consolas\\', monospace;">';
+                    unmappedHtml += '<span style="color:#e2e8f0; font-weight:700;">Pin ' + u.gpio + '</span>';
+                    unmappedHtml += '<span class="tag-arrow" style="margin:0 6px; opacity:0.5; font-size:9px;">\u2192</span>';
+                    unmappedHtml += '<span class="tag-mode" style="color:var(--text-main); font-size:9px;">' + modeShort + '</span>';
+                    if (name) {
+                        unmappedHtml += '<span style="margin-left:6px; opacity:0.7; color:#a5b4fc;">(' + name + ')</span>';
+                    }
+                    unmappedHtml += '<span style="margin-left:6px; opacity:0.6; color:#94a3b8; font-size:9px;">[' + u.info.file + ']</span>';
+                    unmappedHtml += '</div>';
+                }
+                unmappedContainer.innerHTML = unmappedHtml;
+                unmappedContainer.style.display = 'flex';
+            } else {
+                unmappedContainer.style.display = 'none';
+            }
+
+            const status = document.getElementById('pinScanStatus');
+            if (status) status.innerHTML = '<span style="color:#10b981">' + matched + ' pin' + (matched !== 1 ? 's' : '') + ' mapped visually from ' + keys.length + ' assignment' + (keys.length !== 1 ? 's' : '') + '</span>';
+            const legend = document.getElementById('pinUsageLegend');
+            if (legend) legend.style.display = 'flex';
+        }
+
         function toggleWebWorkflowForm() {
             const form = document.getElementById('webWorkflowForm');
             if (!form) return;
@@ -1472,6 +1868,15 @@ function getWebviewContent(metrics) {
             if (m.command === 'updatePinout') {
                 const el = document.getElementById('pinout-section');
                 if (el) el.innerHTML = m.html;
+                return;
+            }
+            if (m.command === 'pinMapResults') {
+                const btn = document.getElementById('scanPinsBtn');
+                if (btn) {
+                    btn.classList.remove('scanning');
+                    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Scan Pins';
+                }
+                applyPinMap(m.pinMap || {});
                 return;
             }
             const msg = event.data;
@@ -1791,7 +2196,7 @@ async function openDeviceDashboard(
         mcuFromCfg = (await getConfigValue(cfgPath, "device", "mcu")) || "";
       } catch (_) {}
 
-      metrics.pinoutKey = resolvePinoutKey(metrics.platform, mcuFromCfg);
+      metrics.pinoutKey = resolvePinoutKey(metrics.platform, mcuFromCfg, metrics.machine);
       panel.webview.html = getWebviewContent(metrics);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -2279,6 +2684,18 @@ except Exception as e:
           vscode.window.showErrorMessage(
             `Failed to disable remote access: ${err.message}`,
           );
+        }
+        return;
+      }
+
+      // ── Scan Project Pins ───────────────────────────────────────────────
+      if (message.command === "scanProjectPins") {
+        try {
+          const pinMap = scanWorkspacePins(workspaceRoot);
+          panel.webview.postMessage({ command: "pinMapResults", pinMap });
+        } catch (err) {
+          outputChannel.appendLine(`[Pin Scanner Error] ${err.message}`);
+          panel.webview.postMessage({ command: "pinMapResults", pinMap: {} });
         }
         return;
       }
