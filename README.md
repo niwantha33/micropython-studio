@@ -22,13 +22,12 @@
 </p>
 
 <p >
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/project.png" alt="project" width="400">
+  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/pico2w_micropython_live_debug.png" alt="project" width="400">
 </p>
 
 <p >
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/wizard.png" alt="wizard" width="400">
+  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/pinout.png" alt="project" width="400">
 </p>
-
 ---
 
 > **🐝 Now with full Digi XBee MicroPython support!** Create projects, upload files, and run scripts on XBee3 modules — Zigbee, DigiMesh, Cellular, Wi-SUN, and BLU — all from VS Code.
@@ -308,6 +307,18 @@ The extension contributes the following settings:
 | `MicroPython: Refresh Device Files` | Refresh the device files tree view |
 | `MicroPython: Start Debug Session` | Start a debug session on the device |
 
+## 🤖 AI Usage Guide for Developers
+
+As an open-source project, **MicroPython Studio** embraces and encourages the use of AI tools (like GitHub Copilot, ChatGPT, Claude, and our own Local AI Assistant) to accelerate development, improve code quality, and help solve complex implementation hurdles. 
+
+If you are contributing to this repository using AI tools, please follow these guidelines:
+1. **Understand What You Commit**: AI is a powerful assistant, but you remain the author and maintainer of the code. Ensure you fully understand any generated code before submitting a pull request.
+2. **Security & Privacy**: Avoid pasting sensitive credentials, API keys, or proprietary user data into public AI models.
+3. **Attribution**: If an AI model helped you solve a particularly complex architectural or algorithmic challenge, feel free to mention it in your PR description!
+4. **Code Quality**: Verify that AI-generated code matches the project's existing style guidelines, adheres to error-handling standards, and includes necessary comments.
+
+We embrace AI as a core part of modern development and are excited to see what we can build together.
+
 ## Acknowledgements
 
 MicroPython Studio is open source (MIT License) and builds on the following open source projects:
@@ -327,7 +338,7 @@ MicroPython Studio is open source (MIT License) and builds on the following open
 | [esptool](https://github.com/espressif/esptool) | Espressif Systems | GPL-2.0 | ESP32 firmware flashing |
 | [pyserial](https://github.com/pyserial/pyserial) | pyserial contributors | BSD | Serial port communication and device detection |
 
-A special thanks to **AI development tools**. This project has been a work in progress for approximately three years, and many complex implementation hurdles seemed insurmountable. AI tools provided the critical support and breakthroughs needed to finally bring these concepts to life and complete the project.
+A special piece of **project history**: This extension has been a work in progress for approximately three years. Early on, many complex implementation hurdles for hardware interactions seemed insurmountable. **AI development tools** provided the critical support, documentation insights, and breakthroughs needed to finally bring these concepts to life. AI is at the very heart of how MicroPython Studio was built.
 
 All bundled files retain their original license headers.
 
