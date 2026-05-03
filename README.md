@@ -15,19 +15,22 @@
 [![MicroPython](https://img.shields.io/badge/MicroPython-v1.20%2B-blue?logo=micropython&logoColor=white)](https://micropython.org)
 [![CircuitPython](https://img.shields.io/badge/CircuitPython-v10.x-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
 [![XBee](https://img.shields.io/badge/XBee-MicroPython-orange)](https://www.digi.com/xbee)
+[![YouTube](https://img.shields.io/badge/YouTube-Subscribe-red?logo=youtube&logoColor=white)](https://www.youtube.com/@NiwanthaDev)
 
+[![MicroPython Studio Tutorial](https://img.youtube.com/vi/or_aG-Rhnb8/maxresdefault.jpg)](https://www.youtube.com/watch?v=or_aG-Rhnb8)
 
 <p >
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/micro_ai.png" alt="project" width="400">
+  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/pico2w_micropython_live_debug.png" alt="project" width="900">
 </p>
 
 <p >
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/pico2w_micropython_live_debug.png" alt="project" width="400">
+  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/pinout.png" alt="project" width="900">
 </p>
 
 <p >
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/pinout.png" alt="project" width="400">
+  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/micro_ai.png" alt="project" width="900">
 </p>
+
 ---
 
 > **🐝 Now with full Digi XBee MicroPython support!** Create projects, upload files, and run scripts on XBee3 modules — Zigbee, DigiMesh, Cellular, Wi-SUN, and BLU — all from VS Code.
@@ -359,6 +362,7 @@ Have a question, found a bug, or need help getting started?
 
 - **Email:** niwantha33@gmail.com
 - **GitHub Issues:** [github.com/niwantha33/micropython-studio/issues](https://github.com/niwantha33/micropython-studio/issues)
+- **YouTube:** [youtube.com/@NiwanthaDev](https://www.youtube.com/@NiwanthaDev)
 
 **Enjoy developing with MicroPython, CircuitPython and XBee!** 🚀
 
