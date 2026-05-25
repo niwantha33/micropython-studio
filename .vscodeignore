@@ -34,3 +34,19 @@ resource/*.exe
 !resource/micropython_studio_icon_128.png
 !resource/project.png
 !resource/wizard.png
+
+# Local Python environments
+testenv/**
+venv/**
+.venv/**
+
+# Packaged extension files
+*.vsix
+
+# Temp logs and outputs
+temp_log.txt
+temp_log2.txt
+original_dashboard.js.tmp
+output.bin
+output.txt
+tmp/**
