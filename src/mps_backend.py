@@ -705,6 +705,20 @@ class SerialConnection:
             window_remain -= n
         # Signal end-of-data; outer state machine will read the response.
         self.serial.write(b'\x04')
+        
+        # Consume raw-paste acknowledgement (ends with \x04)
+        deadline = time.time() + 5
+        buf = bytearray()
+        while time.time() < deadline:
+            n = self.in_waiting_safe
+            if n:
+                chunk = self.serial.read(n)
+                buf.extend(chunk)
+                if b'\x04' in buf:
+                    break
+            else:
+                time.sleep(0.005)
+                
         return True
 
     def _exec_raw_no_exit(self, code: Union[str, bytes], timeout=30, stream_stdout=True):
@@ -930,7 +944,7 @@ l()
         """Recursively upload a directory to the device."""
         remote_dir = remote_dir.replace('\\', '/').rstrip('/')
         files = sorted(f for f in source_dir.rglob('*') if f.is_file())
-        sys.stderr.write(f"DEBUG: Scanning {source_dir} -> Found {len(files)} files to upload to {remote_dir}\n")
+        if MPS_DEBUG: sys.stderr.write(f"DEBUG: Scanning {source_dir} -> Found {len(files)} files to upload to {remote_dir}\n")
         
         # 1. Create directories first (including all intermediate parents)
         all_dirs = set()
@@ -958,7 +972,7 @@ l()
                 all_target_dirs.append(f"{remote_dir.rstrip('/')}/{d}")
             
             if all_target_dirs:
-                sys.stderr.write(f"DEBUG: Ensuring {len(all_target_dirs)} directories exist on device...\n")
+                if MPS_DEBUG: sys.stderr.write(f"DEBUG: Ensuring {len(all_target_dirs)} directories exist on device...\n")
                 # Efficiently create all directories using a single script
                 # We use the recursive logic to be extra safe
                 dir_code = f"""
@@ -1007,7 +1021,7 @@ for d in {all_target_dirs!r}:
         lines.append("print('OK_PUT')")
         code = "\n".join(lines)
 
-        rc, stdout, _ = self._exec_raw_no_exit(code, timeout=60)
+        rc, stdout, _ = self._exec_raw_no_exit(code, timeout=60, stream_stdout=False)
         if b'OK_PUT' not in stdout:
             sys.stderr.write(f"   [ERROR] Upload of {dest} did not finish (no OK_PUT)\n")
             return 1
@@ -1161,16 +1175,16 @@ print("<<MIP_DONE>>")
     def _run_on_device():
         if _is_ws_port(port):
             host, password = _parse_ws_port(port)
-            sys.stderr.write(f"DEBUG: Attempting on-device installation via WebREPL ({host})\n")
+            if MPS_DEBUG: sys.stderr.write(f"DEBUG: Attempting on-device installation via WebREPL ({host})\n")
             conn = WebReplConnection(host, password)
             try:
                 conn.connect()
                 output = conn.run_file_content(mip_code)
-                return 0, "NETWORK_ERROR" in output, "Installation successful!" in output
+                return 0, "NETWORK_ERROR" in output, "ERROR: device has no mip/upip" in output, "Installation successful!" in output
             finally:
                 conn.close()
         else:
-            sys.stderr.write(f"DEBUG: Attempting on-device installation via Serial ({port})\n")
+            if MPS_DEBUG: sys.stderr.write(f"DEBUG: Attempting on-device installation via Serial ({port})\n")
             conn = SerialConnection(port)
             try:
                 conn.connect()
@@ -1178,8 +1192,8 @@ print("<<MIP_DONE>>")
                 rc, stdout, stderr = conn.exec_code(mip_code, timeout=20, soft_reset=False)
                 
                 output = stdout.decode('utf-8', errors='replace')
-                sys.stderr.write(f"DEBUG: Device output: {output.strip()}\n")
-                return rc, "NETWORK_ERROR" in output, "Installation successful!" in output
+                if MPS_DEBUG: sys.stderr.write(f"DEBUG: Device output: {output.strip()}\n")
+                return rc, "NETWORK_ERROR" in output, "ERROR: device has no mip/upip" in output, "Installation successful!" in output
             finally:
                 conn.close()
 
@@ -1187,25 +1201,33 @@ print("<<MIP_DONE>>")
     # Digi XBee MicroPython typically lacks a network stack that 'mip' can use
     # directly over Wi-Fi/Cellular for arbitrary GitHub URLs.
     # If the package is from the Digi repo, skip on-device and go straight to PC.
+    is_no_mip = False
     if "digidotcom" in package.lower():
         sys.stderr.write(f"   Digi/XBee package detected. Using PC-side fallback...\n")
         is_network_error = True # Force fallback
     else:
-        rc, is_network_error, is_success = _run_on_device()
+        rc, is_network_error, is_no_mip, is_success = _run_on_device()
         # Check for success message in addition to return code
         # (MicroPython sys.exit(1) doesn't always signal properly in raw REPL stderr)
-        if rc == 0 and is_success and not is_network_error:
+        if rc == 0 and is_success and not is_network_error and not is_no_mip:
             if MPS_DEBUG: sys.stderr.write("INFO: On-device installation check complete.\n")
             sys.exit(0)
 
-    if not is_network_error:
-        if MPS_DEBUG: sys.stderr.write(f"INFO: On-device installation failed with code {rc}. No network error detected.\n")
+    if not is_network_error and not is_no_mip:
+        if MPS_DEBUG: sys.stderr.write(f"INFO: On-device installation failed with code {rc}. No network error or missing mip/upip detected.\n")
         print(f"On-device installation failed.", file=sys.stderr)
         sys.exit(rc)
 
     # ── Fallback: PC-side download ─────────────────────────────────────────
-    if MPS_DEBUG: sys.stderr.write("INFO: Device has no network. Starting PC-side fallback...\n")
-    print(f"Device has no network. Falling back to PC-side download...", file=sys.stderr)
+    if "digidotcom" in package.lower():
+        msg = "Digi/XBee package detected. Using PC-side fallback..."
+    elif is_no_mip:
+        msg = "Device has no mip/upip. Falling back to PC-side download..."
+    else:
+        msg = "Device has no network. Falling back to PC-side download..."
+
+    if MPS_DEBUG: sys.stderr.write(f"INFO: {msg}\n")
+    print(msg, file=sys.stderr)
     try:
         import mpremote.mip
     except ImportError:
