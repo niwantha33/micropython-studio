@@ -187,7 +187,9 @@ except:
             (err, stdout, stderr) => {
               if (err || (stderr && stderr.includes("failed"))) {
                 outputChannel.appendLine(`[Dashboard Error] ${err || stderr}`);
-                vscode.window.showErrorMessage(`Dashboard: Failed to gather metrics. ${stderr || err}`);
+                vscode.window.showErrorMessage(
+                    `Dashboard: Failed to connect to device. Please ensure MicroPython/CircuitPython firmware is flashed and connected properly. (For new ESP boards, use the "Flash Firmware" action or manually flash via esptool. Error: ${stderr || err})`
+                );
                 resolve("");
               } else {
                 resolve(stdout || "");

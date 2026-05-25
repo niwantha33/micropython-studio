@@ -32,6 +32,7 @@ async function listBoards(outputChannel) {
         exec(`"${mpflashExe}" list --json`, (error, stdout) => {
             if (error) {
                 outputChannel.appendLine(`[mpflash] Board scan failed: ${error.message}`);
+                outputChannel.appendLine('[TIP] If your ESP board is not detected, you can manually download the firmware and flash it using esptool.');
                 resolve([]);
                 return;
             }
@@ -120,6 +121,7 @@ async function flashFirmware(outputChannel, terminal) {
     outputChannel.show(true);
     outputChannel.appendLine('── Flash Firmware ──────────────────────────────────');
     outputChannel.appendLine('Scanning for connected boards via mpflash...');
+    outputChannel.appendLine('[TIP] If your ESP board is not supported or mpflash fails, you can download the firmware from micropython.org and flash it using esptool.');
 
     const boards = await listBoards(outputChannel);
     const selected = await pickBoard(boards, outputChannel);
@@ -145,7 +147,7 @@ async function flashFirmware(outputChannel, terminal) {
     ].join(' ');
 
     terminal.show();
-    terminal.sendText(cmd);
+    terminal.sendText(formatTerminalCommand(cmd));
 
     return { port: selected.port, board: selected.board, version };
 }
@@ -209,7 +211,18 @@ async function downloadFirmware(outputChannel, terminal) {
     ].filter(Boolean).join(' ');
 
     terminal.show();
-    terminal.sendText(cmd);
+    terminal.sendText(formatTerminalCommand(cmd));
+}
+
+function formatTerminalCommand(command) {
+    if (process.platform === 'win32') {
+        const shellPath = (vscode.env.shell || '').toLowerCase();
+        const isCmd = shellPath.includes('cmd.exe');
+        if (!isCmd && command.trim().startsWith('"')) {
+            return `& ${command}`;
+        }
+    }
+    return command;
 }
 
 module.exports = { flashFirmware, downloadFirmware };

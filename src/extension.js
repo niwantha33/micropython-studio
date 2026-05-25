@@ -431,10 +431,20 @@ async function sendCleanCommand(terminal, command) {
     const isWindows = process.platform === 'win32';
     if (isWindows) {
         // 2. Hide the prompt and command echo on Windows (CMD/PowerShell)
-        // By sending 'cls' on the same line as the command (cls & command),
+        // By sending 'cls' on the same line as the command (cls & command for CMD, cls; command for PowerShell),
         // the terminal clears AFTER the shell has already 'printed' the echo.
-        // This ensures the user only sees the professional execution header.
-        terminal.sendText(`cls & ${command}`);
+        const shellPath = (vscode.env.shell || '').toLowerCase();
+        const isCmd = shellPath.includes('cmd.exe');
+        if (isCmd) {
+            terminal.sendText(`cls & ${command}`);
+        } else {
+            // PowerShell needs command separator ';' and the call operator '&' if command starts with quotes
+            let formattedCommand = command;
+            if (command.trim().startsWith('"')) {
+                formattedCommand = `& ${command}`;
+            }
+            terminal.sendText(`cls; ${formattedCommand}`);
+        }
     } else {
         // macOS/Linux equivalent
         terminal.sendText(`clear; ${command}`);
