@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and live debug - MicroPython, CircuitPython, and XBee on real hardware",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {

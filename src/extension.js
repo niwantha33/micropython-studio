@@ -121,17 +121,7 @@ async function _buildRunPortOptions() {
 
 // ─── Terminal Management ─────────────────────────────────────────────────────
 
-/**
- * Get or create the MicroPython terminal.
- * Reuses existing terminal if it's still alive.
- */
-function getMpremoteTerminal() {
-    let terminal = vscode.window.terminals.find(t => t.name === 'MicroPython Studio');
-    if (!terminal) {
-        terminal = vscode.window.createTerminal('MicroPython Studio');
-    }
-    return terminal;
-}
+
 
 /**
  * Run a Python subprocess (no shell) and show output in an OutputChannel.
@@ -210,24 +200,6 @@ function _extractDeviceError(output) {
     return null;
 }
 
-function runPythonProcess(exe, args, onComplete) {
-    const channel = vscode.window.createOutputChannel('MicroPython Studio');
-    channel.show(true);
-    channel.appendLine('─'.repeat(50));
-
-    let fullOutput = '';
-    const proc = spawn(exe, args);
-    proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
-    proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
-    proc.on('close', code => {
-        _notifyAiOnError(fullOutput, args);
-        channel.appendLine("[SUCCESS] Task complete.");
-        if (onComplete) onComplete(code);
-    });
-    proc.on('error', err => {
-        channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
-    });
-}
 
 /**
  * Like runPythonProcess but returns a Promise<number|null> with the exit code.
@@ -431,10 +403,20 @@ async function sendCleanCommand(terminal, command) {
     const isWindows = process.platform === 'win32';
     if (isWindows) {
         // 2. Hide the prompt and command echo on Windows (CMD/PowerShell)
-        // By sending 'cls' on the same line as the command (cls & command),
+        // By sending 'cls' on the same line as the command (cls & command for CMD, cls; command for PowerShell),
         // the terminal clears AFTER the shell has already 'printed' the echo.
-        // This ensures the user only sees the professional execution header.
-        terminal.sendText(`cls & ${command}`);
+        const shellPath = (vscode.env.shell || '').toLowerCase();
+        const isCmd = shellPath.includes('cmd.exe');
+        if (isCmd) {
+            terminal.sendText(`cls & ${command}`);
+        } else {
+            // PowerShell needs command separator ';' and the call operator '&' if command starts with quotes
+            let formattedCommand = command;
+            if (command.trim().startsWith('"')) {
+                formattedCommand = `& ${command}`;
+            }
+            terminal.sendText(`cls; ${formattedCommand}`);
+        }
     } else {
         // macOS/Linux equivalent
         terminal.sendText(`clear; ${command}`);
@@ -1372,20 +1354,42 @@ function activate(context) {
         })
     );
 
-    // Flash firmware to device via mpflash
+    // Flash firmware to device via mpflash or esptool
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.flashFirmware', async () => {
-            const terminal = getMpremoteTerminal();
-            const result = await flashFirmware(outputChannel, terminal);
-            if (result && gDeviceCodeDir) {
-                // Record the flashed version in device.cfg
-                const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
-                await updateCfgComponent(cfgPath, 'device', 'last_flashed_version', result.version);
-                await updateCfgComponent(cfgPath, 'device', 'last_flashed_board', result.board);
-                // Update status bar tooltip to show firmware version
-                if (deviceStatusBarItem) {
-                    deviceStatusBarItem.tooltip = `Connected to ${result.port} — firmware ${result.version}`;
+            const pick = await vscode.window.showQuickPick([
+                {
+                    label: '$(circuit-board) Raspberry Pi Pico / STM32 / Standard Board',
+                    description: 'Flash firmware via standard mpflash wizard',
+                    type: 'standard'
+                },
+                {
+                    label: '$(chip) ESP32 / ESP8266 (Espressif Board)',
+                    description: 'Flash firmware using the ESP Flash Download Tool (esptool)',
+                    type: 'esp'
                 }
+            ], {
+                placeHolder: 'Select your microcontroller type for flashing'
+            });
+
+            if (!pick) return;
+
+            if (pick.type === 'standard') {
+                const terminal = getMpremoteTerminal();
+                const result = await flashFirmware(outputChannel, terminal);
+                if (result && gDeviceCodeDir) {
+                    // Record the flashed version in device.cfg
+                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                    await updateCfgComponent(cfgPath, 'device', 'last_flashed_version', result.version);
+                    await updateCfgComponent(cfgPath, 'device', 'last_flashed_board', result.board);
+                    // Update status bar tooltip to show firmware version
+                    if (deviceStatusBarItem) {
+                        deviceStatusBarItem.tooltip = `Connected to ${result.port} — firmware ${result.version}`;
+                    }
+                }
+            } else {
+                const { openEspFlashTool } = require('./espFlashTool');
+                openEspFlashTool(context, outputChannel, gRemoteDevicePort);
             }
         })
     );

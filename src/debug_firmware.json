@@ -8,7 +8,7 @@
       "detail": "RP2350 — UF2 drag-and-drop via BOOTSEL",
       "asset": "Pico2w/firmware.uf2",
       "method": "uf2",
-      "available": true
+      "available": false
     },
     {
       "id": "picow",
@@ -16,7 +16,7 @@
       "detail": "RP2040 — coming soon",
       "asset": "Picow/firmware.uf2",
       "method": "uf2",
-      "available": false
+      "available": true
     },
     {
       "id": "pico",
