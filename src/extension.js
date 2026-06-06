@@ -24,6 +24,7 @@ const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFro
 const { getConnectedDevices } = require('./runCommand');
 const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
+const { startSimulator, stopSimulator } = require('./simulator');
 
 // Download a URL to a local path, following redirects.
 function downloadFile(url, dest, redirects = 5) {
@@ -1220,6 +1221,32 @@ function activate(context) {
         })
     );
 
+    // Start QEMU Simulator
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.startSimulator', async () => {
+            await startSimulator(context, outputChannel, async (newPort) => {
+                gRemoteDevicePort = newPort;
+                if (gDeviceCodeDir) {
+                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+                    await updateCfgComponent(cfgPath, 'device', 'port', newPort);
+                }
+                updateDeviceStatusBar();
+                if (deviceFileExplorer) {
+                    const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
+                    deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
+                    deviceFileExplorer.refresh();
+                }
+            });
+        })
+    );
+
+    // Stop QEMU Simulator
+    context.subscriptions.push(
+        vscode.commands.registerCommand('micropython-ide.stopSimulator', () => {
+            stopSimulator();
+        })
+    );
+
     // Update Device Port (placeholder — coming soon)
     // Update Device Port (placeholder - coming soon)
     context.subscriptions.push(
@@ -1722,6 +1749,16 @@ function createStatusBar(context) {
     webReplButton.tooltip = 'Open WebREPL Terminal (Wi-Fi)';
     webReplButton.command = 'micropython-ide.openWebReplTerminal';
     webReplButton.show();
+    context.subscriptions.push(webReplButton);
+
+    // 9. Simulator Button
+    const simulatorButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    simulatorButton.text = '$(play-circle) Simulator';
+    simulatorButton.tooltip = 'Start QEMU MicroPython Simulator';
+    simulatorButton.command = 'micropython-ide.startSimulator';
+    simulatorButton.show();
+    context.subscriptions.push(simulatorButton);
+
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.enterAiAssistance', () => {
             vscode.commands.executeCommand('micropython-ide-ai-chat.focus');
@@ -1733,6 +1770,12 @@ function createStatusBar(context) {
 
 function deactivate() {
     console.log('MicroPython Studio extension deactivated');
+
+    // Stop simulator if running
+    try {
+        const { stopSimulator } = require('./simulator');
+        stopSimulator();
+    } catch (_) {}
 
     // Clean up the terminal
     if (gMpremoteTerminal) {

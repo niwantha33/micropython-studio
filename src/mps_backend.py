@@ -235,6 +235,84 @@ DOWNLOAD_EXCLUDE = {
 
 
 # ---------------------------------------------------------------------------
+# TCP connection support (e.g. for QEMU targets)
+# ---------------------------------------------------------------------------
+import socket
+
+def _is_tcp_port(port: str) -> bool:
+    return port.startswith('tcp:')
+
+def _parse_tcp_port(port: str):
+    addr = port[4:]
+    if ':' in addr:
+        host, p = addr.rsplit(':', 1)
+        return host, int(p)
+    return addr, 4444
+
+class SocketSerialAdapter:
+    def __init__(self, host, port, timeout=1.0):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.sock = None
+        self.is_open = False
+        self.dtr = False
+        self.rts = False
+        self.buf = bytearray()
+
+    def open(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect((self.host, self.port))
+        self.is_open = True
+
+    def close(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+        self.is_open = False
+
+    def write(self, data):
+        self.sock.sendall(data)
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def _recv_to_buf(self, timeout=None):
+        import select
+        if not self.is_open or not self.sock:
+            return
+        self.sock.setblocking(False)
+        try:
+            r, _, _ = select.select([self.sock], [], [], timeout if timeout is not None else 0.0)
+            if r:
+                chunk = self.sock.recv(4096)
+                if chunk:
+                    self.buf.extend(chunk)
+        except Exception:
+            pass
+        finally:
+            if self.sock:
+                self.sock.setblocking(True)
+
+    def read(self, size=1):
+        if not self.buf:
+            self._recv_to_buf(self.timeout)
+        res = self.buf[:size]
+        del self.buf[:size]
+        return bytes(res)
+
+    @property
+    def in_waiting(self):
+        self._recv_to_buf(0.0)
+        return len(self.buf)
+
+
+# ---------------------------------------------------------------------------
 # WebREPL transport
 # mpremote 1.27.0 has no ws: support (transport_ws.py doesn't exist).
 # We use the websocket-client library for the WebSocket layer and implement
@@ -479,6 +557,12 @@ class SerialConnection:
             return 0
 
     def connect(self):
+        if _is_tcp_port(self.port):
+            host, port_num = _parse_tcp_port(self.port)
+            self.serial = SocketSerialAdapter(host, port_num, timeout=1.5)
+            self.serial.open()
+            return
+
         import serial
         import time
         import os
@@ -547,7 +631,7 @@ class SerialConnection:
         if self.serial:
             self.serial.close()
         # Release the global lock
-        if hasattr(self, 'lock_path'):
+        if hasattr(self, 'lock_path') and self.lock_path:
             try:
                 import os
                 if os.path.exists(self.lock_path):
@@ -1612,6 +1696,8 @@ def _serial_pre_interrupt(python_exe, port, hard=False, light=False):
     """
     if _is_ws_port(port):
         return False
+    if _is_tcp_port(port):
+        return False
 
     try:
         import serial
@@ -2130,10 +2216,15 @@ def cmd_shell(python_exe, port):
     import serial as _ser
     import threading
     try:
-        s = _ser.Serial(port, 115200, timeout=0.05, write_timeout=1.0,
-                        dsrdtr=False, rtscts=False)
-        s.dtr = bool(dtr_required)
-        s.rts = False
+        if _is_tcp_port(port):
+            host, port_num = _parse_tcp_port(port)
+            s = SocketSerialAdapter(host, port_num, timeout=0.05)
+            s.open()
+        else:
+            s = _ser.Serial(port, 115200, timeout=0.05, write_timeout=1.0,
+                            dsrdtr=False, rtscts=False)
+            s.dtr = bool(dtr_required)
+            s.rts = False
     except Exception as e:
         print(f" [ERROR] Cannot open {port}: {e}", file=sys.stderr)
         sys.exit(1)
