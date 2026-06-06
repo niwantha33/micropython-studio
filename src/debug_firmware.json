@@ -6,25 +6,33 @@
       "id": "pico2w",
       "label": "Raspberry Pi Pico 2 W",
       "detail": "RP2350 — UF2 drag-and-drop via BOOTSEL",
-      "asset": "Pico2w/firmware.uf2",
+      "asset": "Pico2w/firmware_pico2_w.uf2",
       "method": "uf2",
-      "available": false
+      "available": true
+    },
+    {
+      "id": "pico2",
+      "label": "Raspberry Pi Pico 2",
+      "detail": "RP2350 — UF2 drag-and-drop via BOOTSEL",
+      "asset": "Pico2/firmware_pico2.uf2",
+      "method": "uf2",
+      "available": true
     },
     {
       "id": "picow",
       "label": "Raspberry Pi Pico W",
-      "detail": "RP2040 — coming soon",
-      "asset": "Picow/firmware.uf2",
+      "detail": "RP2040 — UF2 drag-and-drop via BOOTSEL",
+      "asset": "Picow/firmware_pico_w.uf2",
       "method": "uf2",
       "available": true
     },
     {
       "id": "pico",
       "label": "Raspberry Pi Pico",
-      "detail": "RP2040 — coming soon",
-      "asset": "Pico/firmware.uf2",
+      "detail": "RP2040 — UF2 drag-and-drop via BOOTSEL",
+      "asset": "Pico/firmware_pico.uf2",
       "method": "uf2",
-      "available": false
+      "available": true
     },
     {
       "id": "esp32-s3",

@@ -18,6 +18,16 @@ let pendingCondEval = null;  // { ip, cond, names } while awaiting locals reply
 let hlDeco = null;            // TextEditorDecorationType for current line
 let lastHlEditor = null;
 
+// Pop matching pending breakpoint reply by module, function, and relative line.
+function popPendingBp(module, func, relLine) {
+    const fnKey = `${module}:${func}`;
+    const idx = pendingBpReplies.findIndex(item => item.fnKey === fnKey && (item.line1 - item.defLine) === relLine);
+    if (idx >= 0) {
+        return pendingBpReplies.splice(idx, 1)[0];
+    }
+    return pendingBpReplies.shift();
+}
+
 // Scan a python source for the nearest `def name(` at/above `line` (1-based).
 // Returns {func, defLine, args} or null.
 function findEnclosingFunction(text, line) {
@@ -83,7 +93,11 @@ function openDebuggerPanel(context, port) {
         } catch (e) { /* ignore */ }
     }
     function clearHighlight() {
-        if (lastHlEditor && hlDeco) lastHlEditor.setDecorations(hlDeco, []);
+        if (hlDeco) {
+            for (const ed of vscode.window.visibleTextEditors) {
+                ed.setDecorations(hlDeco, []);
+            }
+        }
     }
 
     // Spawn the Python bridge
@@ -103,16 +117,27 @@ function openDebuggerPanel(context, port) {
                 const msg = JSON.parse(line);
                 // Capture slot numbers from reply text: "bp N @ mod.func:line ip=..."
                 if (msg.evt === 'reply' && typeof msg.text === 'string') {
-                    const m = msg.text.match(/^bp (\d+) @ ([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
-                    if (m && pendingBpReplies.length) {
-                        const info = pendingBpReplies.shift();
-                        bpSlotMap.set(info.key, parseInt(m[1], 10));
-                        const bpIp = parseInt(m[4], 10);
-                        ipToLoc.set(bpIp, { fsPath: info.fsPath, line1: info.line1, fnKey: info.fnKey });
-                        if (info.cond) ipToCond.set(bpIp, info.cond);
-                        if (m[5]) {
-                            const funPtr = m[5];
-                            panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
+                    const m = msg.text.match(/^bp (\d+) @ (.*)\.([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
+                    if (m) {
+                        const slot = parseInt(m[1], 10);
+                        const modName = m[2];
+                        const funcName = m[3];
+                        const relLine = parseInt(m[4], 10);
+                        const bpIp = parseInt(m[5], 10);
+                        const info = popPendingBp(modName, funcName, relLine);
+                        if (info) {
+                            bpSlotMap.set(info.key, slot);
+                            ipToLoc.set(bpIp, { fsPath: info.fsPath, line1: info.line1, fnKey: info.fnKey });
+                            if (info.cond) ipToCond.set(bpIp, info.cond);
+                            if (m[6]) {
+                                const funPtr = m[6];
+                                panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
+                            }
+                        }
+                    } else {
+                        const mFail = msg.text.match(/^no code on (.*)\.([^\s]+) line (\d+)/);
+                        if (mFail) {
+                            popPendingBp(mFail[1], mFail[2], parseInt(mFail[3], 10));
                         }
                     }
                 }
@@ -311,9 +336,12 @@ function openDebuggerPanel(context, port) {
                 if (k.startsWith(`${modName}:`) && k.endsWith(`:${line1}`)) {
                     bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
                     bpSlotMap.delete(k);
-                    // also drop any ipToCond entries for this location
+                    // also drop any ipToCond and ipToLoc entries for this location
                     for (const [ip, l] of ipToLoc.entries()) {
-                        if (l.fsPath === fsPath && l.line1 === line1) ipToCond.delete(ip);
+                        if (l.fsPath === fsPath && l.line1 === line1) {
+                            ipToCond.delete(ip);
+                            ipToLoc.delete(ip);
+                        }
                     }
                     break;
                 }
