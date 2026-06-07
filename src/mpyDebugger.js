@@ -15,8 +15,10 @@ const pendingBpReplies = []; // queue of {key, fsPath, line1}
 const ipToLoc = new Map();   // ip -> {fsPath, line1}
 const ipToCond = new Map();  // ip -> condition string (optional)
 let pendingCondEval = null;  // { ip, cond, names } while awaiting locals reply
-let hlDeco = null;            // TextEditorDecorationType for current line
+let hlDeco = null;            // TextEditorDecorationType for current line (yellow — breakpoint)
+let stepInDeco = null;        // TextEditorDecorationType for step-in line (cyan)
 let lastHlEditor = null;
+let lastActionWasStepIn = false; // tracks whether the last resume action was step_in
 
 // Pop matching pending breakpoint reply by module, function, and relative line.
 function popPendingBp(module, func, relLine) {
@@ -81,22 +83,31 @@ function openDebuggerPanel(context, port) {
         overviewRulerColor: '#ffa500',
         overviewRulerLane: vscode.OverviewRulerLane.Full,
     });
+    stepInDeco = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(0, 180, 220, 0.25)',
+        isWholeLine: true,
+        overviewRulerColor: '#00b4dc',
+        overviewRulerLane: vscode.OverviewRulerLane.Full,
+    });
 
-    async function highlightLine(fsPath, line1) {
+    async function highlightLine(fsPath, line1, useStepInColor) {
         try {
             const doc = await vscode.workspace.openTextDocument(fsPath);
             const ed = await vscode.window.showTextDocument(doc, { preserveFocus: false, viewColumn: vscode.ViewColumn.One });
             const range = new vscode.Range(line1 - 1, 0, line1 - 1, 0);
-            ed.setDecorations(hlDeco, [range]);
+            const deco = useStepInColor ? stepInDeco : hlDeco;
+            // clear both decorations first
+            ed.setDecorations(hlDeco, []);
+            ed.setDecorations(stepInDeco, []);
+            ed.setDecorations(deco, [range]);
             ed.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
             lastHlEditor = ed;
         } catch (e) { /* ignore */ }
     }
     function clearHighlight() {
-        if (hlDeco) {
-            for (const ed of vscode.window.visibleTextEditors) {
-                ed.setDecorations(hlDeco, []);
-            }
+        for (const ed of vscode.window.visibleTextEditors) {
+            if (hlDeco) ed.setDecorations(hlDeco, []);
+            if (stepInDeco) ed.setDecorations(stepInDeco, []);
         }
     }
 
@@ -151,9 +162,17 @@ function openDebuggerPanel(context, port) {
                         continue; // do not forward bp_hit yet
                     }
                     if (loc) {
-                        highlightLine(loc.fsPath, loc.line1);
+                        highlightLine(loc.fsPath, loc.line1, lastActionWasStepIn);
                         panel.webview.postMessage({ evt: 'names', names: localNamesByFn.get(loc.fnKey) || [] });
+                    } else if (lastActionWasStepIn) {
+                        // Stepped into code with no source mapping
+                        panel.webview.postMessage({
+                            evt: 'no_source',
+                            ip: msg.ip,
+                            msg: `Stepped into unmapped code at ip=0x${msg.ip.toString(16).padStart(4, '0')}. No source file available. Use Step-out (o) to return or Continue (c) to resume.`
+                        });
                     }
+                    lastActionWasStepIn = false;
                     panel.webview.postMessage({ evt: 'status', paused: true });
                     try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
                 }
@@ -212,6 +231,8 @@ function openDebuggerPanel(context, port) {
                     // forward the reply so locals table renders
                 }
                 if (msg.evt === 'sent' && (msg.op === 'continue' || (msg.op && msg.op.startsWith && msg.op.startsWith('step')))) {
+                    if (msg.op === 'step_in') lastActionWasStepIn = true;
+                    else lastActionWasStepIn = false;
                     clearHighlight();
                     panel.webview.postMessage({ evt: 'status', paused: false });
                 }
@@ -457,7 +478,7 @@ button:hover { background: #3d3d3d; }
   <button onclick="send('locals')">{ } Locals (l)</button>
   <button onclick="send('call_stack')">☰ Call Stack (k)</button>
   <button onclick="send('set_bp_here')">● Set BP at cursor</button>
-  <button onclick="send('halt')">⏸ Halt (h)</button>
+
   <button onclick="send('flash_firmware')" style="margin-left:12px">⬇ Download Firmware</button>
   <button onclick="document.getElementById('log').innerHTML=''">Clear</button>
 </div>
@@ -513,6 +534,10 @@ document.addEventListener('click', (e) => {
 window.addEventListener('message', (e) => {
   const m = e.data;
   if (m.evt === 'bp_hit') add('bp', 'BP_HIT  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
+  else if (m.evt === 'no_source') {
+    add('err', '⚠ ' + m.msg);
+    document.getElementById('locals-body').innerHTML = '<div style="color:#ffa500;padding:8px;">⚠ No source file mapped for this location.<br>Use <b>Step-out (o)</b> to return to your code or <b>Continue (c)</b> to resume execution.</div>';
+  }
   else if (m.evt === 'trace') add('', 'trace   ip=0x' + m.ip.toString(16).padStart(4,'0') + '  op=0x' + m.op.toString(16).padStart(2,'0'));
   else if (m.evt === 'reply') {
     add('reply', 'REPLY  ' + m.text);
@@ -587,7 +612,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'o') send('step_out');
   else if (e.key === 'l') send('locals');
   else if (e.key === 'k') send('call_stack');
-  else if (e.key === 'h') send('halt');
+
 });
 document.addEventListener('keydown', (e) => {
   if (e.target.classList.contains('v')) {

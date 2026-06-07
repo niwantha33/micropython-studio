@@ -38,7 +38,6 @@ CMDS = {
     "step_in":  0x13,
     "step_out": 0x14,
     "call_stack": 0x17,
-    "halt":     0x20,
 }
 
 
