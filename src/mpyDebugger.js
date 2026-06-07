@@ -434,12 +434,15 @@ function getHtml() {
 body { font-family: monospace; background: #1e1e1e; color: #ddd; margin: 0; padding: 8px; }
 button { background: #2d2d2d; color: #ddd; border: 1px solid #555; padding: 6px 12px; margin: 2px; cursor: pointer; }
 button:hover { background: #3d3d3d; }
-#log { border: 1px solid #333; height: 40vh; overflow-y: scroll; padding: 6px; font-size: 12px; white-space: pre-wrap; }
-#locals { border: 1px solid #444; background:#252525; margin-top:6px; padding:6px; font-size:12px; min-height:80px; }
-#locals h3 { margin: 0 0 4px 0; font-size: 12px; color: #8fbc8f; }
-#locals table { width: 100%; border-collapse: collapse; }
-#locals td { padding: 2px 6px; border-bottom: 1px solid #333; }
-#locals td.k { color: #88c0ff; width: 80px; }
+#log { border: 1px solid #333; height: 35vh; overflow-y: scroll; padding: 6px; font-size: 12px; white-space: pre-wrap; }
+.panel-card { border: 1px solid #444; background:#252525; margin-top:6px; padding:6px; font-size:12px; min-height:80px; }
+.panel-card h3 { margin: 0 0 4px 0; font-size: 12px; color: #8fbc8f; }
+.panel-card table { width: 100%; border-collapse: collapse; }
+.panel-card td { padding: 2px 6px; border-bottom: 1px solid #333; }
+.panel-card td.k { color: #88c0ff; width: 80px; }
+.panel-card td.v { cursor: pointer; outline: none; transition: background 0.2s; }
+.panel-card td.v:hover { background: #333; }
+.panel-card td.v:focus { background: #444; border-bottom: 1px solid #88c0ff; cursor: text; }
 .bp { color: #ffa500; }
 .reply { color: #8fbc8f; }
 .err { color: #f88; }
@@ -454,12 +457,22 @@ button:hover { background: #3d3d3d; }
   <button onclick="send('locals')">{ } Locals (l)</button>
   <button onclick="send('call_stack')">☰ Call Stack (k)</button>
   <button onclick="send('set_bp_here')">● Set BP at cursor</button>
+  <button onclick="send('halt')">⏸ Halt (h)</button>
   <button onclick="send('flash_firmware')" style="margin-left:12px">⬇ Download Firmware</button>
   <button onclick="document.getElementById('log').innerHTML=''">Clear</button>
 </div>
 <div id="log"></div>
-<div id="locals"><h3>Locals / Frame</h3><div id="locals-body">(not paused)</div></div>
-<div id="locals"><h3>Call Stack</h3><div id="stack-body">(empty)</div></div>
+<div id="panel-locals" class="panel-card"><h3>Locals / Frame</h3><div id="locals-body">(not paused)</div></div>
+<div id="panel-stack" class="panel-card"><h3>Call Stack</h3><div id="stack-body">(empty)</div></div>
+<div id="panel-poke-global" class="panel-card">
+  <h3>Poke Global Variable</h3>
+  <div style="margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;">
+    <input type="text" id="poke-global-name" placeholder="Name (e.g. my_var)" style="background:#1a1a1a; color:#fff; border:1px solid #555; padding:4px 6px; font-family:monospace; font-size:12px; flex: 1; min-width: 100px;">
+    <input type="text" id="poke-global-expr" placeholder="Expression (e.g. 42)" style="background:#1a1a1a; color:#fff; border:1px solid #555; padding:4px 6px; font-family:monospace; font-size:12px; flex: 2; min-width: 150px;">
+    <input type="number" id="poke-global-depth" placeholder="Depth" value="0" style="background:#1a1a1a; color:#fff; border:1px solid #555; padding:4px 6px; font-family:monospace; font-size:12px; width: 60px;">
+    <button onclick="pokeGlobal()">Poke Global</button>
+  </div>
+</div>
 <script>
 const vscode = acquireVsCodeApi();
 const log = document.getElementById('log');
@@ -473,6 +486,21 @@ function add(cls, text) {
   log.scrollTop = log.scrollHeight;
 }
 function send(op) { vscode.postMessage({op}); }
+function pokeGlobal() {
+  const nameEl = document.getElementById('poke-global-name');
+  const exprEl = document.getElementById('poke-global-expr');
+  const depthEl = document.getElementById('poke-global-depth');
+  const name = nameEl.value.trim();
+  const expr = exprEl.value.trim();
+  const depth = parseInt(depthEl.value || '0', 10);
+  if (!name || !expr) {
+    add('err', 'Poke Global: Name and Expression are required.');
+    return;
+  }
+  vscode.postMessage({ op: 'poke_global', name: name, expr: expr, depth: depth });
+  nameEl.value = '';
+  exprEl.value = '';
+}
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('a[data-fun]');
   if (!a) return;
@@ -531,7 +559,7 @@ window.addEventListener('message', (e) => {
       for (let i = 0; i < currentNames.length; i++) {
         const idx = n - 1 - i;
         const val = (idx >= 0 && idx < state.length) ? state[idx] : '?';
-        html += '<tr><td class="k">' + currentNames[i] + '</td><td>' + val + '</td></tr>';
+        html += '<tr><td class="k">' + currentNames[i] + '</td><td class="v" contenteditable="true" data-slot="' + i + '" data-val="' + val.replace(/"/g, '&quot;') + '">' + val + '</td></tr>';
       }
       html += '<tr><td class="k">raw</td><td style="color:#888">[' + fm[2] + ']</td></tr>';
       html += '</table>';
@@ -552,13 +580,48 @@ window.addEventListener('message', (e) => {
   else add('', JSON.stringify(m));
 });
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'INPUT' || e.target.contentEditable === 'true') return;
   if (e.key === 'c') send('continue');
   else if (e.key === 's') send('step');
   else if (e.key === 'i') send('step_in');
   else if (e.key === 'o') send('step_out');
   else if (e.key === 'l') send('locals');
   else if (e.key === 'k') send('call_stack');
+  else if (e.key === 'h') send('halt');
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target.classList.contains('v')) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const slot = e.target.getAttribute('data-slot');
+      const expr = e.target.textContent.trim();
+      const oldVal = e.target.getAttribute('data-val');
+      if (expr !== oldVal) {
+        vscode.postMessage({ op: 'poke_local', slot: parseInt(slot, 10), expr: expr });
+      }
+      e.target.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.target.textContent = e.target.getAttribute('data-val');
+      e.target.blur();
+    }
+  }
+});
+document.addEventListener('focusout', (e) => {
+  if (e.target.classList.contains('v')) {
+    const slot = e.target.getAttribute('data-slot');
+    const expr = e.target.textContent.trim();
+    const oldVal = e.target.getAttribute('data-val');
+    if (expr !== oldVal) {
+      vscode.postMessage({ op: 'poke_local', slot: parseInt(slot, 10), expr: expr });
+    }
+  }
+});
+document.getElementById('poke-global-name').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') pokeGlobal();
+});
+document.getElementById('poke-global-expr').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') pokeGlobal();
 });
 </script>
 </body></html>`;

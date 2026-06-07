@@ -38,6 +38,7 @@ CMDS = {
     "step_in":  0x13,
     "step_out": 0x14,
     "call_stack": 0x17,
+    "halt":     0x20,
 }
 
 
@@ -111,7 +112,7 @@ def main():
             if op == "quit":
                 break
             code = CMDS.get(op)
-            if code is None and op not in ("set_bp", "clear_bp"):
+            if code is None and op not in ("set_bp", "clear_bp", "poke_local", "poke_global"):
                 say(evt="error", msg=f"unknown op: {op}")
                 continue
             try:
@@ -125,6 +126,18 @@ def main():
                 elif op == "clear_bp":
                     slot = int(msg.get("slot", 0)) & 0xFF
                     ser.write(bytes([0xAA, 0x16, 1, slot]))
+                elif op == "poke_local":
+                    slot = int(msg.get("slot", 0)) & 0xFF
+                    depth = int(msg.get("depth", 0)) & 0xFF
+                    expr = msg.get("expr", "").encode()
+                    payload = bytes([slot, depth]) + expr
+                    ser.write(bytes([0xAA, 0x18, len(payload)]) + payload)
+                elif op == "poke_global":
+                    depth = int(msg.get("depth", 0)) & 0xFF
+                    name = msg.get("name", "").encode()
+                    expr = msg.get("expr", "").encode()
+                    payload = bytes([depth, len(name)]) + name + expr
+                    ser.write(bytes([0xAA, 0x19, len(payload)]) + payload)
                 else:
                     ser.write(bytes([0xAA, code, 0x00]))
                 ser.flush()
