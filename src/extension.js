@@ -92,6 +92,7 @@ let currentTarget = 'Host';
 let deviceStatusBarItem = null;
 let deviceFileExplorer = null;
 let deviceFileTreeView = null;
+let simulatorButton = null;
 
 
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
@@ -383,6 +384,24 @@ function updateDeviceStatusBar() {
         deviceStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     }
 
+}
+
+/**
+ * Update the simulator status bar button visual style and action.
+ */
+function updateSimulatorButton(isRunning) {
+    if (!simulatorButton) return;
+    if (isRunning) {
+        simulatorButton.text = '$(check) Sim Active';
+        simulatorButton.tooltip = 'Stop QEMU MicroPython Simulator (Warning: Simulator filesystem is read-only)';
+        simulatorButton.command = 'micropython-ide.stopSimulator';
+        simulatorButton.backgroundColor = new vscode.ThemeColor('statusBarItem.prominentBackground');
+    } else {
+        simulatorButton.text = '$(play-circle) Simulator';
+        simulatorButton.tooltip = 'Start QEMU MicroPython Simulator';
+        simulatorButton.command = 'micropython-ide.startSimulator';
+        simulatorButton.backgroundColor = undefined;
+    }
 }
 
 let aiAssistanceProvider = null;
@@ -749,7 +768,8 @@ function activate(context) {
             const isWireless = runPort.startsWith('ws:');
             let cmd;
 
-            if (!isMpy && !isWireless && !isXBeeDevice() && currentTarget === 'Host') {
+            const isSimulator = runPort.startsWith('tcp:');
+            if (!isMpy && !isWireless && !isSimulator && !isXBeeDevice() && currentTarget === 'Host') {
                 // Run on Host — mount project folder to device via USB, then run from host FS
                 // .mpy files, XBee, and wireless (ws:) connections cannot use mount+run; always run_mcu
                 if (gDeviceCodeDir && !isFileInProjectFolder(filePath, gDeviceCodeDir)) {
@@ -939,6 +959,15 @@ function activate(context) {
                 vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
                 return;
             }
+
+            if (gRemoteDevicePort.startsWith('tcp:')) {
+                vscode.window.showWarningMessage(
+                    'Cannot upload files to the simulator because the emulated device\'s filesystem is read-only. ' +
+                    'Please use the "Run" button (which mounts your workspace in RAM) or "Run MCU" instead. ' +
+                    'If your project is missing library files (like "asyncio"), you can copy them into a "lib/" folder in your local workspace.'
+                );
+                return;
+            }
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
@@ -979,6 +1008,15 @@ function activate(context) {
 
             if (!gRemoteDevicePort) {
                 vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
+                return;
+            }
+
+            if (gRemoteDevicePort.startsWith('tcp:')) {
+                vscode.window.showWarningMessage(
+                    'Cannot upload folders to the simulator because the emulated device\'s filesystem is read-only. ' +
+                    'Please use the "Run" button (which mounts your workspace in RAM) or "Run MCU" instead. ' +
+                    'If your project is missing library files (like "asyncio"), you can copy them into a "lib/" folder in your local workspace.'
+                );
                 return;
             }
 
@@ -1042,6 +1080,15 @@ function activate(context) {
 
             if (!gRemoteDevicePort) {
                 vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
+                return;
+            }
+
+            if (gRemoteDevicePort.startsWith('tcp:')) {
+                vscode.window.showWarningMessage(
+                    'Cannot upload projects to the simulator because the emulated device\'s filesystem is read-only. ' +
+                    'Please use the "Run" button (which mounts your workspace in RAM) or "Run MCU" instead. ' +
+                    'If your project is missing library files (like "asyncio"), you can copy them into a "lib/" folder in your local workspace.'
+                );
                 return;
             }
 
@@ -1236,6 +1283,9 @@ function activate(context) {
                     deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
                     deviceFileExplorer.refresh();
                 }
+                updateSimulatorButton(true);
+            }, () => {
+                updateSimulatorButton(false);
             });
         })
     );
@@ -1375,6 +1425,13 @@ function activate(context) {
                     afterInstall
                 );
             } else {
+                if (gRemoteDevicePort && gRemoteDevicePort.startsWith('tcp:')) {
+                    vscode.window.showWarningMessage(
+                        'Cannot install packages directly on the simulator because the emulated device\'s filesystem is read-only. ' +
+                        'Please install package libraries locally in a "lib/" folder inside your workspace instead.'
+                    );
+                    return;
+                }
                 await openPackageManager(context, gRemoteDevicePort, runPythonProcess, isXBeeDevice());
             }
             setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 5000);
@@ -1752,7 +1809,7 @@ function createStatusBar(context) {
     context.subscriptions.push(webReplButton);
 
     // 9. Simulator Button
-    const simulatorButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    simulatorButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     simulatorButton.text = '$(play-circle) Simulator';
     simulatorButton.tooltip = 'Start QEMU MicroPython Simulator';
     simulatorButton.command = 'micropython-ide.startSimulator';

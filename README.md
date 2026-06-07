@@ -1,326 +1,99 @@
 # MicroPython Studio - VS Code Extension
-### Supporting MicroPython, CircuitPython & XBee - Local Private AI Assistant
-
-> [!IMPORTANT]
-
-> **Major Migration (v1.0.0)**: A live, bytecode-level debugger for MicroPython on the Raspberry Pi Pico 2 W.
-  Set breakpoints, step through code, inspect named locals, view the call stack,
-  and use **conditional breakpoints** — all on a running board, over USB, with a
-  VS Code UI.
-> No JTAG. No `sys.settrace`. No print-debugging.
-
-> **Major Migration (v0.9.0)**: We have transitioned from standard `mpremote` subprocesses to a custom, high-performance `mps` backend. This migration resolves critical serial port conflicts and "COM port busy" errors on dual-CDC devices like the Raspberry Pi Pico 2 W.
-
+### Write, Deploy, Live Debug, and Simulate MicroPython & CircuitPython Applications
 
 [![MicroPython](https://img.shields.io/badge/MicroPython-v1.20%2B-blue?logo=micropython&logoColor=white)](https://micropython.org)
 [![CircuitPython](https://img.shields.io/badge/CircuitPython-v10.x-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
 [![XBee](https://img.shields.io/badge/XBee-MicroPython-orange)](https://www.digi.com/xbee)
-[![YouTube](https://img.shields.io/badge/YouTube-Subscribe-red?logo=youtube&logoColor=white)](https://www.youtube.com/@NiwanthaDev)
-
-[![MicroPython Studio Tutorial](https://img.youtube.com/vi/or_aG-Rhnb8/maxresdefault.jpg)](https://www.youtube.com/watch?v=or_aG-Rhnb8)
-
-<p >
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/pico2w_micropython_live_debug.png" alt="project" width="900">
-</p>
-
-<p >
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/pinout.png" alt="project" width="900">
-</p>
-
-<p >
-  <img src="https://raw.githubusercontent.com/niwantha33/micropython-studio/main/resource/micro_ai.png" alt="project" width="900">
-</p>
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
 ---
 
-> **🐝 Now with full Digi XBee MicroPython support!** Create projects, upload files, and run scripts on XBee3 modules — Zigbee, DigiMesh, Cellular, Wi-SUN, and BLU — all from VS Code.
+## 🎉 Welcome to Version 2.0.0 (The Hardware Simulator & Co-Pilot Release)
 
-A powerful IDE extension for MicroPython development with hardware integration, device management, and seamless workflow tools.
+MicroPython Studio v2.0.0 brings hardware emulation directly into your coding editor, enabling a complete test environment without physical boards.
 
-## Features
-
-### Setup
-
-| # | Feature | How to Use | What Happens |
-|---|---------|-----------|--------------|
-| 1 | Setup Virtual Environment | Command Palette → *Setup Environment* | `.venv` created, `mpremote` installed |
-| 2 | Create New Project | Status bar *MPS vX.X* → Create New Project | Project folder + `device.cfg` created |
-| 3 | Open Existing Project | Command Palette → *Open Existing Project* | Workspace opens, `device.cfg` detected |
-
-### Connection
-
-| # | Feature | How to Use | What Happens |
-|---|---------|-----------|--------------|
-| 4 | Auto-detect device (USB) | Connect board via USB + click Refresh | Status bar shows COM port |
-| 5 | Auto-detect device (Wi-Fi) | Set `webrepl_enabled=true` in `device.cfg` | Status bar shows Wi-Fi IP |
-| 6 | Manual port override | Command Palette → *Update Device Port* | Port updates in status bar |
-| 7 | Port picker — USB vs Wi-Fi | Click device status bar button | QuickPick shows USB + Wi-Fi options |
-| 8 | WebREPL terminal | Click status bar *WebREPL* button | Terminal panel opens, shows `>>>` prompt |
-
-### Run
-
-| # | Feature | How to Use | What Happens |
-|---|---------|-----------|--------------|
-| 9 | Run on Host (mount mode) | USB connected, target=Host, click *Run* | Script runs via mounted folder |
-| 10 | Run on MCU (USB) | USB connected, target=MCU, click *Run* | Script executed on device via serial |
-| 11 | Run via Wi-Fi | Wi-Fi port selected, click *Run* | Script runs over WebREPL |
-| 12 | Right-click Run script | Right-click `.py` → *Run on MCU Console* | Script runs in terminal |
-| 13 | Stop running script | Click *Stop* button during run | Device soft reset, `>>>` prompt returns |
-| 14 | Switch Host / MCU target | Click Host/MCU toggle in status bar | Label updates, next run uses new target |
-
-### File Upload
-
-| # | Feature | How to Use | What Happens |
-|---|---------|-----------|--------------|
-| 15 | Upload single file | Right-click `.py` → *Upload Current File* | File copied to `/` on device |
-| 16 | Upload folder | Right-click folder → *Upload Folder to Device* | `/foldername` created + all files uploaded |
-| 17 | Upload folder with subfolders | Right-click folder with nested subdirs | Subdirs created first, all files uploaded correctly |
-| 18 | Upload — overwrite protection | Upload folder that already exists on device | Shows conflicting files, asks *Overwrite? Y/N* |
-| 19 | Upload entire project | Command Palette → *Upload Project to Device* | All `main/` files copied to device root |
-
-### Device File Explorer
-
-| # | Feature | How to Use | What Happens |
-|---|---------|-----------|--------------|
-| 20 | Browse device files | Expand *Device Files* panel tree | Files and folders listed |
-| 21 | Read file from device | Click a file in the tree | File contents open in editor (read-only) |
-| 22 | Delete file | Right-click file → *Delete File* | Confirm dialog, file removed, tree refreshes |
-| 23 | Delete folder (with contents) | Right-click folder → *Delete Folder* | Confirm dialog, folder + all contents removed |
-| 24 | Rename file/folder | Right-click → *Rename* | Rename items directly on hardware |
-| 25 | New folder | Right-click folder → *New Folder* | Create subdirectories on device |
-| 26 | Upload to specific folder | Right-click folder → *Upload to This Folder* | Select and upload files directly into that directory |
-| 27 | Refresh tree | Click refresh icon in panel header | Tree re-reads device filesystem |
-
-### Tools
-
-| # | Feature | How to Use | What Happens |
-|---|---------|-----------|--------------|
-| 25 | Open REPL Shell | Click *Shell* in status bar | mpremote interactive REPL opens |
-| 26 | Compile to bytecode | Right-click `.py` → *Compile to Bytecode* | `.mpy` file generated |
-| 27 | Generate flowchart | Right-click `.py` → *Generate Flowchart* | Flowchart panel opens |
-| 28 | Install package (mip) | Command Palette → *Install Package* | Package installed on device via mip |
-| 29 | Flash firmware | Click *Flash* in status bar | Firmware selection + flash to device |
-| 30 | Download firmware | Command Palette → *Download Firmware* | Firmware downloaded locally |
-| 31 | Private AI Assistant | Click *Hubot* icon in sidebar | Private, local AI helper (Ollama) |
-
-### Dashboard
-
-| # | Feature | How to Use | What Happens |
-|---|---------|-----------|--------------|
-| 31 | Open dashboard | Click *Dashboard* in status bar | Dashboard panel opens |
-| 32 | Wi-Fi Manager | Dashboard → Wi-Fi tab | Set SSID + password, save to device |
-| 33 | WebREPL config | Dashboard → Wi-Fi → enable WebREPL | `webrepl_enabled` saved to `device.cfg` |
-| 34 | Pinout view | Dashboard → Pinout tab | Board pinout diagram shown |
-
-## 🧠 Private & Local AI Assistance (v0.8.0+)
-
-MicroPython Studio now features a state-of-the-art **Private AI Assistant** that runs entirely on your local machine.
-
-- **100% Private**: Your code never leaves your computer. No cloud processing, no data tracking.
-- **Context Aware**: The AI automatically sees your active file content and understands your connected device (Port, Firmware, Config).
-- **Ollama Powered**: Uses high-performance local LLMs like `gemma4` (Google's latest), `qwen2.5-coder`, and more.
-- **MicroPython & CircuitPython Expert**: Specialized in embedded Python development.
-
-> [!TIP]
-> To get started, click the **AI Assistant** icon in the sidebar. The extension will automatically check for **Ollama** and help you set up the model.
-
-## Requirements
-
-- **VS Code**: Version 1.75.0 or higher
-- **Python**: 3.7+ installed and available in PATH
-- **Hardware**: MicroPython-compatible device (ESP32, RP2040, STM32, etc.)
-- **USB Drivers**: Appropriate drivers for your microcontroller
-
-## Extension Settings
-
-The extension contributes the following settings:
-
-- `micropython-studio.autoConnect`: Automatically connect to last used device
-- `micropython-studio.defaultDeviceType`: Default microcontroller type
-- `micropython-studio.syncOnSave`: Auto-sync files to device on save
-- `micropython-studio.venvPath`: Custom path to Python virtual environment
-- `micropython-studio.terminalMode`: Preferred terminal type (PowerShell, CMD, Bash)
-
-## Known Issues
-
-- **Windows Path Handling**: Some commands require Git Bash for proper path conversion
-- **Device Recognition**: Certain ESP32 variants may require manual driver installation
-
-## Release Notes
-
-### 0.9.0 (mpremote to mps migration)
-- **New Features**:
-  - **Major Migration**: Successfully migrated all core operations from `mpremote` subprocesses to the dedicated **MicroPython Studio (mps)** backend. This provides sub-second responsiveness and absolute connection stability.
-  - **Advanced File Management**: Added **Rename**, **New Folder**, and **Upload to Specific Folder** support in the Device File Explorer.
-  - **Professional Logging**: Transitioned all terminal status logs to a clean, ASCII-only format for 100% compatibility with Windows terminals.
-- **Improved**:
-  - **Stability**: Eliminated the "I/O operation on closed file" and "COM port busy" crashes common with dual-CDC devices (RP2040/RP2350).
-  - **WebREPL Console**: Redesigned for professional focus, removing redundant file-transfer panels in favor of the unified File Explorer.
-  - **CircuitPython Stability**: Faster and more reliable file listings via local filesystem mapping when available.
-- **Fixed**:
-  - Resolved serial port race conditions between background telemetry and user commands.
-  - Scrubbed all problematic Unicode emojis from backend processes to prevent encoding failures.
+### What's New in v2.0.0:
+* **Integrated Hardware Simulator**: Run and test MicroPython code on an emulated Raspberry Pi Pico 2 W (MPS2 AN385 Cortex-M3 target) powered by portable QEMU binaries.
+* **Dynamic Status Bar Controls**: Toggle the simulator with a single click in your status bar. When running, the button turns **Vibrant Green** (`✔ Sim Active`) and lets you stop the emulator cleanly.
+* **Automatic Execution Routing**: When the simulator is active, clicking the main **Run** button automatically routes code execution to "Run on MCU" (direct socket REPL stream), bypassing serial limits.
+* **Filesystem Write Guards**: Clear dialog warnings guide you on simulator constraints (filesystem is read-only VfsRom) and suggest placing missing files (like `asyncio` or custom modules) inside a local `lib/` directory.
+* **TCP Connection Robustness**: Upgraded socket adapters in `mps_backend.py` with automatic retry logic to prevent race conditions during QEMU boot.
 
 ---
 
-### 0.4.0 (Initial Public Release)
+## 🚀 Key Features
 
-- **Core Features**:
-  - Project creation wizard
-  - Device detection and management
-  - Basic code execution
-  - Virtual environment setup
-- **Workspace Organization**:
-  - Dedicated device folder view
-  - Visual workspace separation
-- **Initial Device Support**:
-  - ESP32 series
-  - Raspberry Pi Pico (RP2040)
-  - STM32 boards
-  - XBee 3 Modules
+* **Bytecode-Level Live Debugger**: Set breakpoints, step through lines, view the call stack, and inspect local variables directly on your board (or simulator) over USB with a rich VS Code debugger UI. No JTAG or complex wiring required.
+* **Local Private AI Co-Pilot**: Context-aware AI assistant powered by **Ollama** (`micro_ai` models). Keeps your code 100% private, automatically reads your active file contents, and understands your connected hardware.
+* **Device File Explorer**: Browse, read, delete, create, and rename files directly on the micro-controller filesystem.
+* **Digi XBee Support**: Full project templates, serial execution, and filesystem routing for XBee3 cellular/mesh modules.
+* **Unified Telemetry Dashboard**: Telemetry status, Wi-Fi manager configuration, WebREPL configurations, and interactive Pinout Diagrams (RP2040, ESP32, STM32, etc.) at a glance.
 
-### 0.5.0
-
-- **Fixed**:
-  - COM port access conflicts
-  - Virtual environment setup on Windows
-  - Path handling in Git Bash terminals
-- **Improved**:
-  - Device detection reliability
-  - Error messaging for connection issues
-  - Workspace loading performance
-
-### 0.6.x 
-
-- **New Features**:
-  - Circuitpython (partial support)
-  - Bytecode conversion 
-  - Multiple device support
-  - Circuitpython -  (partial support)
-  - Bytecode conversion - Done
-  - Multiple device support - Done
-  - WebREPL terminal - (partial support)
-  - File upload and download - Done
-  - Device file explorer - Done
-  - Dashboard - Done
-  - Library Install - Done
-  - Pinout view - Done
-  
-- **Enhanced**:
-  - File sync performance 
-  - IntelliSense
-
-### 0.7.0
-
-- **Complete Support**:
-  - Full CircuitPython compatibility (USB & Web Workflow)
-  - Enhanced Device Dashboard with live telemetry
-  - Hardware Pinout Diagram (RP2, ESP32, STM32, SAMD, etc.)
-  - High-performance File Upload/Download (Folder support)
-  - Device File Explorer with Overwrite Protection
-  - WebREPL Terminal for wireless debugging
-  - Integrated Package Management (`mip`, `circup`)
-  - Bytecode Compilation (.mpy)
-- **Enhanced**:
-  - File sync performance optimization
-  - Improved IntelliSense for MicroPython modules
-  - Unified command palette and status bar integration
-
-### 0.7.1 
-- **Added**:
-  - More detailed error messages and troubleshooting guides
-
-### 0.7.2
-- **Added**:
-  - Support device upload/download 
-  - Improved error handling for file operations
-  - onclick library support for file upload/download
-
-### 0.7.3
-- **Added**:
-  - **Clean Terminal UI**: Automatic clearing of terminal command echo for a clean, professional execution experience.
-  - **Output Filtering**: Silent mounting and suppression of absolute local paths from `mpremote` output.
-  - Enable file manupulation (upload/download) via onclick library for WebREPL connections, providing a seamless wireless file management experience.
-
-
-### 0.8.0 (Modernized AI Update)
-- **New Features**:
-  - **Premium AI Assistance**: Completely redesigned UI with glassmorphism and modern aesthetics.
-  - **Conversation Memory**: Switched to multi-turn chat history (supports Ollama's `api/chat`).
-  - **Deep Context Sensitivity**: AI now automatically detects active file content and hardware environment (Port, Firmware, `device.cfg`).
-  - **High-Performance Communication**: Refactored backend to use `stdin` data streams for large chat histories.
-  - **History Persistence**: Chat sessions are saved and restored across VS Code reloads.
-- **Improved**:
-  - Enhanced connection status reporting for local LLMs.
-  - Modern typography (Inter) and Markdown/Syntax highlighting integration.
-
-### 0.8.1 (AI Context & Stability)
-- **Enhanced AI Context Awareness**: Improved situational awareness by dynamically detecting project root and connected device configuration.
-- **Interactive AI Code Actions**: Added "Insert", "Run", "New File", and "Copy" buttons directly in the AI Chat window for a seamless coding workflow.
-- **Structured Prompt Engineering**: Improved AI response quality through structured context injection (`[device]`, `[filePath]`).
-- **Stable WebREPL**: Resolved connection stability issues by enforcing mandatory WebSocket frame masking (RFC 6455).
-- **Robust Boot Configuration**: New `boot.py` template with improved Wi-Fi connectivity and a dedicated USB-detection window to prevent lockouts.
-- **UI Polishing**: Refined the AI Assistant interface with better markdown rendering and transition effects.
-
-### 0.8.2 (Private AI & Gemma 4)
-- **New**: Private AI now supports **Gemma 4** (`gemma4:e2b`) — Google's latest model, optimized for low-resource laptops (8GB RAM).
-- **Improved**: AI response speed — tuned Ollama parameters (`num_ctx 2048`, `num_predict 512`, `num_thread 4`) for faster local inference.
-- **Improved**: AI prompts refined — concise code-first responses with short explanations, no lengthy prose.
-- **Improved**: Greeting/non-code queries now receive a proper reply instead of being silently passed.
-- **Milestone**: 🎉 **200+ downloads** on VS Code Marketplace — thank you to all users!
-
-### 0.8.4 (AI Model Hotfix)
-- **Fixed**: Resolved a bug where AI code generation would abruptly stop halfway through. Increased the `num_predict` token limit from 512 to 2048 and `num_ctx` to 4096 in both MicroPython and CircuitPython models to allow for complete, longer code responses.
-- **Improved**: Renamed AI models from `mycoder` to `micro_ai` (`micro_ai-mpy` and `micro_ai-cpy`) for better branding. Added automatic model re-installation logic so updates apply seamlessly.
-
-### 0.8.6 (XBee MicroPython Support)
-- **New**: Full **Digi XBee MicroPython** support — create, upload, and run on XBee3 modules (Zigbee, DigiMesh, Cellular, Wi-SUN, BLU).
-- **Fixed**: XBee file upload — resolved `EEXIST` errors caused by XBee's restricted flash filesystem. Small files now upload in a single raw-REPL call; larger files use a robust delete-then-write strategy with flash-flush delays.
-- **Fixed**: XBee uploads now bypass `mpremote cp` entirely (XBee lacks `os.stat`), going straight to reliable serial transport.
-- **Fixed**: COM port labels — FTDI and CP210x chips no longer incorrectly labeled as "ESP32". Now shows actual chip type (FTDI Serial, CP210x Serial, CH340 Serial, etc.).
-- **Improved**: XBee project creation — dedicated board picker with all XBee3 variants, auto-configured stubs, and `/flash` filesystem routing.
+[![MicroPython Studio Debugger Video](https://img.youtube.com/vi/or_aG-Rhnb8/maxresdefault.jpg)](https://www.youtube.com/watch?v=or_aG-Rhnb8)
 
 ---
 
-## Working with MicroPython Studio
+## 💻 Working with the QEMU Simulator
 
-### Getting Started
+The simulator provides a great workspace to prototype application logic without needing physical hardware.
 
-1. Install the extension
-2. Connect your MicroPython device via USB
-3. Set up the development environment: `Ctrl+Shift+P > MicroPython: Setup Development Environment`
-4. Create a new project: `Ctrl+Shift+P > MicroPython: Create New Project`
-5. Update your device port: `Ctrl+Shift+P > MicroPython: Update Device Port`
-6. Start coding and use `MicroPython: Run Script on Device` to execute
+### 1. Launching and Stopping
+- Click the **Simulator** button on the bottom status bar. 
+- The extension automatically downloads a lightweight, portable QEMU binary (cross-platform for Windows, macOS, Linux) and the emulator firmware.
+- The button turns green and shows **`✔ Sim Active`**. Click it again to terminate the emulation.
 
-### Key Commands
+### 2. Execution Target
+- Keep your run target on the default settings. Clicking **Run** while the simulator is enabled will automatically execute your code via raw REPL memory streaming.
 
-| Command | Description |
-|---------|-------------|
-| `MicroPython: Setup Development Environment` | Initialize the Python virtual environment and install dependencies |
-| `MicroPython: Create New Project` | Start the new project wizard |
-| `MicroPython: Open Existing Project` | Open an existing MicroPython project folder |
-| `MicroPython: Update Device Port` | Select or update the COM port / Wi-Fi connection |
-| `MicroPython: Run Script on Device` | Execute current script on the device |
-| `MicroPython: Stop Running Script` | Stop the currently executing script |
-| `MicroPython: Open Device Shell` | Open an interactive REPL shell |
-| `MicroPython: Upload Current File to Device` | Upload the active file to the device root |
-| `MicroPython: Upload Project to Device` | Upload your entire project to the device |
-| `MicroPython: Mount & Run on Device` | Mount local folder and run directly on device |
-| `MicroPython: Refresh Device Files` | Refresh the device files tree view |
-| `MicroPython: Start Debug Session` | Start a debug session on the device |
+### 3. Read-Only Filesystem Alert
+- The simulated board uses a **read-only ROM filesystem** (`VfsRom`).
+- Direct file uploads or package downloads (via `mip` / package manager) will be blocked with a warning dialog.
+- **How to use libraries**: If your code requires libraries (such as `asyncio`), simply create a `lib/` directory inside your local PC workspace and place them there. When you click Run, the directory is temporarily mounted, making the libraries available to your code in RAM.
 
-## 🤖 AI Usage Guide for Developers
+---
 
-As an open-source project, **MicroPython Studio** embraces and encourages the use of AI tools (like GitHub Copilot, ChatGPT, Claude, and our own Local AI Assistant) to accelerate development, improve code quality, and help solve complex implementation hurdles. 
+## 🧠 Setting Up Local AI Assistant (Ollama)
+1. Install [Ollama](https://ollama.com) on your computer.
+2. Click the **AI Assistant** icon in the VS Code sidebar.
+3. The assistant will detect your Ollama installation and download the optimized `micro_ai` coding model automatically.
+4. Ask questions, insert code snippets directly into your files, or run them with a single click.
 
-If you are contributing to this repository using AI tools, please follow these guidelines:
-1. **Understand What You Commit**: AI is a powerful assistant, but you remain the author and maintainer of the code. Ensure you fully understand any generated code before submitting a pull request.
-2. **Security & Privacy**: Avoid pasting sensitive credentials, API keys, or proprietary user data into public AI models.
-3. **Attribution**: If an AI model helped you solve a particularly complex architectural or algorithmic challenge, feel free to mention it in your PR description!
-4. **Code Quality**: Verify that AI-generated code matches the project's existing style guidelines, adheres to error-handling standards, and includes necessary comments.
+---
 
-We embrace AI as a core part of modern development and are excited to see what we can build together.
+## 🛠️ Quick Commands
+
+| Command | Action |
+|---------|--------|
+| `MicroPython: Setup Development Environment` | Initialize Python `.venv` and install `mpremote` |
+| `MicroPython: Create New Project` | Start the wizard to generate configuration files and directories |
+| `MicroPython: Open Existing Project` | Open an existing workspace containing `device.cfg` |
+| `MicroPython: Run Script on Device` | Run the active `.py` script |
+| `MicroPython: Stop Running Script` | Stop execution and perform a soft-reboot |
+| `MicroPython: Open Device Shell` | Launch an interactive REPL shell in your terminal panel |
+
+---
+
+## 📋 Release History
+
+### 2.0.0 (The Hardware Simulator & Co-Pilot Release)
+* **QEMU Simulator Integration**: Full emulation support for Raspberry Pi Pico 2 W targets directly in VS Code.
+* **Dynamic Simulator Control**: Interactive, colorized status bar buttons to start, stop, and monitor emulator state.
+* **Auto-Routing**: Automatically directs execution requests to direct REPL streaming when the simulator is enabled.
+* **VfsRom Guards**: Warnings intercepting write attempts on the read-only simulator filesystem and explaining local `lib/` directory fallbacks for files like `asyncio`.
+* **TCP Connection Robustness**: Retry loops in the socket backend to ensure clean connections on slow device boot.
+
+### 1.0.0 (Live Debugger Release)
+* **Bytecode-Level Debugging**: Support for breakpoints, call-stack inspection, and locals analysis directly over serial/USB.
+* **Conditional Breakpoints**: Pause debugger execution when specific evaluations are met.
+
+### 0.9.0 (Backend Refactoring)
+* **mpremote to mps migration**: Migrated all core operations to a dedicated, high-performance `mps_backend` to eliminate port locks and busy conflicts.
+* **Enhanced File Operations**: Folder rename, mkdir, and targeted folder uploads added.
+
+### 0.8.x (Local AI Assistance)
+* **Ollama Integration**: Multi-turn chat assistant with deep hardware context sensitivity and file awareness.
+
+---
 
 ## Acknowledgements
 
@@ -340,6 +113,9 @@ MicroPython Studio is open source (MIT License) and builds on the following open
 | [xbee-micropython](https://github.com/digidotcom/xbee-micropython) | Digi International | MIT | XBee MicroPython typehints, stubs, and libraries |
 | [esptool](https://github.com/espressif/esptool) | Espressif Systems | GPL-2.0 | ESP32 firmware flashing |
 | [pyserial](https://github.com/pyserial/pyserial) | pyserial contributors | BSD | Serial port communication and device detection |
+| [QEMU](https://www.qemu.org) | QEMU Project | GPL-2.0 | Hardware emulated processor execution & simulation |
+| [Ollama](https://ollama.com) | Ollama Contributors | MIT | Local AI LLM model orchestration & execution engine |
+| [Gemma](https://ai.google.dev/gemma) | Google DeepMind | Gemma Terms | Optimized local LLM for private AI assistance |
 
 A special piece of **project history**: This extension has been a work in progress for approximately three years. Early on, many complex implementation hurdles for hardware interactions seemed insurmountable. **AI development tools** provided the critical support, documentation insights, and breakthroughs needed to finally bring these concepts to life. AI is at the very heart of how MicroPython Studio was built.
 

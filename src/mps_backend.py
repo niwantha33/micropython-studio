@@ -261,10 +261,25 @@ class SocketSerialAdapter:
         self.buf = bytearray()
 
     def open(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect((self.host, self.port))
-        self.is_open = True
+        import time
+        last_err = None
+        for attempt in range(10):
+            try:
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.sock.settimeout(self.timeout)
+                self.sock.connect((self.host, self.port))
+                self.is_open = True
+                return
+            except Exception as e:
+                last_err = e
+                # Close the socket if created but connection failed
+                if self.sock:
+                    try:
+                        self.sock.close()
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+        raise ConnectionError(f"Could not connect to TCP port {self.host}:{self.port} after 10 attempts. Last error: {last_err}")
 
     def close(self):
         if self.sock:

@@ -507,7 +507,7 @@ window.addEventListener('message', (e) => {
       html += '</table>';
       document.getElementById('stack-body').innerHTML = frames.length ? html : '(empty)';
     }
-    const fm = m.text.match(/frame=\\(([^)]+)\\)\\s+state=\\[([^\\]]*)\\]/);
+    const fm = m.text.match(/frame=\\(([^)]+)\\)\\s+state=\\[(.*)\\]/);
     if (fm) {
       const fr = fm[1].split(',').map(s => s.trim());
       const state = (function(s){

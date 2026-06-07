@@ -47,7 +47,7 @@ function extractZip(zipPath, destDir) {
     });
 }
 
-async function startSimulator(context, outputChannel, onConnect) {
+async function startSimulator(context, outputChannel, onConnect, onExit) {
     if (qemuProcess) {
         vscode.window.showInformationMessage('Simulator is already running.');
         return;
@@ -119,7 +119,9 @@ async function startSimulator(context, outputChannel, onConnect) {
         '-cpu', 'cortex-m3',
         '-kernel', firmwarePath,
         '-serial', 'tcp:127.0.0.1:4444,server,nowait',
-        '-nographic'
+        '-nographic',
+        '-monitor', 'null',
+        '-semihosting'
     ];
 
     qemuProcess = spawn(qemuBin, args, { cwd: binDir });
@@ -135,6 +137,9 @@ async function startSimulator(context, outputChannel, onConnect) {
     qemuProcess.on('close', (code) => {
         outputChannel.appendLine(`QEMU exited with code ${code}`);
         qemuProcess = null;
+        if (onExit) {
+            onExit();
+        }
     });
 
     // 4. Automatically connect
