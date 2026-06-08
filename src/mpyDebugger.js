@@ -176,6 +176,16 @@ function openDebuggerPanel(context, port) {
                     panel.webview.postMessage({ evt: 'status', paused: true });
                     try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
                 }
+                if (msg.evt === 'exception') {
+                    panel.webview.postMessage({ evt: 'error', msg: `Exception: ${msg.msg} at ip=0x${msg.ip.toString(16)}` });
+                    panel.webview.postMessage({ evt: 'status', paused: true });
+                    const loc = ipToLoc.get(msg.ip);
+                    if (loc) {
+                        highlightLine(loc.fsPath, loc.line1, false);
+                        panel.webview.postMessage({ evt: 'names', names: localNamesByFn.get(loc.fnKey) || [] });
+                    }
+                    try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
+                }
                 if (msg.evt === 'reply' && pendingCondEval && typeof msg.text === 'string' && msg.text.startsWith('frame=')) {
                     const pe = pendingCondEval;
                     pendingCondEval = null;

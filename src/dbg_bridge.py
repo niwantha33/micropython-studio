@@ -72,6 +72,10 @@ def reader_loop(ser, stop_evt):
                 say(evt="bp_hit", ip=ip)
             elif t == 0x03:
                 say(evt="reply", text=payload.decode(errors="replace"))
+            elif t == 0x04 and n >= 2:
+                ip = payload[0] | (payload[1] << 8)
+                msg = payload[2:].decode(errors="replace")
+                say(evt="exception", ip=ip, msg=msg)
             else:
                 say(evt="raw", type=t, payload=payload.hex())
             del buf[:total]
