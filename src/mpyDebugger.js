@@ -506,6 +506,7 @@ function getHtml() {
   --accent-warning: #f59e0b;
   --accent-error: #f43f5e;
   --accent-cyan: #06b6d4;
+  --accent-purple: #d946ef;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
 }
@@ -739,6 +740,7 @@ body {
 .reply { color: var(--accent-success); }
 .err { color: var(--accent-error); font-weight: 600; }
 .sent { color: var(--accent-primary); }
+.rta { color: var(--accent-purple); font-weight: 500; }
 
 /* Table Styling */
 table {
@@ -973,6 +975,14 @@ window.addEventListener('message', (e) => {
     document.getElementById('locals-body').innerHTML = '<div style="color:#ffa500;padding:8px;">⚠ No source file mapped for this location.<br>Use <b>Step-out (o)</b> to return to your code or <b>Continue (c)</b> to resume execution.</div>';
   }
   else if (m.evt === 'trace') add('', 'trace   ip=0x' + m.ip.toString(16).padStart(4,'0') + '  op=0x' + m.op.toString(16).padStart(2,'0'));
+  else if (m.evt === 'rta_entry' || m.evt === 'rta_exit') {
+    const isEntry = m.evt === 'rta_entry';
+    const rec = funNames[m.fun];
+    const fnName = rec ? rec.name : ('0x' + m.fun.toString(16));
+    const dirIcon = isEntry ? '→ ENTER' : '← EXIT';
+    const timeStr = m.ts + 'ms';
+    add('rta', `RTA: ${dirIcon} ${fnName} at ${timeStr}`);
+  }
   else if (m.evt === 'reply') {
     add('reply', 'REPLY  ' + m.text);
     
