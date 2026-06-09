@@ -237,6 +237,8 @@ class MicroDebuggerCLI(cmd.Cmd):
                 print(text)
             elif "state=" in text:
                 self.pretty_print_locals(text)
+            elif "globals=" in text:
+                self.pretty_print_globals(text)
             else:
                 print(f"\n{COLOR_GREEN}{text}{COLOR_RESET}")
         elif evt == "sent":
@@ -361,6 +363,25 @@ class MicroDebuggerCLI(cmd.Cmd):
         except Exception as e:
             print(text)
 
+    def pretty_print_globals(self, text):
+        # Format: depth=0 globals={...}
+        try:
+            glob_idx = text.find("globals={")
+            if glob_idx == -1:
+                print(text)
+                return
+            glob_str = text[glob_idx + len("globals="):]
+            g_dict = ast.literal_eval(glob_str)
+            
+            print(f"\n{COLOR_CYAN}Global variables (Active Frame):{COLOR_RESET}")
+            print(f"{'Name':<20} | {'Value':<30}")
+            print("-" * 55)
+            for name, val in sorted(g_dict.items()):
+                print(f"{COLOR_BOLD}{name:<20}{COLOR_RESET} | {COLOR_GREEN}{val:<30}{COLOR_RESET}")
+            print("")
+        except Exception:
+            print(text)
+
     # CLI Debugger Commands
     def do_continue(self, arg):
         """Continue execution (c)"""
@@ -400,6 +421,13 @@ class MicroDebuggerCLI(cmd.Cmd):
 
     def do_l(self, arg):
         return self.do_locals(arg)
+
+    def do_globals(self, arg):
+        """Show global variables (g)"""
+        self.send_op("globals")
+
+    def do_g(self, arg):
+        return self.do_globals(arg)
 
     def do_stack(self, arg):
         """Show call stack (k)"""
