@@ -981,7 +981,7 @@ window.addEventListener('message', (e) => {
     const fnName = rec ? rec.name : ('0x' + m.fun.toString(16));
     const dirIcon = isEntry ? '→ ENTER' : '← EXIT';
     const timeStr = m.ts + 'ms';
-    add('rta', `RTA: ${dirIcon} ${fnName} at ${timeStr}`);
+    add('rta', 'RTA: ' + dirIcon + ' ' + fnName + ' at ' + timeStr);
   }
   else if (m.evt === 'reply') {
     add('reply', 'REPLY  ' + m.text);
