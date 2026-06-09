@@ -39,6 +39,8 @@ CMDS = {
     "step_out": 0x14,
     "call_stack": 0x17,
     "globals":  0x1A,
+    "rta_on":   0x1B,
+    "rta_off":  0x1C,
 }
 
 
