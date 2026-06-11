@@ -871,11 +871,14 @@ function activate(context) {
             if (connectionManager.isConnected) {
                 // Interrupt the advanced shell
                 connectionManager.write(Buffer.from('\r\x03'));
+                await new Promise(resolve => setTimeout(resolve, 300));
                 await vscode.commands.executeCommand('micropython-ide.hardResetDevice');
             } else {
                 const terminal = getMpremoteTerminal();
                 terminal.sendText('\x03', false); // Ctrl+C — interrupts the running script
                 terminal.show();
+                // Wait for the terminal process to receive Ctrl+C and release the COM port
+                await new Promise(resolve => setTimeout(resolve, 800));
                 await vscode.commands.executeCommand('micropython-ide.hardResetDevice');
             }
         })

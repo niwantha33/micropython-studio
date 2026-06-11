@@ -74,6 +74,89 @@ def _get_lock_path(port: str) -> str:
     return os.path.join(tempfile.gettempdir(), lock_name)
 
 
+def _kill_comport_processes(port: str):
+    """Scan running python processes and kill any process that has the COM port name in its command line."""
+    import subprocess
+    import sys
+    port_lower = port.lower()
+    if sys.platform == 'win32':
+        cmd = ['powershell.exe', '-NoProfile', '-Command',
+               f'Get-CimInstance Win32_Process -Filter "name=\'python.exe\'" | '
+               f'Where-Object {{ $_.CommandLine -like "*{port_lower}*" }} | '
+               f'Select-Object -ExpandProperty ProcessId']
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, shell=True)
+            pids = []
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pids.append(int(line))
+            
+            for pid in pids:
+                if pid != os.getpid():
+                    sys.stderr.write(f" [INFO] Killing process {pid} referencing port {port} in command line...\n")
+                    try:
+                        os.kill(pid, 9)
+                    except Exception:
+                        subprocess.run(['taskkill', '/F', '/PID', str(pid)], 
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
+            if pids:
+                time.sleep(0.3)
+        except Exception as e:
+            sys.stderr.write(f" [WARN] Failed to scan and kill processes referencing port {port}: {e}\n")
+    else:
+        try:
+            cmd = ['ps', '-eo', 'pid,args']
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    pid_str, args_str = parts
+                    if pid_str.isdigit():
+                        pid = int(pid_str)
+                        if pid != os.getpid() and 'python' in args_str.lower() and port_lower in args_str.lower():
+                            sys.stderr.write(f" [INFO] Killing process {pid} referencing port {port} in command line...\n")
+                            try:
+                                os.kill(pid, 9)
+                            except:
+                                pass
+            time.sleep(0.3)
+        except Exception as e:
+            sys.stderr.write(f" [WARN] Failed to scan and kill processes referencing port {port}: {e}\n")
+
+
+def _kill_port_owner(port: str):
+    """Terminates any process holding the lock or referencing the port for the given COM port."""
+    # 1. Kill via custom lock file
+    lock_path = _get_lock_path(port)
+    if os.path.exists(lock_path):
+        try:
+            with open(lock_path, 'r') as f:
+                content = f.read().strip()
+            if content:
+                parts = content.split(':')
+                pid = int(parts[0])
+                if pid != os.getpid() and _is_pid_running(pid):
+                    sys.stderr.write(f" [INFO] Killing process {pid} holding lock for {port}...\n")
+                    try:
+                        os.kill(pid, 9)
+                    except Exception:
+                        if sys.platform == 'win32':
+                            subprocess.run(['taskkill', '/F', '/PID', str(pid)], 
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
+                    time.sleep(0.3)
+            try:
+                os.remove(lock_path)
+            except:
+                pass
+        except Exception as e:
+            sys.stderr.write(f" [WARN] Failed to kill process holding lock: {e}\n")
+
+    # 2. Scan and kill all other python processes referencing this port in their command line
+    _kill_comport_processes(port)
+
+
 def parse_mpremote_output(raw: str) -> dict:
     """Extract TransportError and device output from mpremote failure."""
     result: dict[str, Any] = {"error": None, "device_output": None}
@@ -2415,11 +2498,61 @@ def cmd_kick(python_exe, port):
 def cmd_hard_reset(python_exe, port):
     """Force a reboot using hardware toggles and soft commands."""
     sys.stderr.write(f"   Performing hard reset on {port}...\n")
-    _serial_pre_interrupt(python_exe, port, hard=True)
-    # Attempt to send software reset command if we can connect now
-    args = ['resume', 'connect', port, 'exec', 'import machine; machine.reset()']
-    run_mpremote(python_exe, args, timeout=5)
-    sys.stderr.write("   Reset signal sent.\n")
+    
+    # 1. Kill busy port owners / processes holding port
+    _kill_port_owner(port)
+    
+    # 2. Connect directly and send manual reset commands
+    import serial
+    import time
+    
+    try:
+        s = serial.Serial(None, 115200, timeout=0.1)
+        s.port = port
+        s.dtr = False
+        s.rts = False
+        
+        try:
+            s.open()
+        except Exception:
+            _kill_port_owner(port)
+            s.open()
+
+        # Send Ctrl+C first to interrupt any currently running script
+        sys.stderr.write(f" [RESET] Sending Ctrl+C to interrupt on {port}...\n")
+        s.write(b'\r\x03\x03')
+        time.sleep(0.1)
+
+        # Hardware Reset Sequence (ESP32/ESP8266 logic)
+        sys.stderr.write(f" [RESET] Toggling RTS/DTR lines (hardware reset)...\n")
+        s.setRTS(True)
+        s.setDTR(False)
+        time.sleep(0.1)
+        s.setRTS(False)  # Release reset
+        time.sleep(0.5)  # Wait for boot
+
+        try:
+            # Send Ctrl+D (soft reset binary command)
+            sys.stderr.write(f" [RESET] Sending Ctrl+D soft reset command...\n")
+            s.write(b'\r\x04')
+            time.sleep(0.5)
+
+            # Send Ctrl+C after reset to stop the bootloader/REPL from running main.py again
+            s.write(b'\r\x03\x03')
+            time.sleep(0.1)
+        except Exception:
+            # Ignore write/permission errors if the port disconnected/reset successfully
+            pass
+
+        try:
+            s.close()
+        except Exception:
+            pass
+        sys.stderr.write("   Reset signal sent.\n")
+    except Exception as e:
+        sys.stderr.write(f" [ERROR] Hard reset failed: {e}\n")
+        sys.exit(1)
+        
     sys.exit(0)
 
 
