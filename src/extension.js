@@ -19,7 +19,8 @@ const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDevi
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
 const { openDeviceDashboard } = require('./deviceDashboard');
-const { openWebReplTerminal } = require('./webReplTerminal');
+const { openDeviceTerminal } = require('./deviceTerminal');
+const connectionManager = require('./connectionManager');
 const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive } = require('./circuitpyDrive');
 const { getConnectedDevices } = require('./runCommand');
 const { AiAssistanceProvider } = require('./aiAssistance');
@@ -125,29 +126,32 @@ async function _buildRunPortOptions() {
 
 
 
-/**
- * Run a Python subprocess (no shell) and show output in an OutputChannel.
- * Avoids Git Bash / MSYS2 shell quoting issues entirely.
- * @param {string} exe - Absolute path to python.exe
- * @param {string[]} args - Arguments (no quoting needed)
- * @param {((code:number|null)=>void)} [onComplete] - Called when process exits
- */
 function runPythonProcess(exe, args, onComplete) {
     const channel = vscode.window.createOutputChannel('MicroPython Studio');
     channel.show(true);
     channel.appendLine('─'.repeat(50));
 
-    let fullOutput = '';
-    const proc = spawn(exe, args);
-    proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
-    proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
-    proc.on('close', code => {
-        _notifyAiOnError(fullOutput, args);
-        channel.appendLine("[SUCCESS] Task complete.");
-        if (onComplete) onComplete(code);
-    });
-    proc.on('error', err => {
-        channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
+    // Suspend daemon so mps_backend can use the COM port
+    connectionManager.suspend().then(() => {
+        let fullOutput = '';
+        const verbose = vscode.workspace.getConfiguration('micropython-studio').get('verboseLogging', false);
+        const finalArgs = [...args];
+        if (verbose && finalArgs[0] && finalArgs[0].includes('mps_backend.py')) {
+            finalArgs.splice(1, 0, '--verbose');
+        }
+        const proc = spawn(exe, finalArgs);
+        proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+        proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+        proc.on('close', async code => {
+            await connectionManager.resume();
+            _notifyAiOnError(fullOutput, args);
+            channel.appendLine("[SUCCESS] Task complete.");
+            if (onComplete) onComplete(code);
+        });
+        proc.on('error', async err => {
+            await connectionManager.resume();
+            channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
+        });
     });
 }
 
@@ -211,16 +215,37 @@ function _extractDeviceError(output) {
  * @returns {Promise<number|null>}
  */
 function _spawnAsync(exe, args) {
-    return new Promise((resolve) => {
+    return new Promise(async (resolve) => {
         const channel = vscode.window.createOutputChannel('MicroPython Studio');
         channel.show(true);
         channel.appendLine('─'.repeat(50));
+        
+        const shouldResume = connectionManager.isConnected && !connectionManager.isSuspended;
+        if (shouldResume) {
+            await connectionManager.suspend();
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
         let fullOutput = '';
-        const proc = spawn(exe, args);
+        const verbose = vscode.workspace.getConfiguration('micropython-studio').get('verboseLogging', false);
+        const finalArgs = [...args];
+        if (verbose && finalArgs[0] && finalArgs[0].includes('mps_backend.py')) {
+            finalArgs.splice(1, 0, '--verbose');
+        }
+        const proc = spawn(exe, finalArgs);
         proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
         proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
-        proc.on('close', code => { _notifyAiOnError(fullOutput, args); resolve(code); });
-        proc.on('error', err => {
+        proc.on('close', async code => { 
+            if (shouldResume) {
+                await connectionManager.resume();
+            }
+            _notifyAiOnError(fullOutput, args); 
+            resolve(code); 
+        });
+        proc.on('error', async err => {
+            if (shouldResume) {
+                await connectionManager.resume();
+            }
             channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
             resolve(null);
         });
@@ -258,12 +283,18 @@ async function _runUploadQueued(exe, baseArgs, onDone) {
  * @param {string[]} baseArgs
  */
 async function _runDownloadQueued(exe, baseArgs) {
-    const { code, stdoutBuf } = await wsQueue.run(() => new Promise((resolve) => {
+    const { code, stdoutBuf } = await wsQueue.run(() => new Promise(async (resolve) => {
+        await connectionManager.suspend();
         let buf = '';
         const channel = vscode.window.createOutputChannel('MicroPython Studio');
         channel.show(true);
         channel.appendLine('─'.repeat(50));
-        const proc = spawn(exe, baseArgs);
+        const verbose = vscode.workspace.getConfiguration('micropython-studio').get('verboseLogging', false);
+        const finalArgs = [...baseArgs];
+        if (verbose && finalArgs[0] && finalArgs[0].includes('mps_backend.py')) {
+            finalArgs.splice(1, 0, '--verbose');
+        }
+        const proc = spawn(exe, finalArgs);
         proc.stdout.on('data', d => {
             const str = d.toString();
             buf += str;
@@ -273,8 +304,14 @@ async function _runDownloadQueued(exe, baseArgs) {
             }
         });
         proc.stderr.on('data', d => channel.append(d.toString()));
-        proc.on('error', err => channel.appendLine(`[ERROR] ${err.message}`));
-        proc.on('close', c => resolve({ code: c, stdoutBuf: buf }));
+        proc.on('error', async err => {
+            await connectionManager.resume();
+            channel.appendLine(`[ERROR] ${err.message}`);
+        });
+        proc.on('close', async c => {
+            await connectionManager.resume();
+            resolve({ code: c, stdoutBuf: buf });
+        });
     }));
 
     if (code !== 3) return;
@@ -680,7 +717,7 @@ function activate(context) {
         })
     );
 
-    // Open Shell (REPL on device)
+    // Open Shell (Advanced REPL on device)
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.openShell', async () => {
             if (!gRemoteDevicePort) {
@@ -688,33 +725,12 @@ function activate(context) {
                 return;
             }
 
-            const venvFolder = getVenvPythonPathFolder();
-            const venvPython = getVenvPythonPath(venvFolder);
-            const helperPy = path.join(context.extensionPath, 'src', 'mps_backend.py');
-
-            // Dedicated terminal where the shell process IS python directly.
-            // This bypasses PowerShell/cmd, so VS Code's Python extension cannot
-            // inject venv-activation text into our REPL stdin.
-            if (gShellTerminal) {
-                try { gShellTerminal.dispose(); } catch (_) { }
-                gShellTerminal = null;
-            }
-            gShellTerminal = vscode.window.createTerminal({
-                name: `MicroPython Shell (${gRemoteDevicePort})`,
-                shellPath: venvPython,
-                shellArgs: [helperPy, '--python', venvPython, 'shell', '--port', gRemoteDevicePort],
-                env: {
-                    // Prevent VS Code Python ext from re-activating venv into this terminal.
-                    VSCODE_DISABLE_PYTHON_AUTO_ACTIVATE: '1',
-                    PYTHONUNBUFFERED: '1',
-                },
-                strictEnv: false,
-            });
-            gShellTerminal.show(true);
+            // Launch the advanced unified Device Terminal
+            await openDeviceTerminal(context, gRemoteDevicePort);
         })
     );
 
-    // Run on Host (mpremote mount) or Run on MCU (mpremote run)
+    // Run on Host (mpremote mount) or Run on MCU (using direct com)
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.mountMainFolder', async (uri) => {
             const filePath = uri ? uri.fsPath : vscode.window.activeTextEditor?.document.fileName;
@@ -744,29 +760,68 @@ function activate(context) {
             const runPort = gRemoteDevicePort;
             if (!runPort) return;
 
+            outputChannel.appendLine(`─`.repeat(50));
+            outputChannel.appendLine(`[Run Command] Initiating execution process...`);
+            outputChannel.appendLine(`[Run Command] Target File: ${filePath}`);
+            outputChannel.appendLine(`[Run Command] Selected Target: ${currentTarget}`);
+            outputChannel.appendLine(`[Run Command] Selected Port: ${runPort}`);
+            outputChannel.appendLine(`[Run Command] Firmware Mode: ${gDeviceFirmware}`);
+
             // ── CircuitPython: mpremote mount not supported — use mpremote run ──────
             // mpremote run uses raw REPL (identical protocol in CP and MP), so it
             // works on CircuitPython without any special handling.
             const isCpDrive = gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\');
             const isCircuitPython = gDeviceFirmware === 'CircuitPython' || isCpDrive;
+
+            if (currentTarget !== 'Host' && !isCircuitPython) {
+                // Run on MCU (MicroPython) uses the daemon.
+                if (!connectionManager.isConnected && gRemoteDevicePort) {
+                    outputChannel.appendLine(`[Run Command] Connecting daemon process to port ${gRemoteDevicePort}...`);
+                    await connectionManager.connect(gRemoteDevicePort);
+                } else if (connectionManager.isConnected && connectionManager.isSuspended) {
+                    outputChannel.appendLine(`[Run Command] Resuming daemon process on port ${gRemoteDevicePort}...`);
+                    await connectionManager.resume();
+                }
+            }
+
+            if (connectionManager.isConnected && currentTarget === 'MCU' && !isCircuitPython) {
+                // If using the daemon for MCU run, get the code from the editor (or file) and run it!
+                let code = '';
+                const editor = vscode.window.activeTextEditor;
+                if (editor && editor.document.fileName === filePath) {
+                    code = editor.document.getText();
+                } else {
+                    code = fs.readFileSync(filePath, 'utf8');
+                }
+                
+                outputChannel.appendLine(`[Run Command] Streaming editor script to MCU via daemon's raw paste...`);
+                await connectionManager.runInTerminal(code);
+                outputChannel.appendLine(`[Run Command] Streaming script execution started.`);
+                
+                // Show the terminal if it's hidden
+                await vscode.commands.executeCommand('micropython-ide.openShell');
+                return;
+            }
+
             if (isCircuitPython) {
                 const scriptPath2 = path.join(context.extensionPath, 'src', 'mps_backend.py');
-                const cpCmd = [
-                    `"${venvPython}"`, `"${scriptPath2}"`,
-                    `--python "${venvPython}"`,
-                    `run_mcu`,
-                    `--port "${runPort}"`,
-                    `--file "${filePath}"`,
-                    `--no-reset`
-                ].join(' ');
-                await sendCleanCommand(terminal, cpCmd);
+                const cpArgs = [
+                    scriptPath2,
+                    '--python', venvPython,
+                    'run_mcu',
+                    '--port', runPort,
+                    '--file', filePath,
+                    '--no-reset'
+                ];
+                outputChannel.appendLine(`[Run Command] CircuitPython: Queueing backend run on ${runPort}`);
+                await wsQueue.run(() => _spawnAsync(venvPython, cpArgs), 'Run CircuitPython Script');
                 return;
             }
 
             const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const isMpy = filePath.endsWith('.mpy');
             const isWireless = runPort.startsWith('ws:');
-            let cmd;
+            let runArgs;
 
             const isSimulator = runPort.startsWith('tcp:');
             if (!isMpy && !isWireless && !isSimulator && !isXBeeDevice() && currentTarget === 'Host') {
@@ -779,29 +834,30 @@ function activate(context) {
                     );
                     if (choice !== 'Run Anyway') return;
                 }
-                cmd = [
-                    `"${venvPython}"`,
-                    `"${scriptPath}"`,
-                    `--python "${venvPython}"`,
-                    `run`,
-                    `--port "${runPort}"`,
-                    `--folder "${gDeviceCodeDir}"`,
-                    `--file "${filePath}"`
-                ].join(' ');
+                runArgs = [
+                    scriptPath,
+                    '--python', venvPython,
+                    'run',
+                    '--port', runPort,
+                    '--folder', gDeviceCodeDir,
+                    '--file', filePath
+                ];
+                outputChannel.appendLine(`[Run Command] Host Target (Mount): Queueing backend run on ${runPort}`);
             } else {
                 // Run on MCU — send file directly to device and run it (mpremote run <file>)
                 // Always used for: .mpy bytecode, wireless (ws:) connections, MCU target mode
-                cmd = [
-                    `"${venvPython}"`,
-                    `"${scriptPath}"`,
-                    `--python "${venvPython}"`,
-                    `run_mcu`,
-                    `--port "${runPort}"`,
-                    `--file "${filePath}"`
-                ].join(' ');
+                runArgs = [
+                    scriptPath,
+                    '--python', venvPython,
+                    'run_mcu',
+                    '--port', runPort,
+                    '--file', filePath
+                ];
+                outputChannel.appendLine(`[Run Command] MCU Target (CLI Run): Queueing backend run on ${runPort}`);
             }
+            console.log(runArgs);
 
-            sendCleanCommand(terminal, cmd);
+            await wsQueue.run(() => _spawnAsync(venvPython, runArgs), `Run ${currentTarget} Script`);
         })
     );
 
@@ -815,10 +871,16 @@ function activate(context) {
     // Stop Running Script — send Ctrl+C to the active terminal session
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.stopRun', () => {
-            const terminal = getMpremoteTerminal();
-            terminal.sendText('\x03', false); // Ctrl+C — interrupts the running script
-            terminal.show();
-            vscode.window.showInformationMessage('[OK] Interrupt sent to device (Ctrl+C).');
+            if (connectionManager.isConnected) {
+                // Interrupt the advanced shell
+                connectionManager.write(Buffer.from('\r\x03'));
+                vscode.window.showInformationMessage('[OK] Interrupt sent to device (Ctrl+C).');
+            } else {
+                const terminal = getMpremoteTerminal();
+                terminal.sendText('\x03', false); // Ctrl+C — interrupts the running script
+                terminal.show();
+                vscode.window.showInformationMessage('[OK] Interrupt sent to device (Ctrl+C).');
+            }
         })
     );
 

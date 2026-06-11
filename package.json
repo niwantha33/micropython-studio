@@ -463,6 +463,11 @@
         "type": "boolean",
         "default": false,
         "description": "CircuitPython: Automatically sync files from the CIRCUITPY drive to the local main/ folder after installing a package with circup."
+      },
+      "micropythonStudio.verboseLogging": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable verbose logging for device connections, locks, and operation queues in the Output channel."
       }
     }
   },

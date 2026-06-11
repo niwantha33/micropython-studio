@@ -148,8 +148,9 @@ async function getConnectedDevices() {
             const devices = lines.map(line => {
                 const parts = line.trim().split(/\s+/);
                 const port = parts[0];
+                const serial = parts[1] || 'None';
                 const vidpid = parts[2] || '0000:0000';
-                return { port, vidpid };
+                return { port, serial, vidpid };
             });
 
             resolve(devices);

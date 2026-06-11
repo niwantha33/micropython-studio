@@ -63,6 +63,17 @@ def _is_pid_running(pid: int) -> bool:
         return False
 
 
+g_verbose = False
+
+def log_to_file(msg: str):
+    pass
+
+def _get_lock_path(port: str) -> str:
+    normalized_port = port.replace('/', '_').replace('\\\\', '_').replace('\\', '_').replace(':', '_')
+    lock_name = f"mps_lock_{normalized_port}.lock"
+    return os.path.join(tempfile.gettempdir(), lock_name)
+
+
 def parse_mpremote_output(raw: str) -> dict:
     """Extract TransportError and device output from mpremote failure."""
     result: dict[str, Any] = {"error": None, "device_output": None}
@@ -584,28 +595,76 @@ class SerialConnection:
         import tempfile
         
         # ── Global File Lock ─────────────────────────────────────────────────
-        lock_name = f"mps_lock_{self.port.replace('/', '_').replace('\\', '_').replace(':', '_')}.lock"
-        self.lock_path = os.path.join(tempfile.gettempdir(), lock_name)
+        self.lock_path = _get_lock_path(self.port)
+        pid = os.getpid()
+        if g_verbose:
+            sys.stderr.write(f"[LOCK] PID {pid}: Trying to acquire lock for port {self.port} at {self.lock_path}\n")
         
         deadline = time.time() + 5.0
         while time.time() < deadline:
             try:
                 # Exclusive creation as lock
                 fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode())
+                os.write(fd, f"{pid}:cli".encode())
                 os.close(fd)
+                if g_verbose:
+                    sys.stderr.write(f"[LOCK] PID {pid}: Acquired lock for port {self.port}\n")
                 break
             except FileExistsError:
                 # Check for stale lock
                 try:
                     with open(self.lock_path, 'r') as f:
-                        old_pid = int(f.read().strip())
+                        content = f.read().strip()
+                        parts = content.split(':')
+                        old_pid = int(parts[0])
+                        owner = parts[1] if len(parts) > 1 else "unknown"
+                    if g_verbose:
+                        sys.stderr.write(f"[LOCK] PID {pid}: Port {self.port} is locked by PID {old_pid} ({owner})\n")
+                    
+                    # Bypass lock check if it's already owned by us
+                    if old_pid == pid:
+                        if g_verbose:
+                            sys.stderr.write(f"[LOCK] PID {pid}: Port {self.port} lock is already owned by this process. Bypassing.\n")
+                        break
+                    
+                    is_parent = False
+                    try:
+                        if hasattr(os, 'getppid') and old_pid == os.getppid():
+                            is_parent = True
+                    except:
+                        pass
+                    
+                    # Bypass lock check if it's a suspended_lock held by parent
+                    if owner == "suspended_lock" and is_parent:
+                        if g_verbose:
+                            sys.stderr.write(f"[LOCK] PID {pid}: Port {self.port} is locked by parent suspended lock. Bypassing.\n")
+                        break
+                    
                     if not _is_pid_running(old_pid):
+                        if g_verbose:
+                            sys.stderr.write(f"[LOCK] PID {pid}: PID {old_pid} is stale, removing lock file\n")
                         try: os.remove(self.lock_path)
                         except: pass
-                except: pass
+                        # Try one more time after removing stale lock
+                        fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                        os.write(fd, f"{pid}:cli".encode())
+                        os.close(fd)
+                        if g_verbose:
+                            sys.stderr.write(f"[LOCK] PID {pid}: Acquired lock after removing stale lock\n")
+                        break
+                except Exception as err:
+                    if g_verbose:
+                        sys.stderr.write(f"[LOCK] PID {pid}: Error reading lock: {err}\n")
+                    pass
                 
-                if time.time() % 1.0 < 0.1: # Throttle message
+                try:
+                    with open(self.lock_path, 'r') as f:
+                        content = f.read().strip()
+                        parts = content.split(':')
+                        old_pid = parts[0]
+                        owner = parts[1] if len(parts) > 1 else "unknown"
+                    sys.stderr.write(f"{CLR_DIM} [LOCK] Waiting for port {self.port} to be released by PID {old_pid} ({owner})...{CLR_RESET}\r")
+                except:
                     sys.stderr.write(f"{CLR_DIM} [LOCK] Waiting for port {self.port} to be released...{CLR_RESET}\r")
                 time.sleep(0.2)
         
@@ -621,13 +680,15 @@ class SerialConnection:
                     port=self.port,
                     baudrate=self.baudrate,
                     timeout=1.5,
-                    write_timeout=2.0,
                     dsrdtr=False,
-                    rtscts=False,
-                    exclusive=True
+                    rtscts=False
                 )
                 self.serial.dtr = False
                 self.serial.rts = False
+                time.sleep(0.1)
+                self.serial.dtr = True
+                self.serial.rts = True
+                time.sleep(0.4)
                 return # Success!
             except serial.SerialException as e:
                 last_err = e
@@ -647,11 +708,17 @@ class SerialConnection:
             self.serial.close()
         # Release the global lock
         if hasattr(self, 'lock_path') and self.lock_path:
+            pid = os.getpid()
+            if g_verbose:
+                sys.stderr.write(f"[LOCK] PID {pid}: Releasing lock for port {self.port}\n")
             try:
-                import os
                 if os.path.exists(self.lock_path):
                     os.remove(self.lock_path)
-            except:
+                    if g_verbose:
+                        sys.stderr.write(f"[LOCK] PID {pid}: Lock released successfully\n")
+            except Exception as err:
+                if g_verbose:
+                    sys.stderr.write(f"[LOCK] PID {pid}: Error releasing lock: {err}\n")
                 pass
 
     def _drain(self):
@@ -745,6 +812,27 @@ class SerialConnection:
         if self.debug:
             sys.stderr.write(f"{CLR_DIM}[SENT] {data!r}{CLR_RESET}\n")
         self.serial.write(data)
+
+    def _exit_raw_repl(self):
+        """Leave raw REPL and consume the friendly prompt before the next command."""
+        if not self.serial:
+            return
+        self._write_trace(b'\x02')  # Ctrl-B
+        deadline = time.time() + 1.0
+        data = bytearray()
+        while time.time() < deadline:
+            wait = self.in_waiting_safe
+            chunk = self.serial.read(wait if wait > 0 else 1)
+            if chunk:
+                if self.debug:
+                    sys.stderr.write(f"{CLR_DIM}[RECV] {chunk!r}{CLR_RESET}\n")
+                data.extend(chunk)
+                if b'>>>' in _strip_ansi(bytes(data)):
+                    break
+                deadline = time.time() + 0.2
+            else:
+                time.sleep(0.01)
+        self._drain()
 
     def _send_code_raw_paste(self, code_buf: bytes) -> bool:
         """Send code via raw-paste mode (Ctrl-E variant) with proper flow control.
@@ -944,7 +1032,7 @@ class SerialConnection:
             return rc, stdout, stderr
         finally:
             # Exit raw REPL
-            self.serial.write(b'\x02')  # Ctrl-B
+            self._exit_raw_repl()
 
     def list_files(self, path='/'):
         """Fetch directory listing efficiently via a single raw REPL call (no JSON dependency)."""
@@ -1037,7 +1125,7 @@ l()
             sys.stderr.write(f"\n   Upload of {source_path.name} finalized.\n")
             return 0
         finally:
-            self.serial.write(b'\x02')  # Exit raw REPL
+            self._exit_raw_repl()
 
     def put_directory(self, source_dir: Path, remote_dir: str):
         """Recursively upload a directory to the device."""
@@ -1095,7 +1183,7 @@ for d in {all_target_dirs!r}:
                 self._put_file_internal(f, remote_path)
         finally:
             if MPS_DEBUG: sys.stderr.write("INFO: Exiting raw REPL.\n")
-            self.serial.write(b'\x02') # Exit raw REPL
+            self._exit_raw_repl()
 
     def _put_file_internal(self, source_path: Path, remote_path: str):
         """Internal helper for uploading a file while ALREADY in raw REPL mode.
@@ -1218,26 +1306,60 @@ def _acquire_port_friendly(python_exe, port, retries=4):
     if _is_ws_port(port):
         return True
     import time
+    import tempfile
+    import os
+    
+    lock_path = _get_lock_path(port)
+    pid_curr = os.getpid()
+    log_to_file(f"Checking lock in _acquire_port_friendly for port {port} at {lock_path}")
+    if g_verbose:
+        sys.stderr.write(f"[LOCK] PID {pid_curr}: Checking lock in friendly check for port {port} at {lock_path}\n")
+    
     last_err = None
     for i in range(retries):
+        # Check lock file first
+        locked = False
+        locker_info = "unknown"
         try:
-            _serial_pre_interrupt(python_exe, port, hard=False, light=True)
-            time.sleep(0.4)
-            return True
-        except Exception as e:
-            last_err = e
+            if os.path.exists(lock_path):
+                with open(lock_path, 'r') as f:
+                    content = f.read().strip()
+                    parts = content.split(':')
+                    pid = int(parts[0])
+                    owner = parts[1] if len(parts) > 1 else "unknown"
+                    locker_info = f"PID {pid} ({owner})"
+                is_self_or_parent = False
+                try:
+                    if pid == os.getpid():
+                        is_self_or_parent = True
+                    elif hasattr(os, 'getppid') and pid == os.getppid():
+                        is_self_or_parent = True
+                except:
+                    pass
+
+                if _is_pid_running(pid) and not is_self_or_parent:
+                    locked = True
+                else:
+                    log_to_file(f"Port is locked by {locker_info} but bypassing because is_self_or_parent={is_self_or_parent} (or PID is not running)")
+        except Exception as lock_read_err:
+            log_to_file(f"Error checking lock in _acquire_port_friendly: {lock_read_err}")
+            pass
+
+        if locked:
+            log_to_file(f"Port is locked by {locker_info}, retry={i+1}/{retries}")
             if i < retries - 1:
-                sys.stderr.write(f" [RETRY {i+1}/{retries}] Port busy, waiting...\n")
-                time.sleep(0.8)
-    sys.stderr.write(
-        f"\n [ERROR] Cannot access {port}.\n"
-        f"   Another program is using it. Try one of these:\n"
-        f"     1. Close the Device Dashboard panel\n"
-        f"     2. Close the WebREPL / Terminal tab connected to {port}\n"
-        f"     3. Close Thonny / PuTTY / other serial tools\n"
-        f"     4. Unplug + replug the board\n"
-        f"   (Last error: {last_err})\n"
-    )
+                sys.stderr.write(f" [RETRY {i+1}/{retries}] Port is locked by {locker_info}, waiting...\n")
+                time.sleep(1.0)
+                continue
+            else:
+                sys.stderr.write(
+                    f"\n [ERROR] Cannot access {port}.\n"
+                    f"   The port is actively locked by {locker_info}.\n"
+                )
+                return False
+
+        # Lock is free or owned by us/parent. Return True without opening the serial port to avoid Windows reuse conflicts.
+        return True
     return False
 
 
@@ -1463,7 +1585,7 @@ def _serial_mkdir_p(python_exe: str, port: str, remote_dir: str) -> None:
     acc = ['']
     for part in parts:
         acc.append(part)
-        run_mpremote(python_exe, ['connect', port,
+        run_mpremote(python_exe, ['resume', 'connect', port,
                      'fs', 'mkdir', '/'.join(acc)], timeout=15)
 
 
@@ -1545,7 +1667,76 @@ def readline_with_timeout(proc, timeout=60):
 def run_mpremote(python_exe, args_list, timeout=60):
     """Run mpremote and stream output in real-time with clean Ctrl+C handling"""
     cmd = [python_exe, '-m', 'mpremote'] + args_list
-    hard_reboot_before_send_cmd(python_exe)
+    
+    port = None
+    lock_path = None
+    if len(args_list) >= 2:
+        if args_list[0] == 'connect':
+            port = args_list[1]
+        elif args_list[0] == 'resume' and len(args_list) >= 3 and args_list[1] == 'connect':
+            port = args_list[2]
+
+    if port and not _is_ws_port(port) and not _is_tcp_port(port):
+        lock_path = _get_lock_path(port)
+        pid = os.getpid()
+        if g_verbose:
+            sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote trying to acquire lock for port {port} at {lock_path}\n")
+        
+        # Try to acquire the lock
+        deadline = time.time() + 5.0
+        acquired = False
+        while time.time() < deadline:
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, f"{pid}:cli".encode())
+                os.close(fd)
+                acquired = True
+                if g_verbose:
+                    sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote acquired lock for port {port}\n")
+                break
+            except FileExistsError:
+                # Check for stale lock
+                try:
+                    with open(lock_path, 'r') as f:
+                        content = f.read().strip()
+                        parts = content.split(':')
+                        old_pid = int(parts[0])
+                        owner = parts[1] if len(parts) > 1 else "unknown"
+                    if g_verbose:
+                        sys.stderr.write(f"[LOCK] PID {pid}: Port {port} is locked by PID {old_pid} ({owner})\n")
+                    
+                    if old_pid == pid:
+                        if g_verbose:
+                            sys.stderr.write(f"[LOCK] PID {pid}: Port {port} lock is already owned by this process. Bypassing.\n")
+                        acquired = True
+                        break
+
+                    is_parent = False
+                    try:
+                        if hasattr(os, 'getppid') and old_pid == os.getppid():
+                            is_parent = True
+                    except:
+                        pass
+
+                    if owner == "suspended_lock" and is_parent:
+                        if g_verbose:
+                            sys.stderr.write(f"[LOCK] PID {pid}: Port {port} is locked by parent suspended lock. Bypassing.\n")
+                        acquired = True
+                        break
+
+                    if not _is_pid_running(old_pid):
+                        if g_verbose:
+                            sys.stderr.write(f"[LOCK] PID {pid}: PID {old_pid} is stale, removing lock file\n")
+                        try: os.remove(lock_path)
+                        except: pass
+                except:
+                    pass
+                time.sleep(0.2)
+        if not acquired:
+            sys.stderr.write(f" [ERROR] Port {port} is busy (locked by another process). Please close other connections.\n")
+            return subprocess.CompletedProcess(cmd, 1, "", f"Port {port} is busy")
+
+    # hard_reboot_before_send_cmd(python_exe)
     proc = None
     try:
         proc = subprocess.Popen(
@@ -1630,6 +1821,20 @@ def run_mpremote(python_exe, args_list, timeout=60):
     except Exception as e:
         print(f"\n [ERROR] Failed to run: {e}", file=sys.stderr)
         return subprocess.CompletedProcess(cmd, 1, "", str(e))
+    finally:
+        if lock_path:
+            pid = os.getpid()
+            if g_verbose:
+                sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote releasing lock for port {port}\n")
+            try:
+                if os.path.exists(lock_path):
+                    os.remove(lock_path)
+                    if g_verbose:
+                        sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote lock released successfully\n")
+            except Exception as err:
+                if g_verbose:
+                    sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote error releasing lock: {err}\n")
+                pass
 # ----------------------------
 # Command: run (mount folder + run full file path)
 # ----------------------------
@@ -1657,14 +1862,14 @@ def cmd_run(python_exe, port, file_path, folder=None):
         print(f" [ERROR] Mount folder not found: {folder}", file=sys.stderr)
         sys.exit(1)
 
-    _print_ui_header(port, folder, file_path)
+    # _print_ui_header(port, folder, file_path)
 
     # Robust port acquisition — friendly message on port-busy.
     if not _acquire_port_friendly(python_exe, port):
         sys.exit(1)
-    # 🔥 Strategy: First attempt uses standard connect (with reset) for stability.
-    # Retry attempt uses 'resume' after a hardware reset.
+    # 🔥 Strategy: First attempt uses resume connect to avoid soft-reset re-enumeration crash.
     args = [
+        'resume',
         'connect', port, 
         'mount', str(folder),
         'run', str(file_path)
@@ -1680,9 +1885,11 @@ def cmd_run(python_exe, port, file_path, folder=None):
         print(" [INFO] First attempt failed. Trying a hardware reset/kick...",
               file=sys.stderr)
         _serial_pre_interrupt(python_exe, port, hard=True, light=False)
-        time.sleep(1.0)
+        time.sleep(4.5)  # Wait for dual-CDC USB re-enumeration to complete
         print(" [RETRY] Retrying with mpremote (resume)...", file=sys.stderr)
-        retry_args = ['connect', port, 'resume', 'mount', str(folder), 'run', str(file_path)]
+        retry_args = ['resume', 'connect', port, 'mount', str(folder), 'run', str(file_path)]
+        print(f"retry args:{retry_args}",
+              file=sys.stderr)
         result = run_mpremote(python_exe, retry_args, timeout=30)
 
     # Final fallback: if mpremote still fails, use our robust SerialConnection
@@ -1704,7 +1911,7 @@ def cmd_run(python_exe, port, file_path, folder=None):
     sys.exit(result.returncode)
 
 
-def _serial_pre_interrupt(python_exe, port, hard=False, light=False):
+def _serial_pre_interrupt(python_exe, port, hard=False, light=False, propagate_errors=False):
     """Fast pre-interrupt using pyserial. Falls back to mpremote if serial is unavailable.
     If hard=True, toggles DTR/RTS to trigger a hardware reset on ESP32/8266.
     If light=True, just sends interrupts without a full raw REPL handshake (prevents mpremote collision).
@@ -1762,7 +1969,9 @@ def _serial_pre_interrupt(python_exe, port, hard=False, light=False):
     except KeyboardInterrupt:
         print("\n\n [INFO] Script manually interrupted. Exiting cleanly.", file=sys.stderr)
         sys.exit(0)
-    except Exception:
+    except Exception as e:
+        if propagate_errors:
+            raise e
         pass  # best-effort — device may not respond
 
 
@@ -1777,8 +1986,8 @@ def cmd_run_mcu(python_exe: str, port: str, file_path: str, soft_reset: bool = T
         sys.stderr.write(f"   [ERROR] File not found: {file_path}\n")
         sys.exit(1)
 
-    if not quiet:
-        _print_ui_header(port, None, file_path)
+    # if not quiet:
+    #     _print_ui_header(port, None, file_path)
 
     # WebSocket: mpremote has no ws: transport — use our own WebREPL implementation
     if _is_ws_port(port):
@@ -1827,6 +2036,7 @@ def cmd_mount(python_exe, port, folder):
 
     print(f" [UPLOAD] Mounting {folder} to /remote...", file=sys.stderr)
     args = [
+        'resume',
         'connect', port,
         'mount', str(folder),
         'exec', "print('✅ Mounted /remote')"
@@ -1844,7 +2054,7 @@ def cmd_mount(python_exe, port, folder):
 def cmd_unmount(python_exe, port):
     print("⏏️ Unmounting /remote...", file=sys.stderr)
     code = "import os; os.umount('/remote')"
-    args = ['connect', port, 'exec', code]
+    args = ['resume', 'connect', port, 'exec', code]
     result = run_mpremote(python_exe, args, timeout=10)
     if result.returncode == 0:
         print("✅ Unmounted /remote")
@@ -2207,7 +2417,7 @@ def cmd_hard_reset(python_exe, port):
     sys.stderr.write(f"   Performing hard reset on {port}...\n")
     _serial_pre_interrupt(python_exe, port, hard=True)
     # Attempt to send software reset command if we can connect now
-    args = ['connect', port, 'exec', 'import machine; machine.reset()']
+    args = ['resume', 'connect', port, 'exec', 'import machine; machine.reset()']
     run_mpremote(python_exe, args, timeout=5)
     sys.stderr.write("   Reset signal sent.\n")
     sys.exit(0)
@@ -2236,10 +2446,10 @@ def cmd_shell(python_exe, port):
             s = SocketSerialAdapter(host, port_num, timeout=0.05)
             s.open()
         else:
-            s = _ser.Serial(port, 115200, timeout=0.05, write_timeout=1.0,
+            s = _ser.Serial(port, 115200, timeout=0.05,
                             dsrdtr=False, rtscts=False)
-            s.dtr = bool(dtr_required)
-            s.rts = False
+            s.dtr = True
+            s.rts = True
     except Exception as e:
         print(f" [ERROR] Cannot open {port}: {e}", file=sys.stderr)
         sys.exit(1)
@@ -2601,6 +2811,8 @@ def main():
     )
     parser.add_argument('--python', required=True,
                         help='Path to venv Python executable')
+    parser.add_argument('--verbose', action='store_true',
+                        help='Enable verbose lock logging')
 
     subparsers = parser.add_subparsers(
         dest='command', required=True, help='Available commands')
@@ -2622,8 +2834,8 @@ def main():
                            help='Serial port (e.g., COM9)')
     run_mcu_p.add_argument('--file', required=True,
                            help='Full path to the .py file to run')
-    run_mcu_p.add_argument('--no-reset', action='store_true',
-                           help='Do not trigger soft reset (Ctrl-D) before running')
+    run_mcu_p.add_argument('--reset', action='store_true',
+                           help='Trigger soft reset (Ctrl-D) before running')
     run_mcu_p.add_argument('--quiet', action='store_true',
                            help='Suppress UI header')
 
@@ -2733,12 +2945,84 @@ def main():
 
     args = parser.parse_args()
 
+    global g_verbose
+    g_verbose = getattr(args, 'verbose', False)
+
+    # Acquire port lock at start of process if --port is provided
+    if hasattr(args, 'port') and args.port:
+        port = args.port
+        lock_path = _get_lock_path(port)
+        log_to_file(f"CLI started for command '{args.command}' on port {port}. Checking lock...")
+        
+        # Check if port is locked by another running process (excluding parent)
+        locked = False
+        locker_info = "unknown"
+        try:
+            if os.path.exists(lock_path):
+                with open(lock_path, 'r') as f:
+                    content = f.read().strip()
+                    parts = content.split(':')
+                    pid = int(parts[0])
+                    owner = parts[1] if len(parts) > 1 else "unknown"
+                    locker_info = f"PID {pid} ({owner})"
+                
+                is_parent = False
+                try:
+                    if hasattr(os, 'getppid') and pid == os.getppid():
+                        is_parent = True
+                except:
+                    pass
+                
+                if _is_pid_running(pid) and not is_parent:
+                    locked = True
+                else:
+                    log_to_file(f"Lock exists for {locker_info} but bypassing because is_parent={is_parent}")
+        except Exception as err:
+            log_to_file(f"Error checking lock at startup: {err}")
+            pass
+
+        if locked:
+            log_to_file(f"Startup check failed: port is actively locked by {locker_info}")
+            sys.stderr.write(
+                f"\n [ERROR] Cannot access {port}.\n"
+                f"   The port is actively locked by {locker_info}.\n"
+            )
+            sys.exit(1)
+        
+        # Claim/write lock file
+        try:
+            with open(lock_path, 'w') as f:
+                f.write(f"{os.getpid()}:cli_run")
+            log_to_file(f"Claimed lock for port {port} (cli_run)")
+            
+            # Register exit handler to clean up the lock file
+            import atexit
+            def _release_lock_on_exit():
+                try:
+                    log_to_file(f"CLI exiting. Releasing lock for port {port}...")
+                    if os.path.exists(lock_path):
+                        with open(lock_path, 'r') as f:
+                            content = f.read().strip()
+                            parts = content.split(':')
+                            pid = int(parts[0])
+                        if pid == os.getpid():
+                            os.remove(lock_path)
+                            log_to_file(f"Lock released successfully by CLI exit handler")
+                except Exception as err:
+                    log_to_file(f"Error releasing lock on exit: {err}")
+                    pass
+            atexit.register(_release_lock_on_exit)
+        except Exception as lock_err:
+            log_to_file(f"Failed to write lock in main: {lock_err}")
+            if g_verbose:
+                sys.stderr.write(f"[LOCK] Failed to write lock in main: {lock_err}\n")
+
     # Dispatch
     if args.command == 'run':
         cmd_run(args.python, args.port, args.file, args.folder)
     elif args.command == 'run_mcu':
-        # Default to soft-resetting unless --no-reset provided
-        soft_reset = not getattr(args, 'no_reset', False)
+        # Default to no reset to prevent Windows USB re-enumeration crash.
+        soft_reset = getattr(args, 'reset', False)
         cmd_run_mcu(args.python, args.port, args.file, 
                     soft_reset=soft_reset, quiet=args.quiet)
     elif args.command == 'mount':
