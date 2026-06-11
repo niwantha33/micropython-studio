@@ -15,8 +15,10 @@ const pendingBpReplies = []; // queue of {key, fsPath, line1}
 const ipToLoc = new Map();   // ip -> {fsPath, line1}
 const ipToCond = new Map();  // ip -> condition string (optional)
 let pendingCondEval = null;  // { ip, cond, names } while awaiting locals reply
-let hlDeco = null;            // TextEditorDecorationType for current line
+let hlDeco = null;            // TextEditorDecorationType for current line (yellow — breakpoint)
+let stepInDeco = null;        // TextEditorDecorationType for step-in line (cyan)
 let lastHlEditor = null;
+let lastActionWasStepIn = false; // tracks whether the last resume action was step_in
 
 // Pop matching pending breakpoint reply by module, function, and relative line.
 function popPendingBp(module, func, relLine) {
@@ -81,22 +83,31 @@ function openDebuggerPanel(context, port) {
         overviewRulerColor: '#ffa500',
         overviewRulerLane: vscode.OverviewRulerLane.Full,
     });
+    stepInDeco = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(0, 180, 220, 0.25)',
+        isWholeLine: true,
+        overviewRulerColor: '#00b4dc',
+        overviewRulerLane: vscode.OverviewRulerLane.Full,
+    });
 
-    async function highlightLine(fsPath, line1) {
+    async function highlightLine(fsPath, line1, useStepInColor) {
         try {
             const doc = await vscode.workspace.openTextDocument(fsPath);
             const ed = await vscode.window.showTextDocument(doc, { preserveFocus: false, viewColumn: vscode.ViewColumn.One });
             const range = new vscode.Range(line1 - 1, 0, line1 - 1, 0);
-            ed.setDecorations(hlDeco, [range]);
+            const deco = useStepInColor ? stepInDeco : hlDeco;
+            // clear both decorations first
+            ed.setDecorations(hlDeco, []);
+            ed.setDecorations(stepInDeco, []);
+            ed.setDecorations(deco, [range]);
             ed.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
             lastHlEditor = ed;
         } catch (e) { /* ignore */ }
     }
     function clearHighlight() {
-        if (hlDeco) {
-            for (const ed of vscode.window.visibleTextEditors) {
-                ed.setDecorations(hlDeco, []);
-            }
+        for (const ed of vscode.window.visibleTextEditors) {
+            if (hlDeco) ed.setDecorations(hlDeco, []);
+            if (stepInDeco) ed.setDecorations(stepInDeco, []);
         }
     }
 
@@ -104,6 +115,30 @@ function openDebuggerPanel(context, port) {
     const script = path.join(context.extensionPath, 'src', 'dbg_bridge.py');
     const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
     bridge = spawn(pyCmd, [script, port], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+    // Send existing breakpoints
+    for (const bp of vscode.debug.breakpoints) {
+        if (!(bp instanceof vscode.SourceBreakpoint)) continue;
+        const loc = bp.location;
+        const fsPath = loc.uri.fsPath;
+        if (!fsPath.endsWith('.py')) continue;
+        const line1 = loc.range.start.line + 1;
+        try {
+            const fs = require('fs');
+            const text = fs.readFileSync(fsPath, 'utf8');
+            const info = findEnclosingFunction(text, line1);
+            if (!info) continue;
+            const modName = path.basename(fsPath, '.py');
+            const relLine = line1 - info.defLine;
+            const key = `${modName}:${info.func}:${line1}`;
+            const names = extractLocalNames(text, info.defLine, info.args);
+            localNamesByFn.set(`${modName}:${info.func}`, names);
+            const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
+            pendingBpReplies.push({ key, fsPath, line1, fnKey: `${modName}:${info.func}`, cond, defLine: info.defLine });
+            const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
+            bridge.stdin.write(JSON.stringify(out) + '\n');
+        } catch (e) {}
+    }
 
     let buf = '';
     bridge.stdout.on('data', (d) => {
@@ -151,11 +186,31 @@ function openDebuggerPanel(context, port) {
                         continue; // do not forward bp_hit yet
                     }
                     if (loc) {
-                        highlightLine(loc.fsPath, loc.line1);
+                        highlightLine(loc.fsPath, loc.line1, lastActionWasStepIn);
                         panel.webview.postMessage({ evt: 'names', names: localNamesByFn.get(loc.fnKey) || [] });
+                    } else if (lastActionWasStepIn) {
+                        // Stepped into code with no source mapping
+                        panel.webview.postMessage({
+                            evt: 'no_source',
+                            ip: msg.ip,
+                            msg: `Stepped into unmapped code at ip=0x${msg.ip.toString(16).padStart(4, '0')}. No source file available. Use Step-out (o) to return or Continue (c) to resume.`
+                        });
                     }
+                    lastActionWasStepIn = false;
                     panel.webview.postMessage({ evt: 'status', paused: true });
                     try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
+                    try { bridge.stdin.write(JSON.stringify({ op: 'globals' }) + '\n'); } catch (e) {}
+                }
+                if (msg.evt === 'exception') {
+                    panel.webview.postMessage({ evt: 'error', msg: `Exception: ${msg.msg} at ip=0x${msg.ip.toString(16)}`, ip: msg.ip });
+                    panel.webview.postMessage({ evt: 'status', paused: true });
+                    const loc = ipToLoc.get(msg.ip);
+                    if (loc) {
+                        highlightLine(loc.fsPath, loc.line1, false);
+                        panel.webview.postMessage({ evt: 'names', names: localNamesByFn.get(loc.fnKey) || [] });
+                    }
+                    try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
+                    try { bridge.stdin.write(JSON.stringify({ op: 'globals' }) + '\n'); } catch (e) {}
                 }
                 if (msg.evt === 'reply' && pendingCondEval && typeof msg.text === 'string' && msg.text.startsWith('frame=')) {
                     const pe = pendingCondEval;
@@ -212,6 +267,8 @@ function openDebuggerPanel(context, port) {
                     // forward the reply so locals table renders
                 }
                 if (msg.evt === 'sent' && (msg.op === 'continue' || (msg.op && msg.op.startsWith && msg.op.startsWith('step')))) {
+                    if (msg.op === 'step_in') lastActionWasStepIn = true;
+                    else lastActionWasStepIn = false;
                     clearHighlight();
                     panel.webview.postMessage({ evt: 'status', paused: false });
                 }
@@ -430,41 +487,447 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
 
 function getHtml() {
     return `<!DOCTYPE html>
-<html><head><style>
-body { font-family: monospace; background: #1e1e1e; color: #ddd; margin: 0; padding: 8px; }
-button { background: #2d2d2d; color: #ddd; border: 1px solid #555; padding: 6px 12px; margin: 2px; cursor: pointer; }
-button:hover { background: #3d3d3d; }
-#log { border: 1px solid #333; height: 40vh; overflow-y: scroll; padding: 6px; font-size: 12px; white-space: pre-wrap; }
-#locals { border: 1px solid #444; background:#252525; margin-top:6px; padding:6px; font-size:12px; min-height:80px; }
-#locals h3 { margin: 0 0 4px 0; font-size: 12px; color: #8fbc8f; }
-#locals table { width: 100%; border-collapse: collapse; }
-#locals td { padding: 2px 6px; border-bottom: 1px solid #333; }
-#locals td.k { color: #88c0ff; width: 80px; }
-.bp { color: #ffa500; }
-.reply { color: #8fbc8f; }
-.err { color: #f88; }
-.sent { color: #88f; }
-</style></head><body>
-<div id="status" style="padding:6px; font-weight:bold; font-size:14px;">▶ running</div>
-<div>
-  <button onclick="send('continue')">▶ Continue (c)</button>
-  <button onclick="send('step')">↷ Step-over (s)</button>
-  <button onclick="send('step_in')">↴ Step-in (i)</button>
-  <button onclick="send('step_out')">↵ Step-out (o)</button>
-  <button onclick="send('locals')">{ } Locals (l)</button>
-  <button onclick="send('call_stack')">☰ Call Stack (k)</button>
-  <button onclick="send('set_bp_here')">● Set BP at cursor</button>
-  <button onclick="send('flash_firmware')" style="margin-left:12px">⬇ Download Firmware</button>
-  <button onclick="document.getElementById('log').innerHTML=''">Clear</button>
+<html><head>
+<meta charset="UTF-8">
+<style>
+:root {
+  --bg-app: #0f111a;
+  --bg-card: #151824;
+  --bg-card-hover: #1e2233;
+  --bg-input: #0a0b10;
+  --border-color: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(99, 102, 241, 0.4);
+  --border-focus: #6366f1;
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --accent-primary: #6366f1;
+  --accent-primary-hover: #4f46e5;
+  --accent-success: #10b981;
+  --accent-warning: #f59e0b;
+  --accent-error: #f43f5e;
+  --accent-cyan: #06b6d4;
+  --accent-purple: #d946ef;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+}
+
+* { box-sizing: border-box; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-app);
+  color: var(--text-main);
+  margin: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Scrollbar Customization */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-app); }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* Header & Status Indicator */
+.header-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 12px;
+}
+.header-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  transition: all 0.3s ease;
+}
+.status-badge.running {
+  color: var(--accent-success);
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.06);
+}
+.status-badge.paused {
+  color: var(--accent-warning);
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.06);
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status-badge.running .status-dot {
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+/* Button & Controls Bar */
+.controls-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: var(--bg-card);
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+.btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--text-muted);
+}
+.btn:active {
+  transform: scale(0.98);
+}
+.btn-control {
+  border-color: rgba(99, 102, 241, 0.3);
+  color: var(--text-main);
+}
+.btn-control:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: var(--accent-primary);
+}
+.btn-action {
+  border-color: rgba(6, 182, 212, 0.3);
+}
+.btn-action:hover {
+  background: rgba(6, 182, 212, 0.1);
+  border-color: var(--accent-cyan);
+}
+.btn-system {
+  margin-left: auto;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+.btn-system:hover {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: var(--accent-warning);
+}
+.btn-clear {
+  border-color: var(--border-color);
+}
+.btn-clear:hover {
+  background: rgba(244, 63, 94, 0.1);
+  border-color: var(--accent-error);
+  color: var(--accent-error);
+}
+.btn-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+/* Dashboard Grid Layout */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+@media (max-width: 800px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+}
+
+/* Terminal / Log Panel */
+.panel-terminal {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.panel-terminal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+#log {
+  flex: 1;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-y: auto;
+  background: var(--bg-input);
+  color: #c9d1d9;
+  white-space: pre-wrap;
+}
+
+/* Cards & State Panels */
+.panels-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.panel-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.panel-card h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 6px;
+}
+.panel-card-body {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  min-height: 40px;
+}
+
+/* Custom States / Output Classes */
+.bp { color: var(--accent-warning); font-weight: 600; }
+.reply { color: var(--accent-success); }
+.err { color: var(--accent-error); font-weight: 600; }
+.sent { color: var(--accent-primary); }
+.rta { color: var(--accent-purple); font-weight: 500; }
+
+/* Table Styling */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  vertical-align: top;
+}
+td.k {
+  color: var(--accent-primary);
+  width: 90px;
+  font-weight: 600;
+}
+td.v, td.vg {
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s;
+  border-radius: 4px;
+}
+td.v:hover, td.vg:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-main);
+}
+td.v:focus, td.vg:focus {
+  background: var(--bg-input);
+  border: 1px solid var(--border-focus);
+  cursor: text;
+}
+
+/* Inputs & Form styling */
+.poke-form {
+  display: grid;
+  grid-template-columns: 1.2fr 1.5fr 0.6fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.input-field {
+  background: var(--bg-input);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-radius: 6px;
+  width: 100%;
+  transition: border-color 0.2s;
+}
+.input-field:hover { border-color: var(--border-hover); }
+.input-field:focus { border-color: var(--border-focus); outline: none; }
+</style>
+</head><body>
+
+<div class="header-bar">
+  <div class="header-title">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+    MicroPython Bytecode Debugger
+  </div>
+  <div id="status" class="status-badge running">
+    <span class="status-dot"></span>
+    <span class="status-text">running</span>
+  </div>
 </div>
-<div id="log"></div>
-<div id="locals"><h3>Locals / Frame</h3><div id="locals-body">(not paused)</div></div>
-<div id="locals"><h3>Call Stack</h3><div id="stack-body">(empty)</div></div>
+
+<div class="controls-bar" id="controls-container">
+  <!-- Dynamic configuration-driven buttons will render here -->
+</div>
+
+<div class="dashboard-grid">
+  <div class="panel-terminal">
+    <div class="panel-terminal-header">
+      <span>DEBUG CONSOLE / PORT LOG</span>
+      <button class="btn btn-clear" style="padding: 2px 6px; font-size: 10px;" onclick="document.getElementById('log').innerHTML=''">Clear Log</button>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <div class="panels-container">
+    <div id="panel-locals" class="panel-card">
+      <h3>Locals / Frame</h3>
+      <div id="locals-body" class="panel-card-body">(not paused)</div>
+    </div>
+    
+    <div id="panel-globals" class="panel-card">
+      <h3>Global Variables</h3>
+      <div id="globals-body" class="panel-card-body">(not paused)</div>
+    </div>
+    
+    <div id="panel-stack" class="panel-card">
+      <h3>Call Stack</h3>
+      <div id="stack-body" class="panel-card-body">(empty)</div>
+    </div>
+
+    <div id="panel-poke-global" class="panel-card">
+      <h3>Poke Global Variable</h3>
+      <div class="poke-form">
+        <input type="text" id="poke-global-name" class="input-field" placeholder="Variable Name">
+        <input type="text" id="poke-global-expr" class="input-field" placeholder="Expression (e.g. 42)">
+        <input type="number" id="poke-global-depth" class="input-field" placeholder="Depth" value="0" title="Stack Frame Depth">
+        <button class="btn btn-action" onclick="pokeGlobal()">Poke</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 const vscode = acquireVsCodeApi();
+
+// Global HTML Escaper
+const escapeHtml = (s) => String(s)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
 const log = document.getElementById('log');
 let currentNames = [];
 const funNames = {};
+let lastIp = 0;
+
+// Configuration list of commands to enable modular scaling
+const COMMANDS = [
+  { op: 'continue', label: 'Continue', key: 'c', icon: 'play', category: 'control', desc: 'Resume script execution' },
+  { op: 'step', label: 'Step Over', key: 's', icon: 'step-over', category: 'control', desc: 'Execute next statement' },
+  { op: 'step_in', label: 'Step In', key: 'i', icon: 'step-in', category: 'control', desc: 'Step inside function call' },
+  { op: 'step_out', label: 'Step Out', key: 'o', icon: 'step-out', category: 'control', desc: 'Step out of active function' },
+  { op: 'locals', label: 'Locals', key: 'l', icon: 'locals', category: 'query', desc: 'Fetch local variables' },
+  { op: 'globals', label: 'Globals', key: 'g', icon: 'globals', category: 'query', desc: 'Fetch global variables' },
+  { op: 'call_stack', label: 'Call Stack', key: 'k', icon: 'stack', category: 'query', desc: 'Fetch debugger stack frame' },
+  { op: 'rta_on', label: 'RTA On', key: 't', icon: 'rta-on', category: 'action', desc: 'Enable Real-time Analysis tracing' },
+  { op: 'rta_off', label: 'RTA Off', key: 'y', icon: 'rta-off', category: 'action', desc: 'Disable Real-time Analysis tracing' },
+  { op: 'set_bp_here', label: 'Set BP', icon: 'bp', category: 'action', desc: 'Add breakpoint at editor cursor' },
+  { op: 'flash_firmware', label: 'Download Firmware', icon: 'flash', category: 'system', desc: 'Flash board debugger binary' }
+];
+
+// SVG Icons mapping
+const ICONS = {
+  'play': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/></svg>',
+  'step-over': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>',
+  'step-in': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>',
+  'step-out': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+  'locals': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>',
+  'globals': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4 10 15.3 15.3 0 014-10M2 12h20"/></svg>',
+  'stack': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+  'rta-on': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/><circle cx="20" cy="8" r="2" fill="currentColor"/></svg>',
+  'rta-off': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/><line x1="18" y1="6" x2="22" y2="10"/><line x1="22" y1="6" x2="18" y2="10"/></svg>',
+  'bp': '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="8"/></svg>',
+  'flash': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'
+};
+
+// Render controls dynamically on startup
+function renderButtons() {
+  const container = document.getElementById('controls-container');
+  container.innerHTML = '';
+  COMMANDS.forEach(cmd => {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-' + cmd.category;
+    btn.title = cmd.desc + (cmd.key ? ' (' + cmd.key + ')' : '');
+    btn.onclick = () => send(cmd.op);
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'btn-icon';
+    iconSpan.innerHTML = ICONS[cmd.icon] || '';
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'btn-label';
+    labelSpan.textContent = cmd.label;
+
+    btn.appendChild(iconSpan);
+    btn.appendChild(labelSpan);
+    container.appendChild(btn);
+  });
+}
+
+// Global hotkey binding logic mapped to CONFIG commands
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.contentEditable === 'true') return;
+  const match = COMMANDS.find(cmd => cmd.key === e.key);
+  if (match) {
+    e.preventDefault();
+    send(match.op);
+  }
+});
+
 function add(cls, text) {
   const line = document.createElement('div');
   line.className = cls;
@@ -472,7 +935,25 @@ function add(cls, text) {
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
 }
+
 function send(op) { vscode.postMessage({op}); }
+
+function pokeGlobal() {
+  const nameEl = document.getElementById('poke-global-name');
+  const exprEl = document.getElementById('poke-global-expr');
+  const depthEl = document.getElementById('poke-global-depth');
+  const name = nameEl.value.trim();
+  const expr = exprEl.value.trim();
+  const depth = parseInt(depthEl.value || '0', 10);
+  if (!name || !expr) {
+    add('err', 'Poke Global: Name and Expression are required.');
+    return;
+  }
+  vscode.postMessage({ op: 'poke_global', name: name, expr: expr, depth: depth });
+  nameEl.value = '';
+  exprEl.value = '';
+}
+
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('a[data-fun]');
   if (!a) return;
@@ -482,12 +963,57 @@ document.addEventListener('click', (e) => {
     vscode.postMessage({ op: 'goto_frame', target: { fsPath: rec.fsPath, line: rec.defLine } });
   }
 });
+
 window.addEventListener('message', (e) => {
   const m = e.data;
-  if (m.evt === 'bp_hit') add('bp', 'BP_HIT  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
+  if (m.evt === 'bp_hit') {
+    add('bp', 'BP_HIT  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
+    lastIp = m.ip;
+  }
+  else if (m.evt === 'no_source') {
+    add('err', '⚠ ' + m.msg);
+    document.getElementById('locals-body').innerHTML = '<div style="color:#ffa500;padding:8px;">⚠ No source file mapped for this location.<br>Use <b>Step-out (o)</b> to return to your code or <b>Continue (c)</b> to resume execution.</div>';
+  }
   else if (m.evt === 'trace') add('', 'trace   ip=0x' + m.ip.toString(16).padStart(4,'0') + '  op=0x' + m.op.toString(16).padStart(2,'0'));
+  else if (m.evt === 'rta_entry' || m.evt === 'rta_exit') {
+    const isEntry = m.evt === 'rta_entry';
+    const rec = funNames[m.fun];
+    const fnName = rec ? rec.name : ('0x' + m.fun.toString(16));
+    const dirIcon = isEntry ? '→ ENTER' : '← EXIT';
+    const timeStr = m.ts + 'ms';
+    add('rta', 'RTA: ' + dirIcon + ' ' + fnName + ' at ' + timeStr);
+  }
   else if (m.evt === 'reply') {
     add('reply', 'REPLY  ' + m.text);
+    
+    // Parse globals
+    const globIdx = m.text.indexOf("globals={");
+    if (globIdx !== -1) {
+      let str = m.text.slice(globIdx + 9);
+      if (str.endsWith("}")) {
+        str = str.slice(0, -1);
+      }
+      const g_dict = {};
+      const re = /['"]([^'"]+)['"]\\s*:\\s*('(?:[^'\\\\]|\\\\.)*'|"(?:[^"\\\\]|\\\\.)*"|[^\\s,{}]+)/g;
+      let match;
+      while ((match = re.exec(str)) !== null) {
+        const k = match[1];
+        let v = match[2];
+        if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
+          v = v.slice(1, -1);
+        }
+        g_dict[k] = v;
+      }
+      let html = '<table>';
+      const keys = Object.keys(g_dict).sort();
+      keys.forEach(k => {
+        const val = g_dict[k];
+        html += '<tr><td class="k">' + k + '</td><td class="vg" contenteditable="true" data-name="' + k + '" data-val="' + val.replace(/"/g, '&quot;') + '">' + escapeHtml(val) + '</td></tr>';
+      });
+      html += '</table>';
+      document.getElementById('globals-body').innerHTML = keys.length ? html : '(empty)';
+    }
+
     const sm = m.text.match(/^stack=\\[(.*)\\]$/);
     if (sm) {
       const inner = sm[1];
@@ -507,9 +1033,8 @@ window.addEventListener('message', (e) => {
       html += '</table>';
       document.getElementById('stack-body').innerHTML = frames.length ? html : '(empty)';
     }
-    const fm = m.text.match(/frame=\\(([^)]+)\\)\\s+state=\\[([^\\]]*)\\]/);
-    if (fm) {
-      const fr = fm[1].split(',').map(s => s.trim());
+    const lm = m.text.match(/(?:frame=\\(([^)]+)\\)\\s+)?state=\\[(.*)\\]/);
+    if (lm) {
       const state = (function(s){
         const out = []; let buf = ''; let q = null; let depth = 0;
         for (let i = 0; i < s.length; i++) {
@@ -523,42 +1048,118 @@ window.addEventListener('message', (e) => {
         }
         if (buf.trim()) out.push(buf.trim());
         return out;
-      })(fm[2]);
-      const n = parseInt(fr[0]);
+      })(lm[2]);
+      let n = state.length;
+      let ipVal = lastIp;
+      if (lm[1]) {
+        const fr = lm[1].split(',').map(s => s.trim());
+        n = parseInt(fr[0]);
+        ipVal = parseInt(fr[2]);
+      }
       let html = '<table>';
-      html += '<tr><td class="k">ip</td><td>0x' + parseInt(fr[2]).toString(16).padStart(4,'0') + '</td></tr>';
+      html += '<tr><td class="k">ip</td><td>0x' + ipVal.toString(16).padStart(4,'0') + '</td></tr>';
       // locals: state[n-1-i] for local i
       for (let i = 0; i < currentNames.length; i++) {
         const idx = n - 1 - i;
         const val = (idx >= 0 && idx < state.length) ? state[idx] : '?';
-        html += '<tr><td class="k">' + currentNames[i] + '</td><td>' + val + '</td></tr>';
+        html += '<tr><td class="k">' + currentNames[i] + '</td><td class="v" contenteditable="true" data-slot="' + i + '" data-val="' + val.replace(/"/g, '&quot;') + '">' + escapeHtml(val) + '</td></tr>';
       }
-      html += '<tr><td class="k">raw</td><td style="color:#888">[' + fm[2] + ']</td></tr>';
+      html += '<tr><td class="k">raw</td><td style="color:#888">[' + lm[2] + ']</td></tr>';
       html += '</table>';
       document.getElementById('locals-body').innerHTML = html;
     }
   }
   else if (m.evt === 'sent') add('sent', '→ ' + m.op);
-  else if (m.evt === 'error') add('err', 'ERR ' + m.msg);
+  else if (m.evt === 'error') {
+    add('err', 'ERR ' + m.msg);
+    if (m.ip) lastIp = m.ip;
+  }
   else if (m.evt === 'closed') add('err', '(bridge closed)');
   else if (m.evt === 'open') add('reply', 'connected to ' + m.port);
   else if (m.evt === 'names') { currentNames = m.names || []; }
   else if (m.evt === 'fun_name') { funNames[m.fun] = { name: m.name, fsPath: m.fsPath, defLine: m.defLine }; }
   else if (m.evt === 'status') {
     const el = document.getElementById('status');
-    if (m.paused) { el.textContent = '⏸ PAUSED'; el.style.color = '#ffa500'; }
-    else { el.textContent = '▶ running'; el.style.color = '#8fbc8f'; }
+    const badge = document.querySelector('.status-badge');
+    const textEl = badge.querySelector('.status-text');
+    if (m.paused) {
+      textEl.textContent = 'paused';
+      badge.className = 'status-badge paused';
+    }
+    else {
+      textEl.textContent = 'running';
+      badge.className = 'status-badge running';
+      document.getElementById('locals-body').innerHTML = '(not paused)';
+      document.getElementById('globals-body').innerHTML = '(not paused)';
+    }
   }
   else add('', JSON.stringify(m));
 });
+
+// Setup dynamic elements on load
+renderButtons();
+
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return;
-  if (e.key === 'c') send('continue');
-  else if (e.key === 's') send('step');
-  else if (e.key === 'i') send('step_in');
-  else if (e.key === 'o') send('step_out');
-  else if (e.key === 'l') send('locals');
-  else if (e.key === 'k') send('call_stack');
+  if (e.target.classList.contains('v')) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const slot = e.target.getAttribute('data-slot');
+      const expr = e.target.textContent.trim();
+      const oldVal = e.target.getAttribute('data-val');
+      if (expr !== oldVal) {
+        vscode.postMessage({ op: 'poke_local', slot: parseInt(slot, 10), expr: expr });
+      }
+      e.target.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.target.textContent = e.target.getAttribute('data-val');
+      e.target.blur();
+    }
+  }
+});
+document.addEventListener('focusout', (e) => {
+  if (e.target.classList.contains('v')) {
+    const slot = e.target.getAttribute('data-slot');
+    const expr = e.target.textContent.trim();
+    const oldVal = e.target.getAttribute('data-val');
+    if (expr !== oldVal) {
+      vscode.postMessage({ op: 'poke_local', slot: parseInt(slot, 10), expr: expr });
+    }
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.target.classList.contains('vg')) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const name = e.target.getAttribute('data-name');
+      const expr = e.target.textContent.trim();
+      const oldVal = e.target.getAttribute('data-val');
+      if (expr !== oldVal) {
+        vscode.postMessage({ op: 'poke_global', name: name, expr: expr, depth: 0 });
+      }
+      e.target.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.target.textContent = e.target.getAttribute('data-val');
+      e.target.blur();
+    }
+  }
+});
+document.addEventListener('focusout', (e) => {
+  if (e.target.classList.contains('vg')) {
+    const name = e.target.getAttribute('data-name');
+    const expr = e.target.textContent.trim();
+    const oldVal = e.target.getAttribute('data-val');
+    if (expr !== oldVal) {
+      vscode.postMessage({ op: 'poke_global', name: name, expr: expr, depth: 0 });
+    }
+  }
+});
+document.getElementById('poke-global-name').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') pokeGlobal();
+});
+document.getElementById('poke-global-expr').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') pokeGlobal();
 });
 </script>
 </body></html>`;

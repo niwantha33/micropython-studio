@@ -58,6 +58,58 @@ async function findProjectRoot(startDir) {
 }
 
 /**
+ * Group connected devices by physical USB serial number and filter out secondary CDC ports.
+ * The primary port is assumed to be the one with the lowest numerical or lexicographical port ID.
+ * @param {Array<{port: string, serial: string, vidpid: string}>} devices
+ * @returns {Array<{port: string, serial: string, vidpid: string}>}
+ */
+function filterDualCdcPorts(devices) {
+    const groups = new Map();
+    for (const d of devices) {
+        const ser = (d.serial || '').trim().toLowerCase();
+        if (ser && ser !== 'none') {
+            if (!groups.has(ser)) {
+                groups.set(ser, []);
+            }
+            groups.get(ser).push(d);
+        }
+    }
+
+    const secondaryPorts = new Set();
+    
+    // Helper to compare ports numerically (COM4 vs COM10) or lexicographically
+    const comparePorts = (a, b) => {
+        const numA = parseInt((a.match(/\d+/) || [])[0], 10);
+        const numB = parseInt((b.match(/\d+/) || [])[0], 10);
+        if (!isNaN(numA) && !isNaN(numB)) {
+            return numA - numB;
+        }
+        return a.localeCompare(b);
+    };
+
+    for (const [ser, groupDevices] of groups.entries()) {
+        if (groupDevices.length > 1) {
+            // Sort ports of the same physical device in ascending order
+            groupDevices.sort((a, b) => comparePorts(a.port, b.port));
+            
+            // The first one is primary (REPL), all others are secondary (debug/RTA)
+            const logStr = `[Port Detection] Dual-CDC detected for serial ${ser}: Primary REPL = ${groupDevices[0].port}, Debug/Secondary = ${groupDevices.slice(1).map(x => x.port).join(', ')}`;
+            console.log(logStr);
+            try {
+                const channel = vscode.window.createOutputChannel('MicroPython IDE');
+                channel.appendLine(logStr);
+            } catch (_) {}
+
+            for (let i = 1; i < groupDevices.length; i++) {
+                secondaryPorts.add(groupDevices[i].port);
+            }
+        }
+    }
+
+    return devices.filter(d => !secondaryPorts.has(d.port));
+}
+
+/**
  * Detect the valid device port for the current project.
  * Reads the project's device.cfg and matches against connected devices.
  *
@@ -97,8 +149,19 @@ async function getValidDevicePort(resource) {
     const savedPort = await getConfigValue(configPath, 'device', 'port');
     const devId = await getConfigValue(configPath, 'device', 'deviceId');
 
-    const devices = await getConnectedDevices();
-    console.log('Connected devices:', devices);
+    const devicesRaw = await getConnectedDevices();
+    const devices = filterDualCdcPorts(devicesRaw);
+
+    const logMsg = (msg) => {
+        console.log(msg);
+        try {
+            const channel = vscode.window.createOutputChannel('MicroPython IDE');
+            channel.appendLine(msg);
+        } catch (_) {}
+    };
+
+    logMsg(`[Port Detection] Raw connected devices: ${JSON.stringify(devicesRaw)}`);
+    logMsg(`[Port Detection] Filtered connected devices (REPL candidates): ${JSON.stringify(devices)}`);
 
     if (devices.length > 0) {
         // Step 1: Priority check — is the savedPort still available and matching the deviceId?
@@ -107,7 +170,7 @@ async function getValidDevicePort(resource) {
         
         if (exactMatch) {
             gRemoteDevicePort = savedPort;
-            console.log(`Matched saved port: ${savedPort}`);
+            logMsg(`[Port Detection] Matched saved port: ${savedPort}`);
         } else {
             // Step 2: Fallback — find ANY device that matches the deviceId
             for (const device of devices) {

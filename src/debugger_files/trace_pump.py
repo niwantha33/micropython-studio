@@ -29,12 +29,32 @@ def _pump():
 
     while _running:
         dbg.mute()
-        while True:
+        chunks = 0
+        while chunks < 8:
             data = dbg.read_trace(256)
             if not data:
                 break
+            chunks += 1
             try:
-                cdc.write(data)
+                written = 0
+                retries = 0
+                while written < len(data) and _running:
+                    try:
+                        w = cdc.write(data[written:])
+                        if w:
+                            written += w
+                            retries = 0
+                        else:
+                            retries += 1
+                            if retries > 100:  # host disconnected or buffer stuck
+                                break
+                            time.sleep_ms(1)
+                    except OSError:
+                        # EWOULDBLOCK / buffer full - retry
+                        retries += 1
+                        if retries > 100:
+                            break
+                        time.sleep_ms(1)
             except Exception:
                 pass
 
@@ -47,11 +67,35 @@ def _pump():
             cmd_buf.extend(inc)
 
         while len(cmd_buf) >= 3 and cmd_buf[0] == 0xAA:
+            cmd_type = cmd_buf[1]
             cmd_len = cmd_buf[2]
+
+            # Robust frame validation for commands from host
+            is_valid = True
+            if cmd_type in (0x10, 0x11, 0x13, 0x14, 0x17, 0x1B, 0x1C, 0x20) and cmd_len != 0:
+                is_valid = False
+            elif cmd_type in (0x12, 0x1A) and cmd_len > 1:
+                is_valid = False
+            elif cmd_type == 0x16 and cmd_len != 1:
+                is_valid = False
+            elif cmd_type == 0x18 and cmd_len < 2:
+                is_valid = False
+            elif cmd_type == 0x19 and cmd_len < 3:
+                is_valid = False
+            elif cmd_type == 0x15 and cmd_len < 4:
+                is_valid = False
+            elif cmd_type not in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x20):
+                is_valid = False
+            elif cmd_len > 256:
+                is_valid = False
+
+            if not is_valid:
+                cmd_buf.pop(0)
+                continue
+
             total = 3 + cmd_len
             if len(cmd_buf) < total:
                 break
-            cmd_type = cmd_buf[1]
             cmds += 1
             if cmd_type == 0x10:
                 dbg.resume()
@@ -120,12 +164,167 @@ def _pump():
                     pass
             elif cmd_type == 0x12:
                 try:
-                    vals = dbg.locals()
-                    fi = dbg.frame_info()
+                    depth = cmd_buf[3] if cmd_len > 0 else 0
+                    try:
+                        g = dbg.globals(depth)
+                        while g is not None and g.get('__name__') == 'trace_pump':
+                            try:
+                                next_g = dbg.globals(depth + 1)
+                                if next_g is None:
+                                    break
+                                depth += 1
+                                g = next_g
+                            except ValueError:
+                                break
+                    except ValueError:
+                        pass
+                    vals = dbg.locals(depth)
                     if vals is None:
                         text = "(not paused)"
                     else:
-                        text = "frame=" + repr(fi) + " state=" + repr(vals)
+                        text = "depth=%d state=%s" % (depth, repr(vals))
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x18:
+                # poke_local: payload = slot_idx (1 byte), depth_idx (optional 1 byte), expr (str)
+                try:
+                    slot_idx = cmd_buf[3]
+                    if cmd_len >= 2:
+                        depth_idx = cmd_buf[4]
+                        expr_bytes = cmd_buf[5:total]
+                    else:
+                        depth_idx = 0
+                        expr_bytes = cmd_buf[4:total]
+                    expr_str = expr_bytes.decode()
+                    try:
+                        g = dbg.globals(depth_idx)
+                        while g is not None and g.get('__name__') == 'trace_pump':
+                            try:
+                                next_g = dbg.globals(depth_idx + 1)
+                                if next_g is None:
+                                    break
+                                depth_idx += 1
+                                g = next_g
+                            except ValueError:
+                                break
+                    except ValueError:
+                        g = None
+                    val = eval(expr_str, g if g is not None else {})
+                    res = dbg.poke(slot_idx, val, depth_idx)
+                    if res:
+                        text = "poked slot %d (depth %d) = %r" % (slot_idx, depth_idx, val)
+                    else:
+                        text = "poke failed (not paused)"
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x19:
+                # poke_global: payload = depth_idx (1 byte), name_len (1 byte), name (str), expr (str)
+                try:
+                    p = cmd_buf[3:total]
+                    depth_idx = p[0]
+                    name_len = p[1]
+                    name = bytes(p[2:2+name_len]).decode()
+                    expr = bytes(p[2+name_len:]).decode()
+                    try:
+                        g = dbg.globals(depth_idx)
+                        while g is not None and g.get('__name__') == 'trace_pump':
+                            try:
+                                next_g = dbg.globals(depth_idx + 1)
+                                if next_g is None:
+                                    break
+                                depth_idx += 1
+                                g = next_g
+                            except ValueError:
+                                break
+                    except ValueError:
+                        g = None
+                    if g is not None:
+                        val = eval(expr, g)
+                        g[name] = val
+                        text = "poked global %s (depth %d) = %r" % (name, depth_idx, val)
+                    else:
+                        text = "poke global failed (no globals context)"
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x1A:
+                # globals: return dictionary of user globals
+                try:
+                    depth = cmd_buf[3] if cmd_len > 0 else 0
+                    try:
+                        g = dbg.globals(depth)
+                        while g is not None and g.get('__name__') == 'trace_pump':
+                            try:
+                                next_g = dbg.globals(depth + 1)
+                                if next_g is None:
+                                    break
+                                depth += 1
+                                g = next_g
+                            except ValueError:
+                                break
+                    except ValueError:
+                        g = None
+                    if g is None:
+                        text = "(not paused)"
+                    else:
+                        user_globals = {}
+                        for k, v in g.items():
+                            if not k.startswith("__"):
+                                user_globals[k] = repr(v)
+                        text = "depth=%d globals=%r" % (depth, user_globals)
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x20:
+                try:
+                    dbg.halt()
+                    text = "halt pending"
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x1B:
+                try:
+                    dbg.rta_on()
+                    text = "RTA trace enabled"
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x1C:
+                try:
+                    dbg.rta_off()
+                    text = "RTA trace disabled"
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]

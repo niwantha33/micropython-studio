@@ -38,6 +38,9 @@ CMDS = {
     "step_in":  0x13,
     "step_out": 0x14,
     "call_stack": 0x17,
+    "globals":  0x1A,
+    "rta_on":   0x1B,
+    "rta_off":  0x1C,
 }
 
 
@@ -60,6 +63,34 @@ def reader_loop(ser, stop_evt):
         while len(buf) >= 3 and buf[0] == 0xAA:
             t = buf[1]
             n = buf[2]
+
+            # Robust frame validation
+            is_valid = True
+            if t == 0x01 and n != 3:
+                is_valid = False
+            elif t == 0x02 and n != 2:
+                is_valid = False
+            elif t in (0x05, 0x06) and n != 8:
+                is_valid = False
+            elif t not in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06):
+                is_valid = False
+            elif n > 256: # Avoid huge buffer reads on corrupt length
+                is_valid = False
+
+            if is_valid and t in (0x05, 0x06):
+                if len(buf) >= 7:
+                    if buf[6] not in (0x20, 0x10):
+                        is_valid = False
+
+            if is_valid:
+                total = 3 + n
+                if len(buf) > total and buf[total] != 0xAA:
+                    is_valid = False
+
+            if not is_valid:
+                buf.pop(0)
+                continue
+
             total = 3 + n
             if len(buf) < total:
                 break
@@ -72,6 +103,18 @@ def reader_loop(ser, stop_evt):
                 say(evt="bp_hit", ip=ip)
             elif t == 0x03:
                 say(evt="reply", text=payload.decode(errors="replace"))
+            elif t == 0x04 and n >= 2:
+                ip = payload[0] | (payload[1] << 8)
+                msg = payload[2:].decode(errors="replace")
+                say(evt="exception", ip=ip, msg=msg)
+            elif t == 0x05 and n == 8:
+                fun = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)
+                ts = payload[4] | (payload[5] << 8) | (payload[6] << 16) | (payload[7] << 24)
+                say(evt="rta_entry", fun=fun, ts=ts)
+            elif t == 0x06 and n == 8:
+                fun = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)
+                ts = payload[4] | (payload[5] << 8) | (payload[6] << 16) | (payload[7] << 24)
+                say(evt="rta_exit", fun=fun, ts=ts)
             else:
                 say(evt="raw", type=t, payload=payload.hex())
             del buf[:total]
@@ -111,7 +154,7 @@ def main():
             if op == "quit":
                 break
             code = CMDS.get(op)
-            if code is None and op not in ("set_bp", "clear_bp"):
+            if code is None and op not in ("set_bp", "clear_bp", "poke_local", "poke_global"):
                 say(evt="error", msg=f"unknown op: {op}")
                 continue
             try:
@@ -125,6 +168,18 @@ def main():
                 elif op == "clear_bp":
                     slot = int(msg.get("slot", 0)) & 0xFF
                     ser.write(bytes([0xAA, 0x16, 1, slot]))
+                elif op == "poke_local":
+                    slot = int(msg.get("slot", 0)) & 0xFF
+                    depth = int(msg.get("depth", 0)) & 0xFF
+                    expr = msg.get("expr", "").encode()
+                    payload = bytes([slot, depth]) + expr
+                    ser.write(bytes([0xAA, 0x18, len(payload)]) + payload)
+                elif op == "poke_global":
+                    depth = int(msg.get("depth", 0)) & 0xFF
+                    name = msg.get("name", "").encode()
+                    expr = msg.get("expr", "").encode()
+                    payload = bytes([depth, len(name)]) + name + expr
+                    ser.write(bytes([0xAA, 0x19, len(payload)]) + payload)
                 else:
                     ser.write(bytes([0xAA, code, 0x00]))
                 ser.flush()

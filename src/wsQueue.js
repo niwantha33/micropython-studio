@@ -17,6 +17,60 @@
  *   result = await deviceQueue.run(() => doDeviceOperation());
  */
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+function getLockFilePath(port) {
+  if (!port) return null;
+  const lockName = `mps_lock_${port.replace(/\//g, '_').replace(/\\/g, '_').replace(/:/g, '_')}.lock`;
+  return path.join(os.tmpdir(), lockName);
+}
+
+function isPidRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+function isPortLocked(port, daemonPid) {
+  const lockPath = getLockFilePath(port);
+  if (!lockPath || !fs.existsSync(lockPath)) {
+    return false;
+  }
+  try {
+    const content = fs.readFileSync(lockPath, 'utf8').trim();
+    const parts = content.split(':');
+    const pid = parseInt(parts[0], 10);
+    const owner = parts[1] || 'unknown';
+    if (isNaN(pid)) {
+      return false;
+    }
+    if (daemonPid && pid === daemonPid) {
+      return false;
+    }
+    
+    // If it's a temporary suspended lock written by the extension,
+    // we check the age of the file. If it is older than 8 seconds,
+    // we assume the spawned process failed to claim it or start,
+    // so we treat it as stale/unlocked.
+    if (owner === 'suspended_lock') {
+      const stats = fs.statSync(lockPath);
+      const ageMs = Date.now() - stats.mtimeMs;
+      if (ageMs > 8000) {
+        return false;
+      }
+    }
+    
+    return isPidRunning(pid);
+  } catch (err) {
+    return false;
+  }
+}
+
 class DeviceOperationQueue {
   constructor() {
     /** @type {Promise<void>} always resolves — never rejects */
@@ -33,12 +87,99 @@ class DeviceOperationQueue {
    *
    * @template T
    * @param {() => Promise<T>} fn
+   * @param {string} [label]
    * @returns {Promise<T>}
    */
-  run(fn) {
+  run(fn, label = '') {
     this._pending++;
 
-    const result = this._tail.then(fn, fn);
+    if (!label) {
+      const fnStr = fn.toString();
+      if (fnStr.includes('lsOp') || fnStr.includes('list_files') || fnStr.includes('ilistdir') || fnStr.includes('ls')) {
+        label = 'List Files';
+      } else if (fnStr.includes('rmOp') || fnStr.includes('deleteDeviceFile') || fnStr.includes('rm')) {
+        label = 'Delete File';
+      } else if (fnStr.includes('rmTreeOp') || fnStr.includes('deleteDeviceFolder')) {
+        label = 'Delete Folder';
+      } else if (fnStr.includes('moveOp') || fnStr.includes('renameDeviceFile') || fnStr.includes('mv')) {
+        label = 'Rename/Move';
+      } else if (fnStr.includes('execOp') || fnStr.includes('exec_code')) {
+        label = 'Execute Code';
+      } else if (fnStr.includes('hrArgs') || fnStr.includes('hard_reset')) {
+        label = 'Hard Reset';
+      } else if (fnStr.includes('upload') || fnStr.includes('uploadArgs')) {
+        label = 'Upload';
+      } else if (fnStr.includes('download') || fnStr.includes('downloadArgs') || fnStr.includes('baseArgs')) {
+        label = 'Download';
+      } else if (fn.name) {
+        label = fn.name;
+      } else {
+        label = 'Device Operation';
+      }
+    }
+
+    const logToFile = (msg) => {
+      // Disabled debug file logging
+    };
+
+    const logMsg = (msg) => {
+      console.log(msg);
+      logToFile(msg);
+      try {
+        const vscode = require('vscode');
+        const channel = vscode.window.createOutputChannel('MicroPython IDE');
+        channel.appendLine(msg);
+      } catch (_) {}
+    };
+
+    const wrappedFn = async () => {
+      const connectionManager = require('./connectionManager');
+      const port = connectionManager.portName;
+      const daemonPid = connectionManager.daemonProcess ? connectionManager.daemonProcess.pid : null;
+
+      logMsg(`[wsQueue] Requesting access for: ${label}`);
+
+      // If the port is locked by another process (e.g. terminal run session), wait for it to release
+      if (port) {
+        let lockChecked = false;
+        while (isPortLocked(port, daemonPid)) {
+          const lockPath = getLockFilePath(port);
+          let lockerInfo = 'unknown process';
+          if (lockPath && fs.existsSync(lockPath)) {
+            try {
+              const content = fs.readFileSync(lockPath, 'utf8').trim();
+              const parts = content.split(':');
+              const pid = parts[0];
+              const owner = parts[1] || 'unknown';
+              lockerInfo = `PID ${pid} (${owner})`;
+            } catch (_) {}
+          }
+          logMsg(`[wsQueue] Port ${port} is currently locked by ${lockerInfo}. Waiting for release...`);
+          lockChecked = true;
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        if (lockChecked) {
+          logMsg(`[wsQueue] Port ${port} has been released.`);
+        }
+      }
+
+      const wasSuspended = connectionManager.isSuspended;
+      if (!wasSuspended) {
+        logMsg(`[wsQueue] Suspending connectionManager for: ${label}`);
+        await connectionManager.suspend();
+      }
+      try {
+        logMsg(`[wsQueue] Executing: ${label}`);
+        return await fn();
+      } finally {
+        if (!wasSuspended) {
+          logMsg(`[wsQueue] Resuming connectionManager after: ${label}`);
+          await connectionManager.resume();
+        }
+      }
+    };
+
+    const result = this._tail.then(wrappedFn, wrappedFn);
 
     // Advance the tail regardless of whether fn succeeds or fails,
     // so later callers are never permanently blocked.

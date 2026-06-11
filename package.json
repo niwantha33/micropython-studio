@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "MicroPython Studio for VS Code — write, deploy, and live debug - MicroPython, CircuitPython, and XBee on real hardware",
-  "version": "1.5.0",
+  "version": "2.1.0",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {
@@ -260,6 +260,18 @@
         "title": "MicroPython: New Folder",
         "category": "MicroPython Studio",
         "icon": "$(new-folder)"
+      },
+      {
+        "command": "micropython-ide.startSimulator",
+        "title": "MicroPython: Start Emulated Simulator",
+        "category": "MicroPython Studio",
+        "icon": "$(play-circle)"
+      },
+      {
+        "command": "micropython-ide.stopSimulator",
+        "title": "MicroPython: Stop Emulated Simulator",
+        "category": "MicroPython Studio",
+        "icon": "$(stop-circle)"
       }
     ],
     "menus": {
@@ -330,6 +342,14 @@
         },
         {
           "command": "micropython-ide.openDeviceDashboard",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.startSimulator",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.stopSimulator",
           "when": "true"
         }
       ],
@@ -443,6 +463,11 @@
         "type": "boolean",
         "default": false,
         "description": "CircuitPython: Automatically sync files from the CIRCUITPY drive to the local main/ folder after installing a package with circup."
+      },
+      "micropythonStudio.verboseLogging": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable verbose logging for device connections, locks, and operation queues in the Output channel."
       }
     }
   },
