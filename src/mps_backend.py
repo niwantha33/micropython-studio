@@ -2983,16 +2983,12 @@ def main():
 
         if locked:
             if args.command == 'hard_reset':
-                log_to_file(f"Forcibly terminating locker process {locker_info} to perform hard reset.")
                 try:
-                    if os.name == 'nt':
-                        subprocess.run(['taskkill', '/F', '/PID', str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    else:
-                        os.kill(pid, 9)
-                    time.sleep(0.5)  # Wait for port release
-                    locked = False
-                except Exception as kill_err:
-                    log_to_file(f"Failed to kill locker process: {kill_err}")
+                    os.kill(pid, 9)
+                except Exception:
+                    pass
+                time.sleep(0.5)  # Wait for port release
+                locked = False
             
             if locked:
                 log_to_file(f"Startup check failed: port is actively locked by {locker_info}")
