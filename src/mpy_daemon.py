@@ -240,9 +240,6 @@ class MpyDaemon:
                 ])
                 
                 if is_transient and self.running:
-                    reconnect_msg = b"\r\n\x1b[38;5;220m[Reconnecting to USB CDC...]\x1b[0m\r\n"
-                    b64_msg = base64.b64encode(reconnect_msg).decode('ascii')
-                    self.send_event("terminal_data", {"data": b64_msg})
                     if self._try_reconnect():
                         try:
                             time.sleep(0.1)
