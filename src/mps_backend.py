@@ -2406,7 +2406,7 @@ def cmd_download(python_exe: str, port: str, dest_dir: str,
 
 def cmd_kick(python_exe, port):
     """Wake up a device using hardware toggles and interrupts."""
-    print(f"🚀 Attempting to wake up device on {port}...", file=sys.stderr)
+    print(f" Attempting to wake up device on {port}...", file=sys.stderr)
     _serial_pre_interrupt(python_exe, port, hard=True)
     print("✅ Kick complete.", file=sys.stderr)
     sys.exit(0)
@@ -2982,12 +2982,25 @@ def main():
             pass
 
         if locked:
-            log_to_file(f"Startup check failed: port is actively locked by {locker_info}")
-            sys.stderr.write(
-                f"\n [ERROR] Cannot access {port}.\n"
-                f"   The port is actively locked by {locker_info}.\n"
-            )
-            sys.exit(1)
+            if args.command == 'hard_reset':
+                log_to_file(f"Forcibly terminating locker process {locker_info} to perform hard reset.")
+                try:
+                    if os.name == 'nt':
+                        subprocess.run(['taskkill', '/F', '/PID', str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        os.kill(pid, 9)
+                    time.sleep(0.5)  # Wait for port release
+                    locked = False
+                except Exception as kill_err:
+                    log_to_file(f"Failed to kill locker process: {kill_err}")
+            
+            if locked:
+                log_to_file(f"Startup check failed: port is actively locked by {locker_info}")
+                sys.stderr.write(
+                    f"\n [ERROR] Cannot access {port}.\n"
+                    f"   The port is actively locked by {locker_info}.\n"
+                )
+                sys.exit(1)
         
         # Claim/write lock file
         try:
