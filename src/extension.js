@@ -739,9 +739,6 @@ function activate(context) {
                 return;
             }
 
-            vscode.window.showInformationMessage(
-                "💡 Note: If you have Dual-CDC or Debugger mode enabled, avoid using the 'Run' command. Please use the Shell to run your application instead."
-            );
 
             const fileName = path.basename(filePath);
 
