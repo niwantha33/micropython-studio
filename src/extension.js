@@ -865,18 +865,18 @@ function activate(context) {
         })
     );
 
-    // Stop Running Script — send Ctrl+C to the active terminal session
+    // Stop Running Script — send Ctrl+C and trigger hard reset to guarantee stopping the MCU
     context.subscriptions.push(
-        vscode.commands.registerCommand('micropython-ide.stopRun', () => {
+        vscode.commands.registerCommand('micropython-ide.stopRun', async () => {
             if (connectionManager.isConnected) {
                 // Interrupt the advanced shell
                 connectionManager.write(Buffer.from('\r\x03'));
-                vscode.window.showInformationMessage('[OK] Interrupt sent to device (Ctrl+C).');
+                await vscode.commands.executeCommand('micropython-ide.hardResetDevice');
             } else {
                 const terminal = getMpremoteTerminal();
                 terminal.sendText('\x03', false); // Ctrl+C — interrupts the running script
                 terminal.show();
-                vscode.window.showInformationMessage('[OK] Interrupt sent to device (Ctrl+C).');
+                await vscode.commands.executeCommand('micropython-ide.hardResetDevice');
             }
         })
     );
