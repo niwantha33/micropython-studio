@@ -711,6 +711,15 @@ function activate(context) {
                         deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
                     }
 
+                    if (gRemoteDevicePort && !isCp) {
+                        // Open the shell which connects and sends Ctrl-C / soft reset to stop running program
+                        await vscode.commands.executeCommand('micropython-ide.openShell');
+                        await new Promise(resolve => setTimeout(resolve, 1500));
+                        if (deviceFileExplorer) {
+                            deviceFileExplorer.refresh();
+                        }
+                    }
+
                     console.log('Device port:', gRemoteDevicePort, 'Code dir:', gDeviceCodeDir, 'Firmware:', gDeviceFirmware);
                 }
             );
@@ -1001,6 +1010,27 @@ function activate(context) {
         })
     );
 
+    async function uploadFolderDirect(localFolderPath, remoteDestPath) {
+        const fsSync = require('fs');
+        const files = [];
+        const walk = (dir) => {
+            if (!fsSync.existsSync(dir)) return;
+            for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, e.name);
+                if (e.isDirectory()) walk(full);
+                else files.push(full);
+            }
+        };
+        walk(localFolderPath);
+        
+        for (const file of files) {
+            const rel = path.relative(localFolderPath, file).replace(/\\/g, '/');
+            const destPath = remoteDestPath === '/' ? `/${rel}` : `${remoteDestPath}/${rel}`;
+            const buffer = fsSync.readFileSync(file);
+            await wsQueue.run(() => connectionManager.writeFile(destPath, buffer), 'Upload File', true);
+        }
+    }
+
     // Upload current file to device root
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.uploadFileToDevice', async (uri) => {
@@ -1030,10 +1060,25 @@ function activate(context) {
                 );
                 return;
             }
+
+            const baseDest = isXBeeDevice() ? '/flash' : '';
+
+            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+                try {
+                    const filename = path.basename(filePath);
+                    const destPath = baseDest === '' ? `/${filename}` : `${baseDest}/${filename}`;
+                    const buffer = fs.readFileSync(filePath);
+                    await wsQueue.run(() => connectionManager.writeFile(destPath, buffer), 'Upload File', true);
+                    if (deviceFileExplorer) deviceFileExplorer.refresh();
+                } catch (error) {
+                    vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
+                }
+                return;
+            }
+
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
-            const baseDest = isXBeeDevice() ? '/flash' : '';
             const uploadArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', filePath, '--dest', baseDest];
             const onDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
@@ -1086,11 +1131,22 @@ function activate(context) {
             // path conversion (which turns /foo into C:/Program Files/Git/foo).
             // _normalize_dest() in mps_backend.py adds the leading slash.
             const dest = path.basename(folderPath);
+            const baseDest = isXBeeDevice() ? `/flash/${dest}` : dest;
+
+            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+                try {
+                    const remoteFolder = isXBeeDevice() ? `/flash/${dest}` : `/${dest}`;
+                    await uploadFolderDirect(folderPath, remoteFolder);
+                    if (deviceFileExplorer) deviceFileExplorer.refresh();
+                } catch (error) {
+                    vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
+                }
+                return;
+            }
 
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
-            const baseDest = isXBeeDevice() ? `/flash/${dest}` : dest;
             const folderArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', folderPath, '--dest', baseDest];
             const onFolderDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 
@@ -1154,10 +1210,23 @@ function activate(context) {
                 return;
             }
 
+            const baseDest = isXBeeDevice() ? '/flash' : '';
+
+            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+                try {
+                    let localTarget = gDeviceCodeDir;
+                    const remoteDest = isXBeeDevice() ? '/flash' : '/';
+                    await uploadFolderDirect(localTarget, remoteDest);
+                    if (deviceFileExplorer) deviceFileExplorer.refresh();
+                } catch (error) {
+                    vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
+                }
+                return;
+            }
+
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
             const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
-            const baseDest = isXBeeDevice() ? '/flash' : '';
             const projArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', baseDest];
             const onProjDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
 

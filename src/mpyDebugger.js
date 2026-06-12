@@ -20,6 +20,10 @@ let stepInDeco = null;        // TextEditorDecorationType for step-in line (cyan
 let lastHlEditor = null;
 let lastActionWasStepIn = false; // tracks whether the last resume action was step_in
 
+let rtaEvents = [];
+const taskMap = new Map();
+const funToName = new Map();
+
 // Pop matching pending breakpoint reply by module, function, and relative line.
 function popPendingBp(module, func, relLine) {
     const fnKey = `${module}:${func}`;
@@ -64,7 +68,7 @@ function extractLocalNames(text, defLine, args) {
 // Map module:func -> array of local names
 const localNamesByFn = new Map();
 
-function openDebuggerPanel(context, port) {
+function openDebuggerPanel(context, port, venvPython) {
     if (panel) {
         panel.reveal();
         return;
@@ -113,7 +117,7 @@ function openDebuggerPanel(context, port) {
 
     // Spawn the Python bridge
     const script = path.join(context.extensionPath, 'src', 'dbg_bridge.py');
-    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const pyCmd = venvPython || (process.platform === 'win32' ? 'python' : 'python3');
     bridge = spawn(pyCmd, [script, port], { stdio: ['pipe', 'pipe', 'pipe'] });
 
     // Send existing breakpoints
@@ -166,7 +170,34 @@ function openDebuggerPanel(context, port) {
                             if (info.cond) ipToCond.set(bpIp, info.cond);
                             if (m[6]) {
                                 const funPtr = m[6];
+                                funToName.set(parseInt(funPtr, 10), info.fnKey);
                                 panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
+                            }
+                        }
+                    } else if (msg.text.startsWith("poked global __t")) {
+                        const eqIdx = msg.text.indexOf("=");
+                        if (eqIdx !== -1) {
+                            let valStr = msg.text.slice(eqIdx + 1).trim();
+                            if (valStr.startsWith("'") || valStr.startsWith('"')) {
+                                valStr = valStr.slice(1, -1);
+                            }
+                            if (valStr && valStr !== "no_asyncio") {
+                                const chunks = valStr.split(",");
+                                for (const chunk of chunks) {
+                                    if (chunk.includes(":")) {
+                                        const [addrStr, genStr] = chunk.split(":", 2);
+                                        const funBc = parseInt(addrStr, 10);
+                                        if (!isNaN(funBc)) {
+                                            const m1 = genStr.match(/object '([^']+)'/);
+                                            if (m1) {
+                                                taskMap.set(funBc, m1[1]);
+                                            } else {
+                                                const m2 = genStr.match(/object ([^\s]+)/);
+                                                taskMap.set(funBc, m2 ? m2[1] : "task");
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -272,6 +303,30 @@ function openDebuggerPanel(context, port) {
                     clearHighlight();
                     panel.webview.postMessage({ evt: 'status', paused: false });
                 }
+                if (msg.evt === 'rta_entry') {
+                    rtaEvents.push({
+                        name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
+                        ph: "B",
+                        ts: msg.ts,
+                        pid: 1,
+                        tid: 1
+                    });
+                }
+                if (msg.evt === 'rta_exit') {
+                    rtaEvents.push({
+                        name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
+                        ph: "E",
+                        ts: msg.ts,
+                        pid: 1,
+                        tid: 1
+                    });
+                }
+                if (msg.evt === 'sent' && msg.op === 'rta_on') {
+                    rtaEvents = [];
+                }
+                if (msg.evt === 'sent' && msg.op === 'rta_off') {
+                    dumpRtaTrace();
+                }
                 if (panel) panel.webview.postMessage(msg);
             } catch (e) {
                 if (panel) panel.webview.postMessage({ evt: 'raw', text: line });
@@ -334,6 +389,21 @@ function openDebuggerPanel(context, port) {
                 });
             }
             return;
+        }
+        if (msg.op === 'tasks') {
+            const expr = 'g=globals();exec("import sys,machine\\nM=machine.mem32\\nq=sys.modules[\'asyncio\'].core._task_queue\\nt=[]\\nwhile q.peek():t.append(q.pop())\\n__t=\',\'.join(str(x.coro) for x in t)\\nfor x in t:q.push(x,M[id(x)+20])",g) or g.get(\'__t\')';
+            bridge.stdin.write(JSON.stringify({ op: 'poke_local', slot: 0, depth: 0, expr: expr }) + '\n');
+            panel.webview.postMessage({ evt: 'sent', op: 'tasks' });
+            return;
+        }
+        if (msg.op === 'taskmap') {
+            const expr = 'g=globals();exec("import sys,machine\\nM=machine.mem32\\nq=sys.modules[\'asyncio\'].core._task_queue\\nt=[]\\nwhile q.peek():t.append(q.pop())\\n__t=\',\'.join(\'%d:%s\'%(M[id(x.coro)+8],x.coro) for x in t)\\nfor x in t:q.push(x,M[id(x)+20])",g) or g.get(\'__t\')';
+            bridge.stdin.write(JSON.stringify({ op: 'poke_global', name: '__t', depth: 0, expr: expr }) + '\n');
+            panel.webview.postMessage({ evt: 'sent', op: 'taskmap' });
+            return;
+        }
+        if (msg.op === 'rta_on') {
+            rtaEvents = [];
         }
         bridge.stdin.write(JSON.stringify(msg) + '\n');
     });
@@ -408,6 +478,9 @@ function openDebuggerPanel(context, port) {
 
     panel.onDidDispose(() => {
         if (bpDisposable) { bpDisposable.dispose(); bpDisposable = null; }
+        if (rtaEvents.length > 0) {
+            dumpRtaTrace();
+        }
         if (bridge) {
             try { bridge.stdin.write(JSON.stringify({ op: 'quit' }) + '\n'); } catch (e) {}
             bridge.kill();
@@ -482,7 +555,7 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
         placeHolder: 'e.g. COM3',
     });
     if (!port) return;
-    openDebuggerPanel(context, port);
+    openDebuggerPanel(context, port, venvPython);
 }
 
 function getHtml() {
@@ -873,6 +946,8 @@ const COMMANDS = [
   { op: 'locals', label: 'Locals', key: 'l', icon: 'locals', category: 'query', desc: 'Fetch local variables' },
   { op: 'globals', label: 'Globals', key: 'g', icon: 'globals', category: 'query', desc: 'Fetch global variables' },
   { op: 'call_stack', label: 'Call Stack', key: 'k', icon: 'stack', category: 'query', desc: 'Fetch debugger stack frame' },
+  { op: 'tasks', label: 'Tasks', icon: 'stack', category: 'query', desc: 'Query running asyncio tasks' },
+  { op: 'taskmap', label: 'Task Map', icon: 'globals', category: 'query', desc: 'Map asyncio task pointers to names' },
   { op: 'rta_on', label: 'RTA On', key: 't', icon: 'rta-on', category: 'action', desc: 'Enable Real-time Analysis tracing' },
   { op: 'rta_off', label: 'RTA Off', key: 'y', icon: 'rta-off', category: 'action', desc: 'Disable Real-time Analysis tracing' },
   { op: 'set_bp_here', label: 'Set BP', icon: 'bp', category: 'action', desc: 'Add breakpoint at editor cursor' },
@@ -1163,6 +1238,74 @@ document.getElementById('poke-global-expr').addEventListener('keydown', (e) => {
 });
 </script>
 </body></html>`;
+}
+
+function dumpRtaTrace() {
+    try {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceFolder) return;
+        const filePath = path.join(workspaceFolder, 'rta_trace.json');
+        
+        let currentTid = 1;
+        let nextTid = 2;
+        const taskTidMap = new Map();
+        
+        // Deep copy rtaEvents
+        const events = JSON.parse(JSON.stringify(rtaEvents));
+        
+        for (const ev of events) {
+            if (ev.ph === "B" || ev.ph === "E") {
+                let funPtr = -1;
+                if (ev.name.startsWith("fun_0x")) {
+                    funPtr = parseInt(ev.name.replace("fun_0x", ""), 16);
+                }
+                
+                if (ev.ph === "B") {
+                    if (taskMap.has(funPtr)) {
+                        if (!taskTidMap.has(funPtr)) {
+                            taskTidMap.set(funPtr, nextTid);
+                            nextTid++;
+                        }
+                        currentTid = taskTidMap.get(funPtr);
+                    }
+                    ev.tid = currentTid;
+                } else if (ev.ph === "E") {
+                    ev.tid = currentTid;
+                    if (taskMap.has(funPtr)) {
+                        currentTid = 1; // Return to scheduler
+                    }
+                }
+                
+                // Resolve name
+                if (funToName.has(funPtr)) {
+                    ev.name = funToName.get(funPtr);
+                } else if (taskMap.has(funPtr)) {
+                    ev.name = taskMap.get(funPtr);
+                }
+            }
+        }
+        
+        // Inject metadata for threads (similar to python insert(0, ...))
+        const metadata = [];
+        for (const [funPtr, tid] of taskTidMap.entries()) {
+            const name = taskMap.get(funPtr) || `task_0x${funPtr.toString(16)}`;
+            metadata.push({
+                name: "thread_name",
+                ph: "M",
+                pid: 1,
+                tid: tid,
+                args: { name: name }
+            });
+        }
+        
+        const finalEvents = [...metadata, ...events];
+        
+        const fs = require('fs');
+        fs.writeFileSync(filePath, JSON.stringify(finalEvents, null, 2));
+        vscode.window.showInformationMessage(`Saved ${finalEvents.length} RTA events to rta_trace.json`);
+    } catch (err) {
+        vscode.window.showErrorMessage(`Failed to save RTA events: ${err}`);
+    }
 }
 
 module.exports = { startDebugger };

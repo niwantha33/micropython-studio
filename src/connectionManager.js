@@ -343,6 +343,213 @@ class ConnectionManager extends EventEmitter {
     }
 
     /**
+     * Lists files and directories in a directory on the device.
+     */
+    async listDir(dirPath) {
+        const code = `
+import os
+def l():
+    try:
+        for f in os.ilistdir(${JSON.stringify(dirPath)}):
+            is_dir = (f[1] == 0x4000)
+            print('{}|{}|{}'.format(f[0], is_dir, f[3] if len(f)>3 else 0))
+    except Exception as e:
+        print('LS_ERROR:' + str(e))
+l()
+        `.trim();
+        const res = await this.runCodeSilently(code);
+        if (res.stderr && res.stderr.trim()) {
+            throw new Error(res.stderr.trim());
+        }
+        if (res.stdout.includes('LS_ERROR:')) {
+            throw new Error(res.stdout.split('LS_ERROR:')[1].trim());
+        }
+        return res.stdout;
+    }
+
+    /**
+     * Reads a file from the device using hex-encoding chunked transfer.
+     */
+    async catFile(deviceFilePath) {
+        const code = `
+import binascii as _b, sys as _s, time as _t
+try:
+    _f = open(${JSON.stringify(deviceFilePath)}, 'rb')
+    _d = _f.read()
+    _f.close()
+    print('<<HEXLEN:%d>>' % len(_d))
+    print('<<HEXSTART>>')
+    _h = _b.hexlify(_d).decode()
+    for _i in range(0, len(_h), 128):
+        _s.stdout.write(_h[_i:_i+128])
+        _s.stdout.write('\\n')
+        _t.sleep_ms(3)
+    print('<<HEXEND>>')
+except Exception as _e:
+    print('CAT_ERR:'+str(_e))
+        `.trim();
+        const res = await this.runCodeSilently(code);
+        if (res.stderr && res.stderr.trim()) {
+            throw new Error(res.stderr.trim());
+        }
+        const text = res.stdout;
+        if (text.includes('CAT_ERR:')) {
+            throw new Error(text.split('CAT_ERR:')[1].trim());
+        }
+        const lm = text.match(/<<HEXLEN:(\d+)>>/);
+        if (!lm) {
+            throw new Error("No HEXLEN marker");
+        }
+        const expected = parseInt(lm[1], 10);
+        const startIdx = text.indexOf('<<HEXSTART>>');
+        if (startIdx < 0) {
+            throw new Error("No HEXSTART marker");
+        }
+        const hexPart = text.substring(startIdx + '<<HEXSTART>>'.length);
+        const hexChars = hexPart.replace(/[^0-9a-fA-F]/g, '');
+        const finalHex = hexChars.substring(0, expected * 2);
+        return Buffer.from(finalHex, 'hex');
+    }
+
+    /**
+     * Writes a file to the device using hex-encoding chunked transfer.
+     */
+    async writeFile(deviceFilePath, buffer) {
+        const hexStr = buffer.toString('hex');
+        const chunks = [];
+        for (let i = 0; i < hexStr.length; i += 1024) {
+            chunks.push(hexStr.substring(i, i + 1024));
+        }
+        const parts = deviceFilePath.split('/');
+        parts.pop();
+        const parentDir = parts.join('/') || '/';
+        
+        const code = [
+            `import binascii as _b, os as _o`,
+            `def _mkdir_p(p):`,
+            `    parts = p.strip('/').split('/')`,
+            `    acc = ''`,
+            `    for part in parts:`,
+            `        acc += '/' + part`,
+            `        try: _o.mkdir(acc)`,
+            `        except: pass`,
+            `if ${JSON.stringify(parentDir)} != '/': _mkdir_p(${JSON.stringify(parentDir)})`,
+            `try: _o.remove(${JSON.stringify(deviceFilePath)})`,
+            `except: pass`,
+            `_f=open(${JSON.stringify(deviceFilePath)},'wb')`,
+            ...chunks.map(chunk => `_f.write(_b.unhexlify(${JSON.stringify(chunk)}))`),
+            `_f.close()`,
+            `print('OK_PUT')`
+        ].join('\n');
+        
+        const res = await this.runCodeSilently(code);
+        if (res.stderr && res.stderr.trim()) {
+            throw new Error(res.stderr.trim());
+        }
+        if (!res.stdout.includes('OK_PUT')) {
+            throw new Error("Write failed: " + res.stdout);
+        }
+    }
+
+    /**
+     * Deletes a file or folder on the device.
+     */
+    async deleteFile(deviceFilePath, recursive = false) {
+        let code = '';
+        if (recursive) {
+            code = `
+import os as _os
+def _rm(p):
+    try:
+        for e in _os.listdir(p):
+            _rm(p + '/' + e)
+        _os.rmdir(p)
+    except OSError:
+        _os.remove(p)
+try:
+    _rm(${JSON.stringify(deviceFilePath)})
+    print('OK_RM')
+except Exception as e:
+    print('RM_ERR:' + str(e))
+            `.trim();
+        } else {
+            code = `
+import os
+try:
+    os.remove(${JSON.stringify(deviceFilePath)})
+    print('OK_RM')
+except Exception as e:
+    print('RM_ERR:' + str(e))
+            `.trim();
+        }
+        const res = await this.runCodeSilently(code);
+        if (res.stderr && res.stderr.trim()) {
+            throw new Error(res.stderr.trim());
+        }
+        if (res.stdout.includes('RM_ERR:')) {
+            throw new Error(res.stdout.split('RM_ERR:')[1].trim());
+        }
+        if (!res.stdout.includes('OK_RM')) {
+            throw new Error("Delete failed: " + res.stdout);
+        }
+    }
+
+    /**
+     * Creates a directory recursively on the device.
+     */
+    async makeDir(deviceFolderPath) {
+        const code = `
+import os
+def _mkdir_p(p):
+    parts = p.strip('/').split('/')
+    acc = ''
+    for part in parts:
+        acc += '/' + part
+        try: os.mkdir(acc)
+        except: pass
+try:
+    _mkdir_p(${JSON.stringify(deviceFolderPath)})
+    print('OK_MKDIR')
+except Exception as e:
+    print('MKDIR_ERR:' + str(e))
+        `.trim();
+        const res = await this.runCodeSilently(code);
+        if (res.stderr && res.stderr.trim()) {
+            throw new Error(res.stderr.trim());
+        }
+        if (res.stdout.includes('MKDIR_ERR:')) {
+            throw new Error(res.stdout.split('MKDIR_ERR:')[1].trim());
+        }
+        if (!res.stdout.includes('OK_MKDIR')) {
+            throw new Error("Mkdir failed: " + res.stdout);
+        }
+    }
+
+    /**
+     * Renames/moves a file or folder on the device.
+     */
+    async renameFile(srcPath, destPath) {
+        const code = `
+import os
+try:
+    os.rename(${JSON.stringify(srcPath)}, ${JSON.stringify(destPath)})
+    print('OK_RENAME')
+except Exception as e:
+    print('RENAME_ERR:' + str(e))
+        `.trim();
+        const res = await this.runCodeSilently(code);
+        if (res.stderr && res.stderr.trim()) {
+            throw new Error(res.stderr.trim());
+        }
+        if (res.stdout.includes('RENAME_ERR:')) {
+            throw new Error(res.stdout.split('RENAME_ERR:')[1].trim());
+        }
+        if (!res.stdout.includes('OK_RENAME')) {
+            throw new Error("Rename failed: " + res.stdout);
+        }
+    }
+
+    /**
      * Writes user terminal input to the device
      */
     async write(data) {

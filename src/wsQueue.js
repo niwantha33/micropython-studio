@@ -88,9 +88,10 @@ class DeviceOperationQueue {
    * @template T
    * @param {() => Promise<T>} fn
    * @param {string} [label]
+   * @param {boolean} [runDirectIfConnected]
    * @returns {Promise<T>}
    */
-  run(fn, label = '') {
+  run(fn, label = '', runDirectIfConnected = false) {
     this._pending++;
 
     if (!label) {
@@ -139,8 +140,10 @@ class DeviceOperationQueue {
 
       logMsg(`[wsQueue] Requesting access for: ${label}`);
 
+      const useDirect = runDirectIfConnected && connectionManager.isConnected && !connectionManager.isSuspended;
+
       // If the port is locked by another process (e.g. terminal run session), wait for it to release
-      if (port) {
+      if (!useDirect && port) {
         let lockChecked = false;
         while (isPortLocked(port, daemonPid)) {
           const lockPath = getLockFilePath(port);
@@ -164,7 +167,8 @@ class DeviceOperationQueue {
       }
 
       const wasSuspended = connectionManager.isSuspended;
-      if (!wasSuspended) {
+      const shouldSuspend = !useDirect && !wasSuspended && connectionManager.isConnected;
+      if (shouldSuspend) {
         logMsg(`[wsQueue] Suspending connectionManager for: ${label}`);
         await connectionManager.suspend();
       }
@@ -172,7 +176,7 @@ class DeviceOperationQueue {
         logMsg(`[wsQueue] Executing: ${label}`);
         return await fn();
       } finally {
-        if (!wasSuspended) {
+        if (shouldSuspend) {
           logMsg(`[wsQueue] Resuming connectionManager after: ${label}`);
           await connectionManager.resume();
         }

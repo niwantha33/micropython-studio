@@ -157,49 +157,61 @@ except:
     print("NO_LOG")
 `;
 
-  // Save script locally to a safe temp spot in the workspace
+  const connectionManager = require("./connectionManager");
   const tempScriptPath = path.join(workspaceFolder, "_dashboard_metrics.py");
   try {
-      fs.writeFileSync(tempScriptPath, pythonScript, "utf8");
-
-      // Run the script on the device
-      let rawOutput;
-      const useSubpro = !!devicePort;
-      if (useSubpro) {
-        const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-        const subpro = path.join(__dirname, "mps_backend.py");
-        rawOutput = await new Promise((resolve) => {
-          execFile(
-            venvPython,
-            [
-              subpro,
-              "--python",
-              venvPython,
-              "run_mcu",
-              "--port",
-              devicePort,
-              "--file",
-              tempScriptPath,
-              "--no-reset",
-              "--quiet",
-            ],
-            { timeout: 60000 },
-            (err, stdout, stderr) => {
-              if (err || (stderr && stderr.includes("failed"))) {
-                outputChannel.appendLine(`[Dashboard Error] ${err || stderr}`);
-                vscode.window.showErrorMessage(
-                    `Dashboard: Failed to connect to device. Please ensure MicroPython/CircuitPython firmware is flashed and connected properly. (For new ESP boards, use the "Flash Firmware" action or manually flash via esptool. Error: ${stderr || err})`
-                );
-                resolve("");
-              } else {
-                resolve(stdout || "");
-              }
-            },
-          );
-        });
+      let rawOutput = "";
+      if (connectionManager.isConnected && !connectionManager.isSuspended) {
+          try {
+              const res = await connectionManager.runCodeSilently(pythonScript);
+              rawOutput = res.stdout || "";
+          } catch (err) {
+              outputChannel.appendLine(`[Dashboard Error] ${err.message}`);
+              vscode.window.showErrorMessage(
+                  `Dashboard: Failed to gather metrics. Error: ${err.message}`
+              );
+          }
       } else {
-        const mpArgs = ["run", `"${tempScriptPath}"`];
-        rawOutput = await runMpremote(outputChannel, mpArgs);
+          fs.writeFileSync(tempScriptPath, pythonScript, "utf8");
+
+          // Run the script on the device
+          const useSubpro = !!devicePort;
+          if (useSubpro) {
+            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+            const subpro = path.join(__dirname, "mps_backend.py");
+            rawOutput = await new Promise((resolve) => {
+              execFile(
+                venvPython,
+                [
+                  subpro,
+                  "--python",
+                  venvPython,
+                  "run_mcu",
+                  "--port",
+                  devicePort,
+                  "--file",
+                  tempScriptPath,
+                  "--no-reset",
+                  "--quiet",
+                ],
+                { timeout: 60000 },
+                (err, stdout, stderr) => {
+                  if (err || (stderr && stderr.includes("failed"))) {
+                    outputChannel.appendLine(`[Dashboard Error] ${err || stderr}`);
+                    vscode.window.showErrorMessage(
+                        `Dashboard: Failed to connect to device. Please ensure MicroPython/CircuitPython firmware is flashed and connected properly. (For new ESP boards, use the "Flash Firmware" action or manually flash via esptool. Error: ${stderr || err})`
+                    );
+                    resolve("");
+                  } else {
+                    resolve(stdout || "");
+                  }
+                },
+              );
+            });
+          } else {
+            const mpArgs = ["run", `"${tempScriptPath}"`];
+            rawOutput = await runMpremote(outputChannel, mpArgs);
+          }
       }
 
       const lines = rawOutput
@@ -305,7 +317,7 @@ except:
       }
     }
     return metrics;
-  });
+  }, "Gather Metrics", true);
 }
 
 /**

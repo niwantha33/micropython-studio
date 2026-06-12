@@ -77,11 +77,6 @@ def reader_loop(ser, stop_evt):
             elif n > 256: # Avoid huge buffer reads on corrupt length
                 is_valid = False
 
-            if is_valid and t in (0x05, 0x06):
-                if len(buf) >= 7:
-                    if buf[6] not in (0x20, 0x10):
-                        is_valid = False
-
             if is_valid:
                 total = 3 + n
                 if len(buf) > total and buf[total] != 0xAA:

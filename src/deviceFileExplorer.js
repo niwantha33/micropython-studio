@@ -185,6 +185,21 @@ class DeviceFileExplorerProvider {
         }
 
         const lsOp = async () => {
+            const connectionManager = require('./connectionManager');
+            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+                try {
+                    const stdout = await connectionManager.listDir(dirPath);
+                    const items = this._parseListOutput(stdout, dirPath);
+                    this._cache.set(dirPath, items);
+                    return items;
+                } catch (err) {
+                    console.error(`Direct ls error: ${err.message}`);
+                    const errItem = new vscode.TreeItem('$(warning) Failed to read device files', vscode.TreeItemCollapsibleState.None);
+                    errItem.tooltip = err.message;
+                    return [/** @type {any} */ (errItem)];
+                }
+            }
+
             const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
             const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" ls --port "${this._port}" --path "${dirPath}"`;
 
@@ -230,7 +245,7 @@ class DeviceFileExplorerProvider {
             }
         };
 
-        return wsQueue.run(lsOp);
+        return wsQueue.run(lsOp, 'List Files', true);
     }
 
     /**
@@ -253,6 +268,18 @@ class DeviceFileExplorerProvider {
             const trimmed = line.trim();
             // Skip headers, empty lines, and noisy prompts
             if (!trimmed || trimmed.startsWith('ls') || trimmed === '>>>') continue;
+
+            if (trimmed.includes('|')) {
+                const parts = trimmed.split('|');
+                if (parts.length === 3) {
+                    const name = parts[0];
+                    const isDir = parts[1] === 'True';
+                    const size = parseInt(parts[2], 10);
+                    const fullPath = parentPath === '/' ? `/${name}` : `${parentPath}/${name}`;
+                    items.push(new DeviceFileItem(name, isDir ? null : size, isDir, fullPath));
+                    continue;
+                }
+            }
 
             // Robust Matcher: handles "   136 boot.py" or " 0 lib/" or "1024 data.bin"
             // Captures digits (size), then whitespace, then everything else (name)
@@ -375,6 +402,11 @@ class DeviceFileExplorerProvider {
      */
     _moveFileOnDevice(srcPath, destPath) {
         return new Promise((resolve, reject) => {
+            const connectionManager = require('./connectionManager');
+            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+                wsQueue.run(() => connectionManager.renameFile(srcPath, destPath), 'Rename/Move', true).then(resolve, reject);
+                return;
+            }
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
             const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
             const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" mv --port "${this._port}" --src "${srcPath}" --dest "${destPath}"`;
@@ -414,16 +446,22 @@ async function readDeviceFile(port, deviceFilePath) {
             cancellable: false
         },
         async () => {
-            // Use mps_backend.py for all ports, bypassing native mpremote errors and DTR resets
-            const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
-            const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" cat --port "${port}" --path "${deviceFilePath}"`;
             try {
-                const execOp = () => execAsync(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 });
-                const { stdout } = await wsQueue.run(execOp);
+                let content;
+                const connectionManager = require('./connectionManager');
+                if (connectionManager.isConnected && !connectionManager.isSuspended) {
+                    content = await wsQueue.run(() => connectionManager.catFile(deviceFilePath), 'Read File', true);
+                } else {
+                    const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
+                    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" cat --port "${port}" --path "${deviceFilePath}"`;
+                    const execOp = () => execAsync(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 });
+                    const { stdout } = await wsQueue.run(execOp);
+                    content = Buffer.from(stdout);
+                }
                 const fileName = deviceFilePath.split('/').pop();
                 const lang = fileName.endsWith('.py') ? 'python'
                            : fileName.endsWith('.json') ? 'json' : 'plaintext';
-                const doc = await vscode.workspace.openTextDocument({ content: stdout, language: lang });
+                const doc = await vscode.workspace.openTextDocument({ content: content.toString('utf8'), language: lang });
                 await vscode.window.showTextDocument(doc, { preview: true });
             } catch (error) {
                 vscode.window.showErrorMessage(`Failed to read ${deviceFilePath}: ${error.message}`);
@@ -456,6 +494,18 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
         try {
             const localPath = pathMod.join(provider._deviceCodeDir, deviceFilePath.replace(/^\//, '').replace(/\//g, pathMod.sep));
             fs.unlinkSync(localPath);
+            vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
+            provider.refresh();
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to delete ${deviceFilePath}: ${error.message}`);
+        }
+        return;
+    }
+
+    const connectionManager = require('./connectionManager');
+    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+        try {
+            await wsQueue.run(() => connectionManager.deleteFile(deviceFilePath, false), 'Delete File', true);
             vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
             provider.refresh();
         } catch (error) {
@@ -517,6 +567,18 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
         return;
     }
 
+    const connectionManager = require('./connectionManager');
+    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+        try {
+            await wsQueue.run(() => connectionManager.deleteFile(deviceFolderPath, true), 'Delete Folder', true);
+            vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
+            provider.refresh();
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${error.message}`);
+        }
+        return;
+    }
+
     const venvFolder = getVenvPythonPathFolder();
     const venvPython = getVenvPythonPath(venvFolder);
     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
@@ -555,6 +617,17 @@ async function renameDeviceFile(port, oldPath, provider) {
     const parent = oldPath.split('/').slice(0, -1).join('/') || '/';
     const newPath = parent === '/' ? `/${newName}` : `${parent}/${newName}`;
 
+    const connectionManager = require('./connectionManager');
+    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+        try {
+            await wsQueue.run(() => connectionManager.renameFile(oldPath, newPath), 'Rename/Move', true);
+            provider.refresh();
+        } catch (error) {
+            vscode.window.showErrorMessage(`Rename failed: ${error.message}`);
+        }
+        return;
+    }
+
     const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
     const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rename --port "${port}" --src "${oldPath}" --dest "${newPath}"`;
@@ -583,6 +656,21 @@ async function uploadToDeviceFolder(port, targetFolder, provider) {
     });
 
     if (!files || files.length === 0) return;
+
+    const connectionManager = require('./connectionManager');
+    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+        for (const file of files) {
+            try {
+                const destPath = targetFolder === '/' ? `/${pathMod.basename(file.fsPath)}` : `${targetFolder}/${pathMod.basename(file.fsPath)}`;
+                const buffer = fs.readFileSync(file.fsPath);
+                await wsQueue.run(() => connectionManager.writeFile(destPath, buffer), 'Upload File', true);
+            } catch (error) {
+                vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
+            }
+        }
+        provider.refresh();
+        return;
+    }
 
     const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
@@ -615,6 +703,17 @@ async function newDeviceFolder(port, parentPath, provider) {
     if (!folderName) return;
 
     const newPath = parentPath === '/' ? `/${folderName}` : `${parentPath}/${folderName}`;
+
+    const connectionManager = require('./connectionManager');
+    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+        try {
+            await wsQueue.run(() => connectionManager.makeDir(newPath), 'Create Folder', true);
+            provider.refresh();
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to create folder: ${error.message}`);
+        }
+        return;
+    }
 
     const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');

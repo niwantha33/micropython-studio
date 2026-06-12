@@ -202,8 +202,6 @@ class MpyDaemon:
         import base64
         while self.running and self.serial:
             try:
-                # When in raw REPL mode, the background read thread pauses
-                # so the synchronous exec_raw_paste can read cleanly
                 if self.in_raw_repl:
                     time.sleep(0.01)
                     continue
@@ -212,15 +210,20 @@ class MpyDaemon:
                     time.sleep(0.05)
                     continue
 
-                if self.serial.in_waiting > 0:
-                    data = self.serial.read(self.serial.in_waiting)
-                    if data:
-                        # Send binary terminal data as base64 or hex
-                        # Base64 is efficient for JSON
-                        b64_data = base64.b64encode(data).decode('ascii')
-                        self.send_event("terminal_data", {"data": b64_data})
-                else:
-                    time.sleep(0.01)
+                with self._lock:
+                    if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
+                        time.sleep(0.01)
+                        continue
+
+                    if self.serial.in_waiting > 0:
+                        data = self.serial.read(self.serial.in_waiting)
+                        if data:
+                            # Send binary terminal data as base64 or hex
+                            # Base64 is efficient for JSON
+                            b64_data = base64.b64encode(data).decode('ascii')
+                            self.send_event("terminal_data", {"data": b64_data})
+                    else:
+                        time.sleep(0.01)
             except Exception as e:
                 if self.suspended:
                     # Intentionally suspended, wait until resumed
@@ -243,7 +246,7 @@ class MpyDaemon:
                     if self._try_reconnect():
                         try:
                             time.sleep(0.1)
-                            self.serial.write(b'\r')
+                            self.serial.write(b'\r\x03')
                         except Exception as write_err:
                             if g_verbose:
                                 sys.stderr.write(f"[DAEMON] Error writing carriage return on reconnect: {write_err}\n")
@@ -367,9 +370,7 @@ class MpyDaemon:
         # Execution output: <stdout>\x04<stderr>\x04>
         out_data = self._read_until(b'\x04')
         stdout = out_data[:-1].decode('utf-8', errors='replace')
-        if stdout.startswith('OK'):
-            stdout = stdout[2:]
-            
+        
         err_data = self._read_until(b'\x04')
         stderr = err_data[:-1].decode('utf-8', errors='replace')
         

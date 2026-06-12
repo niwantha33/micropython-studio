@@ -19,6 +19,22 @@ async function openDeviceTerminal(context, devicePort) {
             if (connectionManager.isSuspended) {
                 await connectionManager.resume();
             }
+            if (writeEmitter) {
+                writeEmitter.fire('\x1b[2J\x1b[3J\x1b[H');
+                writeEmitter.fire(`\x1b[38;5;48mConnecting to ${devicePort}...\x1b[0m\r\n`);
+                writeEmitter.fire(`\x1b[38;5;48m✔ Connected to ${devicePort}\x1b[0m\r\n`);
+                writeEmitter.fire(`\x1b[90m>>> Press Enter if prompt is not visible\x1b[0m\r\n\r\n`);
+            }
+            // Trigger a soft reset to print the version banner and get the prompt
+            setTimeout(async () => {
+                try {
+                    if (connectionManager.isConnected) {
+                        await connectionManager.write('\r\x03import os; print(os.uname())\r');
+                    }
+                } catch (err) {
+                    console.error('Failed to trigger initial soft reset:', err);
+                }
+            }, 150);
             return;
         }
     } else {
@@ -27,23 +43,26 @@ async function openDeviceTerminal(context, devicePort) {
         const pty = {
             onDidWrite: writeEmitter.event,
             open: async () => {
+                writeEmitter.fire('\x1b[2J\x1b[3J\x1b[H');
                 writeEmitter.fire(`\x1b[38;5;48mConnecting to ${devicePort}...\x1b[0m\r\n`);
                 const wasConnected = connectionManager.isConnected;
                 try {
                     await connectionManager.connect(devicePort);
-                    if (!wasConnected) {
-                        // Give the connection a brief moment to settle, then send Ctrl-C and Ctrl-D
-                        // to soft-reboot the device and output the standard MicroPython version banner.
-                        setTimeout(async () => {
-                            try {
-                                if (connectionManager.isConnected) {
-                                    await connectionManager.write('\r\x03\x04');
-                                }
-                            } catch (err) {
-                                console.error('Failed to trigger initial soft reset:', err);
-                            }
-                        }, 150);
+                    if (wasConnected) {
+                        writeEmitter.fire(`\x1b[38;5;48m✔ Connected to ${devicePort}\x1b[0m\r\n`);
+                        writeEmitter.fire(`\x1b[90m>>> Press Enter if prompt is not visible\x1b[0m\r\n\r\n`);
                     }
+                    // Give the connection a brief moment to settle, then send Ctrl-C and Ctrl-D
+                    // to soft-reboot the device and output the standard MicroPython version banner.
+                    setTimeout(async () => {
+                        try {
+                            if (connectionManager.isConnected) {
+                                await connectionManager.write('\r\x03import os; print(os.uname())\r');
+                            }
+                        } catch (err) {
+                            console.error('Failed to trigger initial soft reset:', err);
+                        }
+                    }, 150);
                 } catch (err) {
                     writeEmitter.fire(`\x1b[38;5;203mFailed to connect: ${err.message}\x1b[0m\r\n`);
                 }
@@ -80,7 +99,10 @@ async function openDeviceTerminal(context, devicePort) {
     });
 
     connectionManager.on('connected', () => {
-        if (writeEmitter) writeEmitter.fire(`\x1b[38;5;48m✔ Connected to ${devicePort}\x1b[0m\r\n`);
+        if (writeEmitter) {
+            writeEmitter.fire(`\x1b[38;5;48m✔ Connected to ${devicePort}\x1b[0m\r\n`);
+            writeEmitter.fire(`\x1b[90m>>> Press Enter if prompt is not visible\x1b[0m\r\n\r\n`);
+        }
     });
 
     connectionManager.on('disconnected', () => {
