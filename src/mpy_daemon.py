@@ -138,6 +138,23 @@ class MpyDaemon:
                     time.sleep(0.002)
             except Exception as e:
                 if not self.suspended:
+                    err_str = str(e)
+                    is_transient = any(term in err_str for term in [
+                        "device does not recognize",
+                        "handle is invalid",
+                        "PermissionError",
+                        "SerialException",
+                        "OSError",
+                        "Bad command"
+                    ])
+                    if is_transient and self.running:
+                        if self._try_reconnect():
+                            try:
+                                time.sleep(0.1)
+                                self.serial.write(b'\r\x03')
+                            except:
+                                pass
+                            continue
                     time.sleep(0.1)
 
     def _rx_read(self, n: int, timeout: float = 0.0) -> bytes:
