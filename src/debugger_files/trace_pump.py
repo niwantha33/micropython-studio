@@ -222,6 +222,12 @@ def _pump():
                             g = None
                     except ValueError:
                         g = None
+                    if g is None:
+                        try:
+                            import sys
+                            g = sys.modules['__main__'].__dict__
+                        except Exception:
+                            g = globals()
                     val = eval(expr_str, g if g is not None else {})
                     try:
                         res = dbg.poke(slot_idx, val, depth_idx)
@@ -303,6 +309,17 @@ def _pump():
                             g = None
                     except ValueError:
                         g = None
+                    if g is None:
+                        try:
+                            paused = dbg.locals(0) is not None
+                        except Exception:
+                            paused = True
+                        if paused:
+                            try:
+                                import sys
+                                g = sys.modules['__main__'].__dict__
+                            except Exception:
+                                g = globals()
                     if g is None:
                         text = "(not paused)"
                     else:
