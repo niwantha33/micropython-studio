@@ -118,7 +118,8 @@ function openDebuggerPanel(context, port, venvPython) {
     // Spawn the Python bridge
     const script = path.join(context.extensionPath, 'src', 'dbg_bridge.py');
     const pyCmd = venvPython || (process.platform === 'win32' ? 'python' : 'python3');
-    bridge = spawn(pyCmd, [script, port], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
+    bridge = spawn(pyCmd, [script, port, workspaceFolder], { stdio: ['pipe', 'pipe', 'pipe'] });
 
     // Send existing breakpoints
     for (const bp of vscode.debug.breakpoints) {
@@ -206,6 +207,13 @@ function openDebuggerPanel(context, port, venvPython) {
                             popPendingBp(mFail[1], mFail[2], parseInt(mFail[3], 10));
                         }
                     }
+                }
+                if (msg.evt === 'step_line') {
+                    highlightLine(msg.file, msg.line, lastActionWasStepIn);
+                    lastActionWasStepIn = false;
+                    panel.webview.postMessage({ evt: 'status', paused: true });
+                    try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
+                    try { bridge.stdin.write(JSON.stringify({ op: 'globals' }) + '\n'); } catch (e) {}
                 }
                 if (msg.evt === 'bp_hit') {
                     const loc = ipToLoc.get(msg.ip);

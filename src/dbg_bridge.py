@@ -24,6 +24,13 @@ import json
 import sys
 import threading
 import time
+import os
+
+sys.path.append(os.path.dirname(__file__))
+import mpy_parser
+
+fun_map = {}
+workspace_dir = ""
 
 try:
     import serial
@@ -97,7 +104,79 @@ def reader_loop(ser, stop_evt):
                 ip = payload[0] | (payload[1] << 8)
                 say(evt="bp_hit", ip=ip)
             elif t == 0x03:
-                say(evt="reply", text=payload.decode(errors="replace"))
+                text = payload.decode(errors="replace")
+                say(evt="reply", text=text)
+                
+                # Parse breakpoint registration to map funPtr -> (module, func)
+                if text.startswith("bp "):
+                    try:
+                        import re
+                        m = re.search(r"bp\s+(\d+)\s+@\s+([^.]+)\.([^:]+):(\d+)\s+ip=(\d+)\s+fun=(\d+)", text)
+                        if m:
+                            slot = int(m.group(1))
+                            mod_name = m.group(2)
+                            func_name = m.group(3)
+                            line_num = int(m.group(4))
+                            bp_ip = int(m.group(5))
+                            fun_address = int(m.group(6))
+                            
+                            fun_map[fun_address] = {
+                                "file_name": f"{mod_name}.py",
+                                "func_name": func_name
+                            }
+                    except Exception:
+                        pass
+                
+                # Parse paused frame info to resolve stepping source lines
+                if "frame=" in text:
+                    try:
+                        import re
+                        m = re.search(r"frame=\((\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)", text)
+                        if m:
+                            state_len = int(m.group(1))
+                            depth = int(m.group(2))
+                            ip = int(m.group(3))
+                            fun_address = int(m.group(4))
+                            
+                            if fun_address in fun_map:
+                                info = fun_map[fun_address]
+                                file_path = None
+                                if workspace_dir:
+                                    for root, dirs, files in os.walk(workspace_dir):
+                                        if info["file_name"] in files:
+                                            file_path = os.path.join(root, info["file_name"])
+                                            break
+                                if not file_path:
+                                    for root, dirs, files in os.walk(os.getcwd()):
+                                        if info["file_name"] in files:
+                                            file_path = os.path.join(root, info["file_name"])
+                                            break
+                                            
+                                if file_path and os.path.exists(file_path):
+                                    mpy_file = file_path.replace(".py", ".mpy")
+                                    if not os.path.exists(mpy_file) or os.path.getmtime(file_path) > os.path.getmtime(mpy_file):
+                                        try:
+                                            import subprocess
+                                            subprocess.run([sys.executable, "-m", "mpy_cross", file_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                        except:
+                                            pass
+                                            
+                                    if os.path.exists(mpy_file):
+                                        try:
+                                            rc, qstrs, objs = mpy_parser.parse_mpy(mpy_file)
+                                            line_map = mpy_parser.build_line_map(rc)
+                                            func_code = None
+                                            for name, code in line_map.items():
+                                                if name.endswith(info["func_name"]):
+                                                    func_code = code
+                                                    break
+                                            if func_code:
+                                                line1 = func_code.get_source_line(ip)
+                                                say(evt="step_line", file=file_path.replace("\\", "/"), line=line1)
+                                        except:
+                                            pass
+                    except Exception:
+                        pass
             elif t == 0x04 and n >= 2:
                 ip = payload[0] | (payload[1] << 8)
                 msg = payload[2:].decode(errors="replace")
@@ -118,10 +197,13 @@ def reader_loop(ser, stop_evt):
 
 
 def main():
+    global workspace_dir
     if len(sys.argv) < 2:
-        say(evt="error", msg="usage: dbg_bridge.py <PORT>")
+        say(evt="error", msg="usage: dbg_bridge.py <PORT> [WORKSPACE_DIR]")
         sys.exit(1)
     port = sys.argv[1]
+    if len(sys.argv) > 2:
+        workspace_dir = sys.argv[2]
     try:
         ser = serial.Serial(port, 115200, timeout=0.1, write_timeout=1.0,
                             dsrdtr=False, rtscts=False)
