@@ -29,12 +29,10 @@ def _pump():
 
     while _running:
         dbg.mute()
-        chunks = 0
-        while chunks < 8:
+        while True:
             data = dbg.read_trace(256)
             if not data:
                 break
-            chunks += 1
             try:
                 written = 0
                 retries = 0
@@ -250,6 +248,12 @@ def _pump():
                                 break
                     except ValueError:
                         g = None
+                    if g is None:
+                        try:
+                            import sys
+                            g = sys.modules['__main__'].__dict__
+                        except Exception:
+                            g = globals()
                     if g is not None:
                         val = eval(expr, g)
                         g[name] = val
@@ -257,7 +261,7 @@ def _pump():
                     else:
                         text = "poke global failed (no globals context)"
                 except Exception as e:
-                    text = "err: " + repr(e)
+                    text = "err: " + repr(e) + " in " + repr(expr)
                 payload = text.encode()[:250]
                 frame = bytes([0xAA, 0x03, len(payload)]) + payload
                 try:
@@ -359,3 +363,80 @@ def stop():
 
 def stats():
     print("bytes_in =", bytes_in, "cmds =", cmds, "continues =", continues)
+
+
+def get_tasks():
+    try:
+        import asyncio, machine
+        q = asyncio.core._task_queue
+        t = []
+        while q.peek():
+            t.append(q.pop())
+        res = ','.join(str(x.coro) for x in t)
+        for x in t:
+            q.push(x, machine.mem32[id(x)+20])
+        return res
+    except Exception as e:
+        return "err: " + repr(e)
+
+
+def get_taskmap():
+    try:
+        import asyncio, machine
+        q = asyncio.core._task_queue
+        t = []
+        while q.peek():
+            t.append(q.pop())
+        res = ','.join('%d:%s' % (machine.mem32[id(x.coro)+8], x.coro) for x in t)
+        for x in t:
+            q.push(x, machine.mem32[id(x)+20])
+        return res
+    except Exception as e:
+        return "err: " + repr(e)
+
+
+_sym_list = []
+
+
+def get_symmap():
+    global _sym_list
+    try:
+        import sys
+        res = []
+        for n, m in list(sys.modules.items()):
+            if n not in ('sys', 'builtins'):
+                for k in dir(m):
+                    if k[0] != '_':
+                        try:
+                            o = getattr(m, k)
+                            t = type(o).__name__
+                            if t == 'function':
+                                res.append('%d:object \'%s.%s\'' % (id(o), n, k))
+                            elif t == 'type':
+                                for c in dir(o):
+                                    if c[0] != '_':
+                                        f = getattr(o, c)
+                                        if type(f).__name__ == 'function':
+                                            res.append('%d:object \'%s.%s.%s\'' % (id(f), n, k, c))
+                        except:
+                            pass
+        _sym_list = res
+        print("get_symmap populated _sym_list with", len(res), "items")
+        return str(len(res))
+    except Exception as e:
+        print("get_symmap error:", e)
+        return "err: " + repr(e)
+
+
+def get_symmap_chunk():
+    global _sym_list
+    try:
+        print("get_symmap_chunk called, current _sym_list len =", len(_sym_list))
+        chunk = _sym_list[:6]
+        del _sym_list[:6]
+        res = ','.join(chunk) if chunk else "None"
+        print("returning chunk:", res[:50])
+        return res
+    except Exception as e:
+        print("get_symmap_chunk error:", e)
+        return "err: " + repr(e)
