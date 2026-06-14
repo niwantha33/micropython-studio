@@ -170,7 +170,26 @@ class MpyDaemon:
         chunk_size = 64
         for i in range(0, len(data), chunk_size):
             chunk = data[i:i + chunk_size]
-            self.serial.write(chunk)
+            try:
+                self.serial.write(chunk)
+            except Exception as e:
+                err_str = str(e)
+                is_transient = any(term in err_str for term in [
+                    "device does not recognize",
+                    "handle is invalid",
+                    "PermissionError",
+                    "SerialException",
+                    "OSError",
+                    "Bad command"
+                ])
+                if is_transient and self.running:
+                    if self._try_reconnect():
+                        try:
+                            self.serial.write(chunk)
+                            continue
+                        except:
+                            pass
+                raise e
             if len(data) > chunk_size:
                 time.sleep(0.002)
 
