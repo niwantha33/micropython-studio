@@ -179,7 +179,10 @@ def _pump():
                             g = None
                     except ValueError:
                         pass
-                    vals = dbg.locals(depth)
+                    try:
+                        vals = dbg.locals(depth)
+                    except TypeError:
+                        vals = dbg.locals()
                     if vals is None:
                         text = "(not paused)"
                     else:
@@ -220,7 +223,10 @@ def _pump():
                     except ValueError:
                         g = None
                     val = eval(expr_str, g if g is not None else {})
-                    res = dbg.poke(slot_idx, val, depth_idx)
+                    try:
+                        res = dbg.poke(slot_idx, val, depth_idx)
+                    except TypeError:
+                        res = dbg.poke(slot_idx, val)
                     if res:
                         text = "poked slot %d (depth %d) = %r" % (slot_idx, depth_idx, val)
                     else:
