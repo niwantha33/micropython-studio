@@ -164,16 +164,19 @@ def _pump():
                 try:
                     depth = cmd_buf[3] if cmd_len > 0 else 0
                     try:
-                        g = dbg.globals(depth)
-                        while g is not None and g.get('__name__') == 'trace_pump':
-                            try:
-                                next_g = dbg.globals(depth + 1)
-                                if next_g is None:
+                        if hasattr(dbg, 'globals'):
+                            g = dbg.globals(depth)
+                            while g is not None and g.get('__name__') == 'trace_pump':
+                                try:
+                                    next_g = dbg.globals(depth + 1)
+                                    if next_g is None:
+                                        break
+                                    depth += 1
+                                    g = next_g
+                                except ValueError:
                                     break
-                                depth += 1
-                                g = next_g
-                            except ValueError:
-                                break
+                        else:
+                            g = None
                     except ValueError:
                         pass
                     vals = dbg.locals(depth)
@@ -201,16 +204,19 @@ def _pump():
                         expr_bytes = cmd_buf[4:total]
                     expr_str = expr_bytes.decode()
                     try:
-                        g = dbg.globals(depth_idx)
-                        while g is not None and g.get('__name__') == 'trace_pump':
-                            try:
-                                next_g = dbg.globals(depth_idx + 1)
-                                if next_g is None:
+                        if hasattr(dbg, 'globals'):
+                            g = dbg.globals(depth_idx)
+                            while g is not None and g.get('__name__') == 'trace_pump':
+                                try:
+                                    next_g = dbg.globals(depth_idx + 1)
+                                    if next_g is None:
+                                        break
+                                    depth_idx += 1
+                                    g = next_g
+                                except ValueError:
                                     break
-                                depth_idx += 1
-                                g = next_g
-                            except ValueError:
-                                break
+                        else:
+                            g = None
                     except ValueError:
                         g = None
                     val = eval(expr_str, g if g is not None else {})
@@ -236,16 +242,19 @@ def _pump():
                     name = bytes(p[2:2+name_len]).decode()
                     expr = bytes(p[2+name_len:]).decode()
                     try:
-                        g = dbg.globals(depth_idx)
-                        while g is not None and g.get('__name__') == 'trace_pump':
-                            try:
-                                next_g = dbg.globals(depth_idx + 1)
-                                if next_g is None:
+                        if hasattr(dbg, 'globals'):
+                            g = dbg.globals(depth_idx)
+                            while g is not None and g.get('__name__') == 'trace_pump':
+                                try:
+                                    next_g = dbg.globals(depth_idx + 1)
+                                    if next_g is None:
+                                        break
+                                    depth_idx += 1
+                                    g = next_g
+                                except ValueError:
                                     break
-                                depth_idx += 1
-                                g = next_g
-                            except ValueError:
-                                break
+                        else:
+                            g = None
                     except ValueError:
                         g = None
                     if g is None:
@@ -273,16 +282,19 @@ def _pump():
                 try:
                     depth = cmd_buf[3] if cmd_len > 0 else 0
                     try:
-                        g = dbg.globals(depth)
-                        while g is not None and g.get('__name__') == 'trace_pump':
-                            try:
-                                next_g = dbg.globals(depth + 1)
-                                if next_g is None:
+                        if hasattr(dbg, 'globals'):
+                            g = dbg.globals(depth)
+                            while g is not None and g.get('__name__') == 'trace_pump':
+                                try:
+                                    next_g = dbg.globals(depth + 1)
+                                    if next_g is None:
+                                        break
+                                    depth += 1
+                                    g = next_g
+                                except ValueError:
                                     break
-                                depth += 1
-                                g = next_g
-                            except ValueError:
-                                break
+                        else:
+                            g = None
                     except ValueError:
                         g = None
                     if g is None:

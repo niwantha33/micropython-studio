@@ -114,9 +114,77 @@ class MpyDaemon:
         self.suspended = False
         self._read_buf = b""
         self._lock = threading.Lock()
+        
+        # New RX queue & lock
+        self._rx_queue = bytearray()
+        self._rx_lock = threading.Lock()
+        
+        # Terminal input buffering
+        self._terminal_input_buffer = b""
+        self._input_buffer_limit = 4096
+
+    def _rx_loop(self):
+        while self.running:
+            if self.suspended or not self.serial or not self.serial.is_open:
+                time.sleep(0.05)
+                continue
+            try:
+                if self.serial.in_waiting > 0:
+                    data = self.serial.read(self.serial.in_waiting)
+                    if data:
+                        with self._rx_lock:
+                            self._rx_queue.extend(data)
+                else:
+                    time.sleep(0.002)
+            except Exception as e:
+                if not self.suspended:
+                    time.sleep(0.1)
+
+    def _rx_read(self, n: int, timeout: float = 0.0) -> bytes:
+        start = time.time()
+        while True:
+            with self._rx_lock:
+                if len(self._rx_queue) >= n:
+                    res = bytes(self._rx_queue[:n])
+                    del self._rx_queue[:n]
+                    return res
+                elif len(self._rx_queue) > 0 and timeout == 0:
+                    res = bytes(self._rx_queue)
+                    self._rx_queue.clear()
+                    return res
+            
+            if timeout <= 0 or (time.time() - start) >= timeout:
+                break
+            time.sleep(0.001)
+        
+        with self._rx_lock:
+            if self._rx_queue:
+                res = bytes(self._rx_queue[:n])
+                del self._rx_queue[:n]
+                return res
+        return b""
+
+    def _paced_serial_write(self, data: bytes):
+        if not self.serial or not self.serial.is_open:
+            return
+        chunk_size = 64
+        for i in range(0, len(data), chunk_size):
+            chunk = data[i:i + chunk_size]
+            self.serial.write(chunk)
+            if len(data) > chunk_size:
+                time.sleep(0.002)
+
+    def _flush_terminal_input(self):
+        if self._terminal_input_buffer and not self.in_raw_repl and not self.suspended and self.serial and self.serial.is_open:
+            try:
+                self._paced_serial_write(self._terminal_input_buffer)
+                self._terminal_input_buffer = b""
+            except Exception as e:
+                self.send_event("error", {"message": f"Buffered write error: {e}"})
 
     def connect(self):
         self._read_buf = b""
+        self._rx_queue = bytearray()
         _acquire_lock(self.port)
         try:
             # We explicitly disable DTR/RTS on connect to avoid unwanted reset
@@ -142,7 +210,8 @@ class MpyDaemon:
             self.running = True
             self.send_event("connected", {"port": self.port})
             
-            # Start background read thread
+            # Start background RX thread and read loop
+            threading.Thread(target=self._rx_loop, daemon=True).start()
             threading.Thread(target=self._read_loop, daemon=True).start()
         except serial.SerialException as e:
             if "PermissionError" in str(e) or "Access is denied" in str(e):
@@ -200,61 +269,25 @@ class MpyDaemon:
 
     def _read_loop(self):
         import base64
-        while self.running and self.serial:
+        while self.running:
             try:
-                if self.in_raw_repl:
+                if self.in_raw_repl or self.suspended:
                     time.sleep(0.01)
                     continue
 
-                if self.suspended:
-                    time.sleep(0.05)
-                    continue
+                data = b""
+                with self._rx_lock:
+                    if self._rx_queue and not self.in_raw_repl and not self.suspended:
+                        data = bytes(self._rx_queue)
+                        self._rx_queue.clear()
 
-                with self._lock:
-                    if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
-                        time.sleep(0.01)
-                        continue
-
-                    if self.serial.in_waiting > 0:
-                        data = self.serial.read(self.serial.in_waiting)
-                        if data:
-                            # Send binary terminal data as base64 or hex
-                            # Base64 is efficient for JSON
-                            b64_data = base64.b64encode(data).decode('ascii')
-                            self.send_event("terminal_data", {"data": b64_data})
-                    else:
-                        time.sleep(0.01)
+                if data:
+                    b64_data = base64.b64encode(data).decode('ascii')
+                    self.send_event("terminal_data", {"data": b64_data})
+                else:
+                    time.sleep(0.01)
             except Exception as e:
-                if self.suspended:
-                    # Intentionally suspended, wait until resumed
-                    while self.suspended and self.running:
-                        time.sleep(0.05)
-                    continue
-                
-                # Check for transient disconnects (e.g. soft reboot / USB CDC reset)
-                err_str = str(e)
-                is_transient = any(term in err_str for term in [
-                    "device does not recognize",
-                    "handle is invalid",
-                    "PermissionError",
-                    "SerialException",
-                    "OSError",
-                    "Bad command"
-                ])
-                
-                if is_transient and self.running:
-                    if self._try_reconnect():
-                        try:
-                            time.sleep(0.1)
-                            self.serial.write(b'\r\x03')
-                        except Exception as write_err:
-                            if g_verbose:
-                                sys.stderr.write(f"[DAEMON] Error writing carriage return on reconnect: {write_err}\n")
-                        continue
-                
-                self.send_event("error", {"message": f"Read error: {e}"})
-                self.running = False
-                break
+                time.sleep(0.1)
         
         self.send_event("disconnected", {})
 
@@ -267,10 +300,11 @@ class MpyDaemon:
                 self._read_buf = self._read_buf[idx + len(ending):]
                 return res
             
-            if self.serial.in_waiting > 0:
-                self._read_buf += self.serial.read(self.serial.in_waiting)
-            else:
-                time.sleep(0.01)
+            with self._rx_lock:
+                if self._rx_queue:
+                    self._read_buf += bytes(self._rx_queue)
+                    self._rx_queue.clear()
+            time.sleep(0.005)
         
         buf = self._read_buf
         self._read_buf = b""
@@ -314,11 +348,9 @@ class MpyDaemon:
         self._read_buf = b""
         
         start_t = time.time()
-        orig_timeout = self.serial.timeout
-        self.serial.timeout = 0.01
         try:
             while len(window_size_bytes) < 2 and time.time() - start_t < 2.0:
-                chunk = self.serial.read(2 - len(window_size_bytes))
+                chunk = self._rx_read(2 - len(window_size_bytes), timeout=0.01)
                 if chunk:
                     window_size_bytes += chunk
                 else:
@@ -328,40 +360,39 @@ class MpyDaemon:
             
             window_size = struct.unpack("<H", window_size_bytes[:2])[0]
             window_remain = window_size
-
-            self.serial.timeout = 0.001
+ 
             i = 0
             while i < len(code_bytes):
                 while window_remain == 0:
-                    b = self.serial.read(1)
+                    b = self._rx_read(1, timeout=0.01)
                     if b == b'\x01':
                         window_remain += window_size
                     elif b == b'\x04':
-                        self.serial.write(b'\x04')
+                        self._paced_serial_write(b'\x04')
                         raise RuntimeError("Device aborted raw paste")
                     elif b == b'':
                         time.sleep(0.005)
                 
                 # Also drain any pending updates
                 while True:
-                    b = self.serial.read(1)
+                    b = self._rx_read(1, timeout=0.0)
                     if b == b'\x01':
                         window_remain += window_size
                     elif b == b'\x04':
-                        self.serial.write(b'\x04')
+                        self._paced_serial_write(b'\x04')
                         raise RuntimeError("Device aborted raw paste")
                     elif b == b'':
                         break
                 
                 chunk = code_bytes[i : min(i + window_remain, len(code_bytes))]
-                self.serial.write(chunk)
+                self._paced_serial_write(chunk)
                 window_remain -= len(chunk)
                 i += len(chunk)
         finally:
-            self.serial.timeout = orig_timeout
+            pass
 
         # End of data
-        self.serial.write(b'\x04')
+        self._paced_serial_write(b'\x04')
         self._read_until(b'\x04')
 
     def exec_raw_paste(self, code: str) -> Tuple[str, str]:
@@ -386,9 +417,12 @@ class MpyDaemon:
             import base64
             data = base64.b64decode(cmd["data"])
             with self._lock:
-                if not self.in_raw_repl and self.serial and self.serial.is_open and not self.suspended:
+                if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
+                    if len(self._terminal_input_buffer) + len(data) <= self._input_buffer_limit:
+                        self._terminal_input_buffer += data
+                else:
                     try:
-                        self.serial.write(data)
+                        self._paced_serial_write(data)
                     except Exception as e:
                         self.send_event("error", {"message": f"Write error: {e}"})
                     
@@ -419,13 +453,14 @@ class MpyDaemon:
                     except:
                         pass
                     self.in_raw_repl = False
+                    self._flush_terminal_input()
         elif action == "run_in_terminal":
             code = cmd.get("code", "")
             with self._lock:
                 self.in_raw_repl = True
                 try:
                     # Switch to friendly REPL first to reset state cleanly, then raw REPL
-                    self.serial.write(b'\r\x02\r\x03')
+                    self._paced_serial_write(b'\r\x02\r\x03')
                     time.sleep(0.1)
                     self.enter_raw_repl()
                     stdout, stderr = self.exec_raw_paste(code)
@@ -447,6 +482,7 @@ class MpyDaemon:
                     except:
                         pass
                     self.in_raw_repl = False
+                    self._flush_terminal_input()
         elif action == "suspend":
             with self._lock:
                 self.suspended = True
@@ -487,6 +523,7 @@ class MpyDaemon:
                                 sys.stderr.write(f"[DAEMON] Failed to set DTR/RTS on resume: {e}\n")
                 self.suspended = False
                 self.send_event("resumed", {})
+                self._flush_terminal_input()
 
 def main():
     # Read first line as initialization config
