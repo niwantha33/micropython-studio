@@ -484,6 +484,7 @@
     "@vscode/test-electron": "^2.3.9",
     "eslint": "^8.57.0",
     "glob": "^10.3.10",
+    "globals": "^15.15.0",
     "mocha": "^7.2.0",
     "typescript": "^5.3.3"
   },

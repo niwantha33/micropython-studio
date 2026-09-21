@@ -6,6 +6,7 @@
 const vscode = require('vscode');
 const path = require('path');
 const { spawn } = require('child_process');
+const wsQueue = require('./wsQueue');
 
 let panel = null;
 let bridge = null;
@@ -500,12 +501,22 @@ function openDebuggerPanel(context, port, venvPython) {
 
 function runBackend(venvPython, backendScript, args) {
     return new Promise((resolve) => {
-        const full = ['"' + backendScript + '"', '--python', '"' + venvPython + '"', ...args];
-        const p = spawn('"' + venvPython + '"', full, { shell: true });
+        const full = [backendScript, '--python', venvPython, ...args];
+        const p = spawn(venvPython, full);
         let out = '', err = '';
+        let settled = false;
+        const finish = (code) => {
+            if (settled) return;
+            settled = true;
+            resolve({ code, out, err });
+        };
         p.stdout.on('data', d => out += d.toString());
         p.stderr.on('data', d => err += d.toString());
-        p.on('close', code => resolve({ code, out, err }));
+        p.on('error', e => {
+            err += e.message;
+            finish(null);
+        });
+        p.on('close', finish);
     });
 }
 
@@ -519,11 +530,11 @@ async function uploadDebuggerFiles(context, replPort, venvPython) {
     for (const f of files) {
         out.appendLine(`  upload ${f}`);
         const src = path.join(dir, f);
-        const r = await runBackend(venvPython, backend, [
+        const r = await wsQueue.run(() => runBackend(venvPython, backend, [
             'upload', '--port', replPort,
-            '--source', '"' + src + '"',
+            '--source', src,
             '--dest', '/', '--overwrite'
-        ]);
+        ]), `Upload debugger file ${f}`);
         if (r.out) out.appendLine(r.out.trim());
         if (r.err) out.appendLine(r.err.trim());
         if (r.code !== 0) {
