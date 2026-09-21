@@ -119,7 +119,7 @@ class DeviceOperationQueue {
       }
     }
 
-    const logToFile = (msg) => {
+    const logToFile = () => {
       // Disabled debug file logging
     };
 

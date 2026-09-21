@@ -18,7 +18,6 @@ const ipToCond = new Map();  // ip -> condition string (optional)
 let pendingCondEval = null;  // { ip, cond, names } while awaiting locals reply
 let hlDeco = null;            // TextEditorDecorationType for current line (yellow — breakpoint)
 let stepInDeco = null;        // TextEditorDecorationType for step-in line (cyan)
-let lastHlEditor = null;
 let lastActionWasStepIn = false; // tracks whether the last resume action was step_in
 
 let rtaEvents = [];
@@ -106,7 +105,6 @@ function openDebuggerPanel(context, port, venvPython) {
             ed.setDecorations(stepInDeco, []);
             ed.setDecorations(deco, [range]);
             ed.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-            lastHlEditor = ed;
         } catch (e) { /* ignore */ }
     }
     function clearHighlight() {

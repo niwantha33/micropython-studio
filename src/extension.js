@@ -25,6 +25,7 @@ const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFro
 const { getConnectedDevices } = require('./runCommand');
 const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
+const { openWebReplTerminal } = require('./webrepl_bridge.py');
 const { startSimulator, stopSimulator } = require('./simulator');
 
 // Download a URL to a local path, following redirects.
@@ -82,7 +83,6 @@ async function findPicoBootselDrive() {
 const outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
 
 let gMpremoteTerminal = null;
-let gShellTerminal = null;
 let gRemoteDevicePort = null;
 let gDeviceCodeDir = null;
 let gDeviceFirmware = 'MicroPython'; // 'MicroPython' | 'CircuitPython'
@@ -753,7 +753,6 @@ function activate(context) {
 
             const venvFolder = getVenvPythonPathFolder();
             const venvPython = getVenvPythonPath(venvFolder);
-            const terminal = getMpremoteTerminal();
 
             // Both modes require a connected device
             if (!gRemoteDevicePort) {

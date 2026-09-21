@@ -1,6 +1,5 @@
 // scripts/index-circuitpython-html.js
 const fs = require('fs');
-const path = require('path');
 const { JSDOM } = require('jsdom');  // npm install jsdom
 
 async function extractHtmlText(htmlPath) {
@@ -18,7 +17,7 @@ async function extractHtmlText(htmlPath) {
 async function buildIndex(htmlPath, outputPath) {
     console.log(`🌐 Indexing HTML docs: ${htmlPath}`);
     const text = await extractHtmlText(htmlPath);
-    // ... same chunking logic as PDF version
+    fs.writeFileSync(outputPath, JSON.stringify({ source: htmlPath, text }, null, 2), 'utf8');
 }
 
 if (require.main === module) {

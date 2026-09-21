@@ -11,7 +11,6 @@
 'use strict';
 
 const http  = require('http');
-const https = require('https');
 const fs    = require('fs');
 const path  = require('path');
 
@@ -191,7 +190,8 @@ async function getFile(ip, password, remotePath, port = 80) {
  * @returns {Promise<{ok:number, failed:string[]}>}
  */
 async function uploadFolder(ip, password, localFolder, remoteBase = '/', port = 80, onProgress = null) {
-    const ok = 0, failed = [];
+    let ok = 0;
+    const failed = [];
     const base = remoteBase.endsWith('/') ? remoteBase : remoteBase + '/';
 
     /** @param {string} localDir @param {string} remoteDir */
@@ -211,7 +211,7 @@ async function uploadFolder(ip, password, localFolder, remoteBase = '/', port = 
                 const content = fs.readFileSync(localPath);
                 const success = await putFile(ip, password, remotePath, content, port);
                 if (success) {
-                    // ok++ — can't mutate const, track in outer scope
+                    ok++;
                 } else {
                     failed.push(remotePath);
                 }
@@ -220,7 +220,7 @@ async function uploadFolder(ip, password, localFolder, remoteBase = '/', port = 
     }
 
     await walk(localFolder, base);
-    return { failed };
+    return { ok, failed };
 }
 
 /**

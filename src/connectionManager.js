@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 
-function logToFile(msg) {
+function logToFile() {
     // Disabled debug file logging
 }
 

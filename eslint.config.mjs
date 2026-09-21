@@ -1,6 +1,14 @@
 import globals from "globals";
 
 export default [{
+    ignores: [
+        "**/node_modules/**",
+        ".vscode-test/**",
+        "bin/**",
+        "resource/webrepl/**/*.js",
+        "tmp/**",
+    ],
+}, {
     files: ["**/*.js"],
     languageOptions: {
         globals: {

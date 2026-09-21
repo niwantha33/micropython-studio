@@ -290,9 +290,10 @@ class AiAssistanceProvider {
 port = ${contextData.port}
 mcu = ${contextData.mcu}
 device_firmware = ${firmware}
-[filePath]
-projectDir = "${contextData.projectDir}"
-`;
+	[filePath]
+	projectDir = "${contextData.projectDir}"
+	${truncatedFileContext}
+	`;
 
         // -------------------------------
         // 6. FINAL PROMPT (ephemeral — not saved to history)
@@ -462,7 +463,7 @@ projectDir = "${contextData.projectDir}"
         const port = deviceCtx.port || contextData.port || 'unknown';
         const file = deviceCtx.file || '';
 
-        const message = `Device error detected${file ? ` in \`${file}\`` : ''} on ${port}. Investigate and suggest a fix:\n\n\`\`\`\n${errorOutput.trim()}\n\`\`\``;
+        const message = `${firmware} device error detected${file ? ` in \`${file}\`` : ''} on ${port}. Investigate and suggest a fix:\n\n\`\`\`\n${errorOutput.trim()}\n\`\`\``;
 
         // Show the AI panel and inject the message as if the user sent it
         await vscode.commands.executeCommand('micropython-ide-ai-chat.focus');
