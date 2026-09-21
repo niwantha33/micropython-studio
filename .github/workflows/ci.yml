@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    name: Build and lint
+    name: Build, lint, and test
     runs-on: ubuntu-latest
 
     steps:
@@ -40,3 +40,6 @@ jobs:
 
       - name: Package smoke test
         run: npm pack --dry-run
+
+      - name: Extension tests
+        run: xvfb-run -a npm test
