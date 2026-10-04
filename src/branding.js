@@ -5,7 +5,7 @@ function activateBranding(context) {
     const DONT_SHOW_KEY = 'niwantha.brand.dontShow';
     const brandStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
     brandStatus.text = "$(person) niwantha meepage";
-    brandStatus.tooltip = "MicroPython Studio by niwantha meepage | Click to support";
+    brandStatus.tooltip = "MicroPython Studio by niwantha meepage | All Picos & ESP32 | Buy me a beer? 🍺";
     brandStatus.command = "micropythonStudio.showSupport";
     brandStatus.show();
     context.subscriptions.push(brandStatus);
@@ -21,14 +21,14 @@ function activateBranding(context) {
     if (now - lastShown > oneDay) {
         setTimeout(() => {
             vscode.window.showInformationMessage(
-                "MicroPython Studio by niwantha meepage — Free & Open Source",
+                "MicroPython Studio by niwantha meepage — Free & Open • Buy me a beer? 🍺",
                 "⭐ Star on GitHub",
-                "☕ Support",
+                "☕ Buy me a beer",
                 "Don't show again"
             ).then(selection => {
                 if (selection === "⭐ Star on GitHub") {
                     vscode.env.openExternal(vscode.Uri.parse('https://github.com/niwantha33/micropython-studio'));
-                } else if (selection === "☕ Support") {
+                } else if (selection === "☕ Buy me a beer") {
                     showSupportPanel(context);
                 } else if (selection === "Don't show again") {
                     context.globalState.update(DONT_SHOW_KEY, true);
@@ -52,12 +52,12 @@ function showSupportPanel(context) {
     .btn-primary{background:white;color:black} .btn-secondary{background:#3c3c3c;color:white;border:1px solid #5a5a5a}
     .small{font-size:11px;color:#6a6a6a;margin-top:30px;text-align:center}
     </style></head><body>
-    <div class="brand"><div class="avatar">nm</div><div><div class="name">niwantha meepage</div><div class="loc">Titchfield, UK • MicroPython • RP2350 • Embedded</div><div class="loc">Builder of MicroPython Studio - Only bytecode debugger with async</div></div></div>
-    <h1>Free. Open Source. Built with passion.</h1>
-    <p class="sub">MicroPython Studio is free for everyone. Built by solo developer 2+ years.</p>
-    <div class="card"><h3 style="margin-top:0;color:white">Why I built it?</h3><p style="font-size:14px;line-height:1.6">Thonny only does print() debugging. I wanted to see actual bytecode IP, async tasks, live pins. So I built the debugger I needed.</p></div>
-    <div class="card"><h3 style="margin-top:0;color:white">Support the work (optional)</h3><p style="font-size:13px;color:#858585;margin-bottom:16px">If this saves you time, consider supporting – helps me build more boards and keep it free.</p><div class="links"><a class="btn btn-primary" href="https://github.com/niwantha33/micropython-studio" target="_blank">⭐ Star on GitHub</a><a class="btn btn-secondary" href="https://github.com/sponsors/niwantha33" target="_blank">❤️ Sponsors</a><a class="btn btn-secondary" href="https://www.instagram.com/niwantha_meepage" target="_blank">📸 @niwantha_meepage</a></div></div>
-    <p class="small">By niwantha meepage • Free & Open Source • MIT • Built in Titchfield, UK<br>Banner shows once per day. Click Don't show again to hide forever. No ads, no frustration.</p>
+    <div class="brand"><div class="avatar">nm</div><div><div class="name">niwantha meepage</div><div class="loc">Titchfield, UK • All Picos & ESP32 • RP2040/RP2350</div><div class="loc">Builder of MicroPython Studio - Async-aware bytecode debugger</div></div></div>
+    <h1>Free & Open. Built with passion.</h1>
+    <p class="sub">Supports All Raspberry Pi Picos (RP2040, RP2350, Pico, Pico W, Pico 2, Pico 2 W) & ESP32. Free & Open Source.</p>
+    <div class="card"><h3 style="margin-top:0;color:white">Features</h3><p style="font-size:13px;line-height:1.8">• Device Dashboard: System Info, RAM 12%, Flash 6%, CPU 150MHz<br>• Pinout: Live Raspberry Pi Pico 2 W RP2350 visualization<br>• Package Manager: Search & install MicroPython libs<br>• WiFi Manager & Remote Upload<br>• Bytecode Debugger: PAUSED at 0x0032, RTA, Task Map</p></div>
+    <div class="card"><h3 style="margin-top:0;color:white">Support (optional) - Buy me a beer?</h3><p style="font-size:13px;color:#858585;margin-bottom:16px">If this saves you time, buy me a beer to keep this project alive.</p><div class="links"><a class="btn btn-primary" href="https://github.com/niwantha33/micropython-studio" target="_blank">⭐ Star on GitHub</a><a class="btn btn-secondary" href="https://github.com/sponsors/niwantha33" target="_blank">❤️ GitHub Sponsors</a><a class="btn btn-secondary" href="https://www.buymeacoffee.com/niwantha" target="_blank">🍺 Buy me a beer</a></div></div>
+    <p class="small">By niwantha meepage • Free & Open • MIT • All Picos & ESP32 Supported</p>
     </body></html>`;
 }
 module.exports = { activateBranding, showSupportPanel };
