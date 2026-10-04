@@ -467,9 +467,17 @@ def get_symmap_chunk():
     global _sym_list
     try:
         print("get_symmap_chunk called, current _sym_list len =", len(_sym_list))
-        chunk = _sym_list[:6]
-        del _sym_list[:6]
-        res = ','.join(chunk) if chunk else "None"
+        if not _sym_list:
+            return "None"
+        chunk = []
+        curr_len = 0
+        while _sym_list:
+            next_item = _sym_list[0]
+            next_len = len(next_item) + (1 if chunk else 0)
+            if curr_len + next_len > 240:
+                break
+            chunk.append(_sym_list.pop(0))
+        res = ','.join(chunk)
         print("returning chunk:", res[:50])
         return res
     except Exception as e:

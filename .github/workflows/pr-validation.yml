@@ -1,0 +1,36 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Check for junk files
+        run: |
+          echo "Checking for temp/junk files..."
+          ! ls -1 | grep -E "temp_log|diff_output|original_dashboard|circuitpython.zip|circuitpython-docs.pdf|.tmp$"
+          echo "No junk root files found"
+      - name: Check duplicate case files
+        run: |
+          echo "Checking case-insensitive duplicates..."
+          DUPS=$(find src -type f | tr '[:upper:]' '[:lower:]' | sort | uniq -d)
+          if [ -n "$DUPS" ]; then echo "Duplicate files (case-insensitive): $DUPS"; exit 1; fi
+      - name: VSIX size check
+        run: |
+          npm install -g @vscode/vsce
+          vsce package --no-yarn -o test.vsix
+          SIZE=$(stat -c%s "test.vsix")
+          echo "VSIX size: $SIZE bytes"
+          if [ $SIZE -gt 15000000 ]; then echo "VSIX too large >15MB, check .vscodeignore"; exit 1; fi
+      - name: Requirements sanity
+        run: |
+          python3 -m pip install -r requirements.txt --dry-run

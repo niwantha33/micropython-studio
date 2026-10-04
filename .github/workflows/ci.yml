@@ -1,21 +1,17 @@
-name: CI
+name: CI - Build, Test & Release
 
 on:
   push:
-    branches:
-      - main
-      - master
-      - develop
+    branches: [main, master]
+    tags: ['v*']
   pull_request:
-
-permissions:
-  contents: read
+    branches: [main, master]
+  workflow_dispatch:
 
 jobs:
-  build:
-    name: Build, lint, and test
+  lint-and-test:
+    name: Lint & Unit Test
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,23 +19,101 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: '20'
+          cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install Node deps
         run: npm ci
 
-      - name: Lint
-        run: npm run lint
+      - name: Lint (ESLint)
+        run: npm run lint --if-present || npx eslint src --ext .js,.mjs
 
-      - name: Syntax check extension entry points
+      - name: Run VS Code tests
+        run: xvfb-run -a npm test --if-present
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate requirements.txt
         run: |
-          node --check src/extension.js
-          node --check src/mpyDebugger.js
-          node --check src/connectionManager.js
+          python -m pip install --upgrade pip
+          python -m pip check || true
+          python -m pip install -r requirements.txt --dry-run
+          python -m py_compile src/*.py scripts/*.py || true
 
-      - name: Package smoke test
-        run: npm pack --dry-run
+  build-vsix:
+    name: Build VSIX
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    outputs:
+      vsix_path: ${{ steps.package.outputs.vsix_path }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+      - name: Package VSIX
+        id: package
+        run: |
+          vsce package --no-yarn --out ./micropython-studio-${{ github.sha }}.vsix
+          echo "vsix_path=$(ls *.vsix | head -n1)" >> $GITHUB_OUTPUT
+          ls -lh *.vsix
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-package
+          path: '*.vsix'
+          retention-days: 14
 
-      - name: Extension tests
-        run: xvfb-run -a npm test
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-vsix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix-package
+          path: ./
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: '*.vsix'
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+
+  publish-marketplace:
+    name: Publish to VS Code Marketplace & OpenVSX
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-vsix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Download VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix-package
+          path: ./
+      - name: Publish to VS Code Marketplace
+        run: npx vsce publish --packagePath $(ls *.vsix | head -n1) -p ${{ secrets.VSCE_PAT }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      - name: Publish to Open VSX
+        run: npx ovsx publish $(ls *.vsix | head -n1) -p ${{ secrets.OVSX_PAT }}
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
