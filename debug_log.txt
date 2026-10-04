@@ -1,0 +1,5 @@
+[2026-06-11T19:08:27.954Z] [JS] [PID 55016] [ConnectionManager] Connecting to port COM4...
+[2026-06-11T19:08:27.956Z] [JS] [PID 55016] [ConnectionManager] Spawning daemon process: C:\Users\niwan\.micropython-studio\.venv\Scripts\python.exe c:\My-Projects\micropython-studio-py\micropython-studio\src\mpy_daemon.py
+[2026-06-11T19:08:27.965Z] [JS] [PID 55016] [ConnectionManager] Sending initConfig: {"port":"COM4","baudrate":115200,"verbose":false}
+[2026-06-11T19:08:28.171Z] [JS] [PID 55016] [ConnectionManager] Received 'connected' event from daemon
+[2026-06-11T19:16:56.124Z] [JS] [PID 55016] [ConnectionManager] Daemon closed with code: null
