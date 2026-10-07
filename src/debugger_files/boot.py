@@ -23,6 +23,17 @@ def _enable_dual_cdc():
     dbgref.cdc = dbg_cdc
     print("[boot] second CDC registered as dbgref.cdc")
 
+    # This boot.py belongs to the debugger package, so start the pump here
+    # after the debug CDC exists. Users should not need to manually import and
+    # start trace_pump for every reset/debug session.
+    try:
+        import trace_pump
+        trace_pump.start()
+        print("[boot] trace_pump auto-start requested")
+    except Exception as e:
+        sys.print_exception(e)
+        print("[boot] trace_pump auto-start failed; REPL remains available")
+
 
 try:
     print("[boot] dual-CDC enabling in 3s — Ctrl-C to skip")
