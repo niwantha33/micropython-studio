@@ -131,8 +131,20 @@ function openDebuggerPanel(context, port, venvPython) {
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
     bridge = spawn(pyCmd, [script, port, workspaceFolder], { stdio: ['pipe', 'pipe', 'pipe'] });
 
+    // A new debugger session owns the target breakpoint table. Clear both
+    // host-side mappings and every stale target slot before re-installing the
+    // breakpoints that currently exist in VS Code.
+    bpSlotMap.clear();
+    pendingBpReplies.length = 0;
+    ipToLoc.clear();
+    ipToCond.clear();
+    localNamesByFn.clear();
+    bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+
     function requestTaskMap() {
-        const expr = 'g=globals();exec("import sys,machine\\nM=machine.mem32\\nq=sys.modules[\'asyncio\'].core._task_queue\\nt=[]\\nwhile q.peek():t.append(q.pop())\\n__t=\',\'.join(\'%d:%s\'%(M[id(x.coro)+8],x.coro) for x in t)\\nfor x in t:q.push(x,M[id(x)+20])",g) or g.get(\'__t\')';
+        // trace_pump already provides get_taskmap(); use that directly instead
+        // of sending a fragile multi-line exec expression through eval().
+        const expr = "__import__('trace_pump').get_taskmap()";
         try {
             bridge.stdin.write(JSON.stringify({ op: 'poke_global', name: '__t', depth: 0, expr: expr }) + '\n');
             return true;
