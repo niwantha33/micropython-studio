@@ -905,6 +905,200 @@ body {
 .sent { color: var(--accent-primary); }
 .rta { color: var(--accent-purple); font-weight: 500; }
 
+/* Live RTA Viewer */
+.rta-viewer {
+  background: linear-gradient(180deg, rgba(217,70,239,0.06), rgba(21,24,36,0.92));
+  border: 1px solid rgba(217,70,239,0.22);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.rta-viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(255,255,255,0.02);
+}
+.rta-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.rta-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #f5d0fe;
+}
+.rta-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  background: rgba(255,255,255,0.03);
+}
+.rta-live-badge.on {
+  color: #86efac;
+  border-color: rgba(34,197,94,0.35);
+  background: rgba(34,197,94,0.08);
+}
+.rta-live-badge.on::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34,197,94,0.8);
+}
+.rta-viewer-actions {
+  display: flex;
+  gap: 6px;
+}
+.rta-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+}
+.rta-kpi {
+  min-width: 0;
+  background: var(--bg-card);
+  padding: 9px 12px;
+}
+.rta-kpi-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.rta-kpi-value {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rta-table-wrap {
+  max-height: 260px;
+  overflow: auto;
+  background: var(--bg-input);
+}
+.rta-table {
+  min-width: 900px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.rta-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 7px 8px;
+  text-align: left;
+  color: var(--text-muted);
+  background: #11131d;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.rta-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.035);
+  white-space: nowrap;
+}
+.rta-table tbody tr:hover {
+  background: rgba(255,255,255,0.025);
+}
+.rta-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rta-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #475569;
+}
+.rta-state-dot.active {
+  background: #22c55e;
+  box-shadow: 0 0 7px rgba(34,197,94,0.75);
+}
+.rta-state-dot.idle {
+  background: #64748b;
+}
+.rta-kind {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(99,102,241,0.25);
+  color: #a5b4fc;
+  font-size: 9px;
+}
+.rta-kind.task {
+  border-color: rgba(6,182,212,0.3);
+  color: #67e8f9;
+}
+.rta-name-cell {
+  color: #e2e8f0;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rta-load {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 120px;
+}
+.rta-load-track {
+  width: 72px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+}
+.rta-load-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #8b5cf6, #d946ef);
+}
+.rta-load-text {
+  width: 42px;
+  text-align: right;
+  color: #e9d5ff;
+}
+.rta-empty {
+  padding: 18px !important;
+  text-align: center;
+  color: var(--text-muted);
+}
+.rta-note {
+  padding: 7px 12px;
+  color: #64748b;
+  font-size: 9px;
+  line-height: 1.4;
+  border-top: 1px solid var(--border-color);
+  background: rgba(255,255,255,0.015);
+}
+@media (max-width: 800px) {
+  .rta-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rta-viewer-header { align-items: flex-start; flex-direction: column; }
+}
+
 /* Table Styling */
 table {
   width: 100%;
@@ -974,6 +1168,46 @@ td.v:focus, td.vg:focus {
   <!-- Dynamic configuration-driven buttons will render here -->
 </div>
 
+<div id="rta-viewer" class="rta-viewer">
+  <div class="rta-viewer-header">
+    <div class="rta-title-wrap">
+      <span class="rta-title">LIVE RTA · TASK / FUNCTION VIEWER</span>
+      <span id="rta-live-badge" class="rta-live-badge">OFF</span>
+    </div>
+    <div class="rta-viewer-actions">
+      <button class="btn btn-action" style="padding:4px 8px" onclick="send('taskmap')" title="Refresh asyncio task names">Refresh Names</button>
+      <button class="btn btn-clear" style="padding:4px 8px" onclick="resetRtaProfiler()" title="Clear local RTA statistics">Reset Stats</button>
+    </div>
+  </div>
+  <div class="rta-kpis">
+    <div class="rta-kpi"><div class="rta-kpi-label">Events</div><div id="rta-kpi-events" class="rta-kpi-value">0</div></div>
+    <div class="rta-kpi"><div class="rta-kpi-label">Functions / Tasks</div><div id="rta-kpi-functions" class="rta-kpi-value">0</div></div>
+    <div class="rta-kpi"><div class="rta-kpi-label">Trace Span</div><div id="rta-kpi-span" class="rta-kpi-value">—</div></div>
+    <div class="rta-kpi"><div class="rta-kpi-label">Highest Runtime</div><div id="rta-kpi-hot" class="rta-kpi-value">—</div></div>
+  </div>
+  <div class="rta-table-wrap">
+    <table class="rta-table">
+      <thead>
+        <tr>
+          <th>State</th>
+          <th>Task / Function</th>
+          <th>Type</th>
+          <th>Calls</th>
+          <th>Runtime %</th>
+          <th>Total</th>
+          <th>Average</th>
+          <th>Max</th>
+          <th>Last</th>
+        </tr>
+      </thead>
+      <tbody id="rta-table-body">
+        <tr><td class="rta-empty" colspan="9">RTA is off. Click RTA On to begin live profiling.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="rta-note">Runtime % is the share of observed exclusive RTA time. It is not claimed as exact scheduler CPU% until the firmware emits task-switch events.</div>
+</div>
+
 <div class="dashboard-grid">
   <div class="panel-terminal">
     <div class="panel-terminal-header">
@@ -1027,6 +1261,13 @@ let currentNames = [];
 const funNames = {};
 let lastIp = 0;
 let rtaEnabled = false;
+const rtaProfiles = new Map();
+const rtaNames = new Map();
+const rtaStack = [];
+let rtaEventCount = 0;
+let rtaFirstTs = null;
+let rtaLastTs = null;
+let rtaRenderTimer = null;
 
 // Configuration list of commands to enable modular scaling
 const COMMANDS = [
@@ -1109,8 +1350,184 @@ function updateRtaControls(enabled) {
   rtaEnabled = !!enabled;
   const onBtn = document.querySelector('button[data-op="rta_on"]');
   const offBtn = document.querySelector('button[data-op="rta_off"]');
+  const badge = document.getElementById('rta-live-badge');
   if (onBtn) onBtn.disabled = rtaEnabled;
   if (offBtn) offBtn.disabled = !rtaEnabled;
+  if (badge) {
+    badge.textContent = rtaEnabled ? 'LIVE' : 'OFF';
+    badge.className = rtaEnabled ? 'rta-live-badge on' : 'rta-live-badge';
+  }
+}
+
+function rtaTsDiff(end, start) {
+  const e = Number(end) >>> 0;
+  const s = Number(start) >>> 0;
+  return e >= s ? (e - s) : (0x100000000 - s + e);
+}
+
+function formatRtaTime(value) {
+  const v = Number(value) || 0;
+  if (v >= 1000) return (v / 1000).toFixed(v >= 10000 ? 1 : 2) + ' s';
+  if (v >= 100) return v.toFixed(1) + ' ms';
+  if (v >= 10) return v.toFixed(2) + ' ms';
+  return v.toFixed(3) + ' ms';
+}
+
+function setRtaName(fun, name, kind) {
+  const key = String(fun);
+  const existing = rtaNames.get(key);
+  const next = {
+    name: name || (existing && existing.name) || ('0x' + Number(fun).toString(16)),
+    kind: kind || (existing && existing.kind) || 'function'
+  };
+  rtaNames.set(key, next);
+  const profile = rtaProfiles.get(key);
+  if (profile) {
+    profile.name = next.name;
+    profile.kind = next.kind;
+  }
+  scheduleRtaRender();
+}
+
+function getRtaProfile(fun) {
+  const key = String(fun);
+  let profile = rtaProfiles.get(key);
+  if (!profile) {
+    const named = rtaNames.get(key);
+    profile = {
+      fun: Number(fun),
+      name: named ? named.name : ('0x' + Number(fun).toString(16)),
+      kind: named ? named.kind : 'function',
+      calls: 0,
+      totalExclusive: 0,
+      totalInclusive: 0,
+      max: 0,
+      last: 0,
+      lastTs: 0
+    };
+    rtaProfiles.set(key, profile);
+  }
+  return profile;
+}
+
+function resetRtaProfiler() {
+  rtaProfiles.clear();
+  rtaStack.length = 0;
+  rtaEventCount = 0;
+  rtaFirstTs = null;
+  rtaLastTs = null;
+  renderRtaProfiler();
+}
+
+function scheduleRtaRender() {
+  if (rtaRenderTimer) return;
+  rtaRenderTimer = setTimeout(() => {
+    rtaRenderTimer = null;
+    renderRtaProfiler();
+  }, 100);
+}
+
+function handleRtaEvent(m) {
+  rtaEventCount += 1;
+  if (rtaFirstTs === null) rtaFirstTs = Number(m.ts) >>> 0;
+  rtaLastTs = Number(m.ts) >>> 0;
+
+  if (m.evt === 'rta_entry') {
+    getRtaProfile(m.fun);
+    rtaStack.push({ fun: Number(m.fun), start: Number(m.ts) >>> 0, childTime: 0 });
+    scheduleRtaRender();
+    return;
+  }
+
+  let matchIndex = -1;
+  for (let i = rtaStack.length - 1; i >= 0; i--) {
+    if (rtaStack[i].fun === Number(m.fun)) {
+      matchIndex = i;
+      break;
+    }
+  }
+  if (matchIndex < 0) {
+    scheduleRtaRender();
+    return;
+  }
+
+  const frame = rtaStack[matchIndex];
+  const duration = rtaTsDiff(m.ts, frame.start);
+  const exclusive = Math.max(0, duration - frame.childTime);
+
+  // Drop the matched frame plus any malformed deeper frames. Normal traces
+  // always match the top frame; this keeps the viewer resilient to loss.
+  rtaStack.splice(matchIndex);
+
+  if (rtaStack.length > 0) {
+    rtaStack[rtaStack.length - 1].childTime += duration;
+  }
+
+  const profile = getRtaProfile(m.fun);
+  profile.calls += 1;
+  profile.totalExclusive += exclusive;
+  profile.totalInclusive += duration;
+  profile.last = duration;
+  profile.max = Math.max(profile.max, duration);
+  profile.lastTs = Number(m.ts) >>> 0;
+  scheduleRtaRender();
+}
+
+function isRtaActive(fun) {
+  const n = Number(fun);
+  for (let i = rtaStack.length - 1; i >= 0; i--) {
+    if (rtaStack[i].fun === n) return true;
+  }
+  return false;
+}
+
+function renderRtaProfiler() {
+  const body = document.getElementById('rta-table-body');
+  if (!body) return;
+
+  const profiles = Array.from(rtaProfiles.values());
+  const totalExclusive = profiles.reduce((sum, p) => sum + p.totalExclusive, 0);
+  profiles.sort((a, b) =>
+    (b.totalExclusive - a.totalExclusive) ||
+    (b.max - a.max) ||
+    (b.calls - a.calls)
+  );
+
+  document.getElementById('rta-kpi-events').textContent = String(rtaEventCount);
+  document.getElementById('rta-kpi-functions').textContent = String(profiles.length);
+  document.getElementById('rta-kpi-span').textContent =
+    (rtaFirstTs !== null && rtaLastTs !== null) ? formatRtaTime(rtaTsDiff(rtaLastTs, rtaFirstTs)) : '—';
+  document.getElementById('rta-kpi-hot').textContent = profiles.length ? profiles[0].name : '—';
+
+  if (!profiles.length) {
+    body.innerHTML = '<tr><td class="rta-empty" colspan="9">' +
+      (rtaEnabled ? 'Waiting for RTA function activity…' : 'RTA is off. Click RTA On to begin live profiling.') +
+      '</td></tr>';
+    return;
+  }
+
+  let html = '';
+  const visible = profiles.slice(0, 60);
+  for (const p of visible) {
+    const active = isRtaActive(p.fun);
+    const pct = totalExclusive > 0 ? (p.totalExclusive * 100 / totalExclusive) : 0;
+    const avg = p.calls > 0 ? (p.totalInclusive / p.calls) : 0;
+    html += '<tr>' +
+      '<td><span class="rta-state"><span class="rta-state-dot ' + (active ? 'active' : 'idle') + '"></span>' + (active ? 'ACTIVE' : 'IDLE') + '</span></td>' +
+      '<td class="rta-name-cell" title="' + escapeHtml(p.name) + '">' + escapeHtml(p.name) + '</td>' +
+      '<td><span class="rta-kind ' + (p.kind === 'task' ? 'task' : '') + '">' + (p.kind === 'task' ? 'TASK' : 'FUNC') + '</span></td>' +
+      '<td>' + p.calls + '</td>' +
+      '<td><div class="rta-load"><div class="rta-load-track"><div class="rta-load-fill" style="width:' + Math.min(100, pct).toFixed(1) + '%"></div></div><span class="rta-load-text">' + pct.toFixed(1) + '%</span></div></td>' +
+      '<td>' + formatRtaTime(p.totalInclusive) + '</td>' +
+      '<td>' + formatRtaTime(avg) + '</td>' +
+      '<td>' + formatRtaTime(p.max) + '</td>' +
+      '<td>' + formatRtaTime(p.last) + '</td>' +
+      '</tr>';
+  }
+  if (profiles.length > visible.length) {
+    html += '<tr><td class="rta-empty" colspan="9">Showing top ' + visible.length + ' of ' + profiles.length + ' by observed runtime.</td></tr>';
+  }
+  body.innerHTML = html;
 }
 
 function pokeGlobal() {
@@ -1151,12 +1568,7 @@ window.addEventListener('message', (e) => {
   }
   else if (m.evt === 'trace') add('', 'trace   ip=0x' + m.ip.toString(16).padStart(4,'0') + '  op=0x' + m.op.toString(16).padStart(2,'0'));
   else if (m.evt === 'rta_entry' || m.evt === 'rta_exit') {
-    const isEntry = m.evt === 'rta_entry';
-    const rec = funNames[m.fun];
-    const fnName = rec ? rec.name : ('0x' + m.fun.toString(16));
-    const dirIcon = isEntry ? '→ ENTER' : '← EXIT';
-    const timeStr = m.ts + 'ms';
-    add('rta', 'RTA: ' + dirIcon + ' ' + fnName + ' at ' + timeStr);
+    handleRtaEvent(m);
   }
   else if (m.evt === 'reply') {
     add('reply', 'REPLY  ' + m.text);
@@ -1245,7 +1657,9 @@ window.addEventListener('message', (e) => {
     }
   }
   else if (m.evt === 'rta_status') {
+    if (m.enabled) resetRtaProfiler();
     updateRtaControls(m.enabled);
+    renderRtaProfiler();
     add('rta', m.enabled ? 'RTA: ON (device confirmed)' : 'RTA: OFF (device confirmed)');
   }
   else if (m.evt === 'sent') add('sent', '→ ' + m.op);
@@ -1256,7 +1670,11 @@ window.addEventListener('message', (e) => {
   else if (m.evt === 'closed') add('err', '(bridge closed)');
   else if (m.evt === 'open') add('reply', 'connected to ' + m.port);
   else if (m.evt === 'names') { currentNames = m.names || []; }
-  else if (m.evt === 'fun_name') { funNames[m.fun] = { name: m.name, fsPath: m.fsPath, defLine: m.defLine }; }
+  else if (m.evt === 'rta_name') { setRtaName(m.fun, m.name, m.kind || 'task'); }
+  else if (m.evt === 'fun_name') {
+    funNames[m.fun] = { name: m.name, fsPath: m.fsPath, defLine: m.defLine };
+    setRtaName(m.fun, m.name, 'function');
+  }
   else if (m.evt === 'status') {
     const el = document.getElementById('status');
     const badge = document.querySelector('.status-badge');
@@ -1278,6 +1696,7 @@ window.addEventListener('message', (e) => {
 // Setup dynamic elements on load
 renderButtons();
 updateRtaControls(false);
+renderRtaProfiler();
 
 document.addEventListener('keydown', (e) => {
   if (e.target.classList.contains('v')) {
