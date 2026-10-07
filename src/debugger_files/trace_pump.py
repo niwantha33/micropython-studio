@@ -14,6 +14,12 @@ import _thread
 import time
 import dbg
 
+# Increment whenever the host<->pump command contract or required pump
+# behaviour changes. Studio checks both the uploaded file and the live imported
+# module before opening a debug session, so stale RAM/file copies are rejected.
+PUMP_PROTOCOL = 4
+PUMP_BUILD = "2026-10-07-bytearray-resync-v4"
+
 _running = False
 bytes_in = 0
 cmds = 0
@@ -442,7 +448,7 @@ def start():
         return
     _running = True
     _thread.start_new_thread(_pump, ())
-    print("trace_pump: started")
+    print("trace_pump: started protocol=%d build=%s" % (PUMP_PROTOCOL, PUMP_BUILD))
 
 
 def stop():
