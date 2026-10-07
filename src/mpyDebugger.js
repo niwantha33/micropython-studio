@@ -710,7 +710,6 @@ function openDebuggerPanel(context, port, venvPython) {
         if (msg.op === 'set_bp_here') {
             let ed = vscode.window.activeTextEditor;
             if (!ed || !ed.document.fileName.endsWith('.py')) {
-                // Webview has focus — fall back to any visible .py editor
                 ed = vscode.window.visibleTextEditors.find(
                     e => e.document && e.document.fileName.endsWith('.py')
                 );
@@ -720,21 +719,20 @@ function openDebuggerPanel(context, port, venvPython) {
                 return;
             }
             const line1 = ed.selection.active.line + 1;
-            const text = ed.document.getText();
-            const info = findEnclosingFunction(text, line1);
-            if (!info) {
-                panel.webview.postMessage({ evt: 'error', msg: `no enclosing def at line ${line1}` });
+            const fsPath = ed.document.fileName;
+            const existing = findVsCodeBreakpoint(fsPath, line1);
+            if (existing) {
+                panel.webview.postMessage({ evt: 'error', msg: `breakpoint already exists at ${path.basename(fsPath)}:${line1}` });
+                postBreakpointSnapshot();
                 return;
             }
-            const modName = path.basename(ed.document.fileName, '.py');
-            const relLine = line1 - info.defLine;
-            const key = `${modName}:${info.func}:${line1}`;
-            const names = extractLocalNames(text, info.defLine, info.args);
-            localNamesByFn.set(`${modName}:${info.func}`, names);
-            pendingBpReplies.push({ key, fsPath: ed.document.fileName, line1, fnKey: `${modName}:${info.func}`, defLine: info.defLine });
-            const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
-            bridge.stdin.write(JSON.stringify(out) + '\n');
-            panel.webview.postMessage({ evt: 'sent', op: `set_bp ${modName}.${info.func}:${line1} (rel=${relLine})` });
+            const location = new vscode.Location(
+                ed.document.uri,
+                new vscode.Position(line1 - 1, 0)
+            );
+            vscode.debug.addBreakpoints([
+                new vscode.SourceBreakpoint(location, true)
+            ]);
             return;
         }
         if (msg.op === 'flash_firmware') {
@@ -752,6 +750,57 @@ function openDebuggerPanel(context, port, venvPython) {
                     });
                 });
             }
+            return;
+        }
+        if (msg.op === 'bp_refresh') {
+            postBreakpointSnapshot();
+            return;
+        }
+        if (msg.op === 'bp_goto') {
+            const bp = findVsCodeBreakpoint(msg.fsPath, Number(msg.line1));
+            if (bp) {
+                vscode.workspace.openTextDocument(bp.location.uri).then(doc => {
+                    vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One }).then(ed => {
+                        const r = bp.location.range;
+                        ed.revealRange(r, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+                        ed.selection = new vscode.Selection(r.start, r.start);
+                    });
+                });
+            }
+            return;
+        }
+        if (msg.op === 'bp_remove') {
+            const bp = findVsCodeBreakpoint(msg.fsPath, Number(msg.line1));
+            if (bp) vscode.debug.removeBreakpoints([bp]);
+            return;
+        }
+        if (msg.op === 'bp_toggle') {
+            const bp = findVsCodeBreakpoint(msg.fsPath, Number(msg.line1));
+            if (!bp) return;
+            const replacement = new vscode.SourceBreakpoint(
+                bp.location,
+                !!msg.enabled,
+                bp.condition,
+                bp.hitCondition,
+                bp.logMessage
+            );
+            vscode.debug.removeBreakpoints([bp]);
+            vscode.debug.addBreakpoints([replacement]);
+            return;
+        }
+        if (msg.op === 'bp_clear_all') {
+            const pythonBps = vscode.debug.breakpoints.filter(bp =>
+                bp instanceof vscode.SourceBreakpoint &&
+                bp.location.uri.fsPath.endsWith('.py')
+            );
+            for (const pending of pendingBpReplies) pending.cancelled = true;
+            bpSlotMap.clear();
+            bpHitLocMap.clear();
+            try {
+                bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+            } catch (e) {}
+            if (pythonBps.length) vscode.debug.removeBreakpoints(pythonBps);
+            postBreakpointSnapshot();
             return;
         }
         if (msg.op === 'tasks') {
