@@ -67,7 +67,8 @@ def reader_loop(ser, stop_evt):
         try:
             data = ser.read(128)
         except Exception as e:
-            say(evt="error", msg=f"read: {e}")
+            say(evt="transport_lost", msg=f"read: {e}")
+            stop_evt.set()
             return
         if not data:
             continue
@@ -215,12 +216,26 @@ def main():
     if len(sys.argv) > 2:
         workspace_dir = sys.argv[2]
     try:
-        ser = serial.Serial(port, 115200, timeout=0.1, write_timeout=1.0,
-                            dsrdtr=False, rtscts=False)
+        # Configure line state before open. The device-side pump treats DTR as
+        # the explicit "host owns the debug CDC now" signal and does no endpoint
+        # I/O until DTR is asserted.
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = 115200
+        ser.timeout = 0.1
+        ser.write_timeout = 1.0
+        ser.dsrdtr = False
+        ser.rtscts = False
+        ser.dtr = True
+        ser.rts = False
+        ser.open()
     except Exception as e:
         say(evt="error", msg=f"open {port}: {e}")
         sys.exit(1)
-    time.sleep(0.1)
+
+    # Give the runtime CDC one scheduling slice to observe DTR and arm its
+    # OUT endpoint before the first command frame is sent.
+    time.sleep(0.20)
     say(evt="open", port=port)
 
     stop_evt = threading.Event()
@@ -244,7 +259,6 @@ def main():
                 # simply reply that RTA is unsupported.
                 try:
                     ser.write(bytes([0xAA, 0x1C, 0x00]))
-                    ser.flush()
                     time.sleep(0.05)
                 except Exception:
                     pass
@@ -278,10 +292,11 @@ def main():
                     ser.write(bytes([0xAA, 0x19, len(payload)]) + payload)
                 else:
                     ser.write(bytes([0xAA, code, 0x00]))
-                ser.flush()
                 say(evt="sent", op=op)
             except Exception as e:
-                say(evt="error", msg=f"write: {e}")
+                say(evt="transport_lost", msg=f"write: {e}")
+                stop_evt.set()
+                break
     finally:
         stop_evt.set()
         time.sleep(0.2)
