@@ -50,6 +50,8 @@ suite('Breakpoint manager panel', () => {
             'utf8'
         );
         assert.ok(source.includes("op: 'list_bp'"));
+        assert.ok(source.includes('if (supportsListBp)'));
+        assert.ok(source.includes('legacy pump: target-only breakpoint inventory requires pump v5'));
         assert.ok(source.includes('msg.text.startsWith("bp_list=")'));
         assert.ok(source.includes('targetBreakpointList'));
         assert.ok(pump.includes('text = "bp_list=" + repr(dbg.list_bp())'));
