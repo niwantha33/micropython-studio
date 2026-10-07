@@ -780,6 +780,9 @@ function openDebuggerPanel(context, port, venvPython) {
         if (msg.op === 'bp_toggle') {
             const bp = findVsCodeBreakpoint(msg.fsPath, Number(msg.line1));
             if (!bp) return;
+            // Clear the current target registration first so enable/disable is
+            // deterministic even if VS Code emits remove/add events later.
+            clearSourceBreakpoint(bp.location.uri.fsPath, bp.location.range.start.line + 1, false);
             const replacement = new vscode.SourceBreakpoint(
                 bp.location,
                 !!msg.enabled,
