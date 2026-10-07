@@ -153,6 +153,7 @@ If something breaks, please open an issue with:
 
 ## Useful Links
 
+- [Project Website](https://niwantha33.github.io/micropython-studio/)
 - [MicroPython Documentation](https://docs.micropython.org/)
 - [CircuitPython Documentation](https://docs.circuitpython.org/)
 - [Project Repository](https://github.com/niwantha33/micropython-studio)
