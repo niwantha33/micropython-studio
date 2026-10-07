@@ -35,8 +35,8 @@ suite('Breakpoint clear regression', () => {
             'all known slots must be sent to clear_bp'
         );
         assert.ok(
-            !source.includes('break;\n                }\n            }\n        }\n    });'),
-            'breakpoint removal must not stop after clearing one matching slot'
+            source.includes('for (const key of keysToClear)'),
+            'removal must process every matching breakpoint key'
         );
     });
 });
