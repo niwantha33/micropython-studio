@@ -9,6 +9,9 @@ const { spawn } = require('child_process');
 const wsQueue = require('./wsQueue');
 const { getBuildInfo } = require('./buildInfo');
 
+const REQUIRED_PUMP_PROTOCOL = 4;
+const REQUIRED_PUMP_BUILD = '2026-10-07-bytearray-resync-v4';
+
 let panel = null;
 let bridge = null;
 let bpDisposable = null;
@@ -689,6 +692,59 @@ function runBackend(venvPython, backendScript, args) {
     });
 }
 
+async function verifyUploadedPumpFile(context, replPort, venvPython, out) {
+    const backend = path.join(context.extensionPath, 'src', 'mps_backend.py');
+    const r = await wsQueue.run(() => runBackend(venvPython, backend, [
+        'cat', '--port', replPort, '--path', '/trace_pump.py'
+    ]), 'Verify uploaded trace_pump.py');
+
+    if (r.err) out.appendLine(r.err.trim());
+    if (r.code !== 0) {
+        out.appendLine('VERIFY FAILED: could not read /trace_pump.py back from the device.');
+        return false;
+    }
+
+    const protocolMarker = `PUMP_PROTOCOL = ${REQUIRED_PUMP_PROTOCOL}`;
+    const buildMarker = `PUMP_BUILD = "${REQUIRED_PUMP_BUILD}"`;
+    const hasProtocol = r.out.includes(protocolMarker);
+    const hasBuild = r.out.includes(buildMarker);
+    const hasOldPop = r.out.includes('cmd_buf.pop(0)');
+
+    out.appendLine(`  verify trace_pump: protocol=${hasProtocol ? 'OK' : 'MISSING'} build=${hasBuild ? 'OK' : 'MISSING'} bytearray.pop=${hasOldPop ? 'BAD' : 'ABSENT'}`);
+
+    if (!hasProtocol || !hasBuild || hasOldPop) {
+        out.appendLine('VERIFY FAILED: device trace_pump.py is not the Studio-required build.');
+        return false;
+    }
+    return true;
+}
+
+async function prepareLivePump(context, replPort, venvPython) {
+    const backend = path.join(context.extensionPath, 'src', 'mps_backend.py');
+    const code = [
+        'import trace_pump as _tp',
+        '_p=getattr(_tp,"PUMP_PROTOCOL",-1)',
+        '_b=getattr(_tp,"PUMP_BUILD","missing")',
+        'print("MPS_PUMP_PROTOCOL="+str(_p))',
+        'print("MPS_PUMP_BUILD="+str(_b))',
+        `_p==${REQUIRED_PUMP_PROTOCOL} and _b=="${REQUIRED_PUMP_BUILD}" and _tp.start()`
+    ].join(';');
+
+    const r = await wsQueue.run(() => runBackend(venvPython, backend, [
+        'exec', '--port', replPort, '--code', code
+    ]), 'Verify and start debugger pump');
+
+    const protocolOk = r.out.includes(`MPS_PUMP_PROTOCOL=${REQUIRED_PUMP_PROTOCOL}`);
+    const buildOk = r.out.includes(`MPS_PUMP_BUILD=${REQUIRED_PUMP_BUILD}`);
+    if (r.code !== 0 || !protocolOk || !buildOk) {
+        return {
+            ok: false,
+            detail: (r.out + '\n' + r.err).trim()
+        };
+    }
+    return { ok: true, detail: r.out.trim() };
+}
+
 async function uploadDebuggerFiles(context, replPort, venvPython) {
     const dir = path.join(context.extensionPath, 'src', 'debugger_files');
     const backend = path.join(context.extensionPath, 'src', 'mps_backend.py');
@@ -711,12 +767,16 @@ async function uploadDebuggerFiles(context, replPort, venvPython) {
             return false;
         }
     }
-    out.appendLine('Files uploaded. Now:');
-    out.appendLine('  1. Install usb-device-cdc using Package Install:');
-    out.appendLine('  1. Open the Shell terminal');
-    out.appendLine('  2. Reset the board (Ctrl-D in REPL) so boot.py runs');
-    out.appendLine('  3. Type:  import trace_pump; trace_pump.start()');
-    out.appendLine('Then come back and click Connect only -> Start.');
+    out.appendLine('Verifying trace_pump.py by reading it back from the device...');
+    const verified = await verifyUploadedPumpFile(context, replPort, venvPython, out);
+    if (!verified) {
+        vscode.window.showErrorMessage('Debugger upload verification failed. The Pico does not contain the required trace_pump.py.');
+        return false;
+    }
+
+    out.appendLine('Debugger files uploaded and VERIFIED.');
+    out.appendLine('Reset the board now so boot.py and trace_pump.py are reloaded from flash.');
+    out.appendLine('After reset, Start Debug again and choose Connect only. Studio will verify and start trace_pump automatically.');
     return true;
 }
 
@@ -737,7 +797,21 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
     if (pick.id === 'upload') {
         const ok = await uploadDebuggerFiles(context, replPort, venvPython);
         if (!ok) return;
+        vscode.window.showInformationMessage(
+            'Debugger files verified on the Pico. Reset the board, then Start Debug again and choose Connect only.'
+        );
+        return;
     }
+
+    const pump = await prepareLivePump(context, replPort, venvPython);
+    if (!pump.ok) {
+        const detail = pump.detail ? ` Details: ${pump.detail.slice(0, 240)}` : '';
+        vscode.window.showErrorMessage(
+            `Stale/incompatible trace_pump is loaded. Required protocol ${REQUIRED_PUMP_PROTOCOL} (${REQUIRED_PUMP_BUILD}). Upload debugger files and reset the board.${detail}`
+        );
+        return;
+    }
+
     const port = await vscode.window.showInputBox({
         prompt: 'Debug CDC port (the SECOND COM port Windows shows for the board)',
         placeHolder: 'e.g. COM3',
