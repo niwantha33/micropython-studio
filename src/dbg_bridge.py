@@ -76,7 +76,7 @@ def reader_loop(ser, stop_evt):
             is_valid = True
             if t == 0x01 and n != 3:
                 is_valid = False
-            elif t == 0x02 and n != 2:
+            elif t == 0x02 and n not in (2, 6):
                 is_valid = False
             elif t in (0x05, 0x06) and n != 8:
                 is_valid = False
@@ -101,9 +101,14 @@ def reader_loop(ser, stop_evt):
             if t == 0x01 and n == 3:
                 ip = payload[0] | (payload[1] << 8)
                 say(evt="trace", ip=ip, op=payload[2])
-            elif t == 0x02 and n == 2:
+            elif t == 0x02 and n in (2, 6):
                 ip = payload[0] | (payload[1] << 8)
-                say(evt="bp_hit", ip=ip)
+                if n == 6:
+                    fun = payload[2] | (payload[3] << 8) | (payload[4] << 16) | (payload[5] << 24)
+                    say(evt="bp_hit", ip=ip, fun=fun)
+                else:
+                    # Legacy firmware only identifies the relative bytecode IP.
+                    say(evt="bp_hit", ip=ip)
             elif t == 0x03:
                 text = payload.decode(errors="replace")
                 say(evt="reply", text=text)
