@@ -545,6 +545,9 @@ function openDebuggerPanel(context, port, venvPython) {
                             popPendingBp(mFail[1], mFail[2], parseInt(mFail[3], 10));
                         }
                     }
+                    if (/^(?:bp |cleared bp |cleared all bp slots|no code on )/.test(msg.text)) {
+                        postBreakpointSnapshot();
+                    }
                 }
                 if (msg.evt === 'step_line') {
                     highlightLine(msg.file, msg.line, lastActionWasStepIn);
@@ -1669,6 +1672,7 @@ const COMMANDS = [
   { op: 'rta_on', label: 'RTA On', key: 't', icon: 'rta-on', category: 'action', desc: 'Enable Real-time Analysis tracing' },
   { op: 'rta_off', label: 'RTA Off', key: 'y', icon: 'rta-off', category: 'action', desc: 'Disable Real-time Analysis tracing' },
   { op: 'set_bp_here', label: 'Set BP', icon: 'bp', category: 'action', desc: 'Add breakpoint at editor cursor' },
+  { op: 'bp_refresh', label: 'Breakpoints', icon: 'bp', category: 'query', desc: 'Show and refresh active breakpoints' },
   { op: 'flash_firmware', label: 'Download Firmware', icon: 'flash', category: 'system', desc: 'Flash board debugger binary' }
 ];
 
