@@ -18,7 +18,7 @@ import dbg
 # behaviour changes. Studio checks both the uploaded file and the live imported
 # module before opening a debug session, so stale RAM/file copies are rejected.
 PUMP_PROTOCOL = 5
-PUMP_BUILD = "2026-10-07-bp-manager-v5"
+PUMP_BUILD = "2026-10-07-rta-viewer-v5"
 
 _running = False
 bytes_in = 0
@@ -574,23 +574,38 @@ def get_symmap():
                                             res.append('%d:object \'%s.%s.%s\'' % (id(f), n, k, c))
                         except:
                             pass
+
+        # Deterministic order makes refreshes stable and moves user-facing
+        # module names ahead of most runtime/USB internals without hardcoding
+        # any project-specific module names.
+        res.sort(key=lambda x: x.split("object '", 1)[-1])
         _sym_list = res
-        print("get_symmap populated _sym_list with", len(res), "items")
         return str(len(res))
     except Exception as e:
-        print("get_symmap error:", e)
         return "err: " + repr(e)
 
 
 def get_symmap_chunk():
     global _sym_list
     try:
-        print("get_symmap_chunk called, current _sym_list len =", len(_sym_list))
-        chunk = _sym_list[:6]
-        del _sym_list[:6]
-        res = ','.join(chunk) if chunk else "None"
-        print("returning chunk:", res[:50])
-        return res
+        if not _sym_list:
+            return "None"
+
+        # poke_global replies are capped at 250 bytes. The old fixed 6-entry
+        # chunk was frequently truncated mid-symbol, which silently lost names.
+        # Build a bounded chunk that leaves room for the reply wrapper.
+        chunk = []
+        used = 0
+        while _sym_list:
+            item = _sym_list[0]
+            add = len(item.encode()) + (1 if chunk else 0)
+            if chunk and (used + add) > 170:
+                break
+            chunk.append(item)
+            del _sym_list[0]
+            used += add
+            if used >= 170:
+                break
+        return ','.join(chunk) if chunk else "None"
     except Exception as e:
-        print("get_symmap_chunk error:", e)
         return "err: " + repr(e)
