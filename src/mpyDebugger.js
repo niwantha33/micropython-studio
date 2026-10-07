@@ -21,8 +21,17 @@ let stepInDeco = null;        // TextEditorDecorationType for step-in line (cyan
 let lastActionWasStepIn = false; // tracks whether the last resume action was step_in
 
 let rtaEvents = [];
+let rtaDumpTimer = null;
 const taskMap = new Map();
 const funToName = new Map();
+
+function scheduleRtaTraceDump() {
+    if (rtaDumpTimer) clearTimeout(rtaDumpTimer);
+    rtaDumpTimer = setTimeout(() => {
+        rtaDumpTimer = null;
+        dumpRtaTrace();
+    }, 100);
+}
 
 // Pop matching pending breakpoint reply by module, function, and relative line.
 function popPendingBp(module, func, relLine) {
@@ -310,6 +319,19 @@ function openDebuggerPanel(context, port, venvPython) {
                     clearHighlight();
                     panel.webview.postMessage({ evt: 'status', paused: false });
                 }
+                if (msg.evt === 'reply' && typeof msg.text === 'string') {
+                    if (msg.text === 'RTA trace enabled') {
+                        if (rtaDumpTimer) {
+                            clearTimeout(rtaDumpTimer);
+                            rtaDumpTimer = null;
+                        }
+                        rtaEvents = [];
+                        if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: true });
+                    } else if (msg.text === 'RTA trace disabled') {
+                        if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: false });
+                        scheduleRtaTraceDump();
+                    }
+                }
                 if (msg.evt === 'rta_entry') {
                     rtaEvents.push({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
@@ -318,6 +340,7 @@ function openDebuggerPanel(context, port, venvPython) {
                         pid: 1,
                         tid: 1
                     });
+                    if (rtaDumpTimer) scheduleRtaTraceDump();
                 }
                 if (msg.evt === 'rta_exit') {
                     rtaEvents.push({
@@ -327,12 +350,7 @@ function openDebuggerPanel(context, port, venvPython) {
                         pid: 1,
                         tid: 1
                     });
-                }
-                if (msg.evt === 'sent' && msg.op === 'rta_on') {
-                    rtaEvents = [];
-                }
-                if (msg.evt === 'sent' && msg.op === 'rta_off') {
-                    dumpRtaTrace();
+                    if (rtaDumpTimer) scheduleRtaTraceDump();
                 }
                 if (panel) panel.webview.postMessage(msg);
             } catch (e) {
@@ -408,9 +426,6 @@ function openDebuggerPanel(context, port, venvPython) {
             bridge.stdin.write(JSON.stringify({ op: 'poke_global', name: '__t', depth: 0, expr: expr }) + '\n');
             panel.webview.postMessage({ evt: 'sent', op: 'taskmap' });
             return;
-        }
-        if (msg.op === 'rta_on') {
-            rtaEvents = [];
         }
         bridge.stdin.write(JSON.stringify(msg) + '\n');
     });
@@ -708,6 +723,11 @@ body {
 .btn:active {
   transform: scale(0.98);
 }
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
 .btn-control {
   border-color: rgba(99, 102, 241, 0.3);
   color: var(--text-main);
@@ -953,6 +973,7 @@ const log = document.getElementById('log');
 let currentNames = [];
 const funNames = {};
 let lastIp = 0;
+let rtaEnabled = false;
 
 // Configuration list of commands to enable modular scaling
 const COMMANDS = [
@@ -993,6 +1014,7 @@ function renderButtons() {
   COMMANDS.forEach(cmd => {
     const btn = document.createElement('button');
     btn.className = 'btn btn-' + cmd.category;
+    btn.dataset.op = cmd.op;
     btn.title = cmd.desc + (cmd.key ? ' (' + cmd.key + ')' : '');
     btn.onclick = () => send(cmd.op);
 
@@ -1029,6 +1051,14 @@ function add(cls, text) {
 }
 
 function send(op) { vscode.postMessage({op}); }
+
+function updateRtaControls(enabled) {
+  rtaEnabled = !!enabled;
+  const onBtn = document.querySelector('button[data-op="rta_on"]');
+  const offBtn = document.querySelector('button[data-op="rta_off"]');
+  if (onBtn) onBtn.disabled = rtaEnabled;
+  if (offBtn) offBtn.disabled = !rtaEnabled;
+}
 
 function pokeGlobal() {
   const nameEl = document.getElementById('poke-global-name');
@@ -1161,6 +1191,10 @@ window.addEventListener('message', (e) => {
       document.getElementById('locals-body').innerHTML = html;
     }
   }
+  else if (m.evt === 'rta_status') {
+    updateRtaControls(m.enabled);
+    add('rta', m.enabled ? 'RTA: ON (device confirmed)' : 'RTA: OFF (device confirmed)');
+  }
   else if (m.evt === 'sent') add('sent', '→ ' + m.op);
   else if (m.evt === 'error') {
     add('err', 'ERR ' + m.msg);
@@ -1190,6 +1224,7 @@ window.addEventListener('message', (e) => {
 
 // Setup dynamic elements on load
 renderButtons();
+updateRtaControls(false);
 
 document.addEventListener('keydown', (e) => {
   if (e.target.classList.contains('v')) {
