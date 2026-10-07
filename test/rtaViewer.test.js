@@ -12,6 +12,7 @@ suite('Live RTA viewer', () => {
         assert.ok(source.includes('LIVE RTA · TASK / FUNCTION VIEWER'));
         assert.ok(source.includes('id="rta-table-body"'));
         assert.ok(source.includes('Runtime %'));
+        assert.ok(source.includes('Activations'));
         assert.ok(source.includes('Highest Runtime'));
         assert.ok(source.includes('Reset Stats'));
     });
@@ -31,11 +32,17 @@ suite('Live RTA viewer', () => {
         assert.ok(!source.includes("add('rta', 'RTA: ' + dirIcon"));
     });
 
+    test('clears live ACTIVE state when RTA stops but keeps completed statistics', () => {
+        assert.ok(source.includes('rtaStack.length = 0'));
+        assert.ok(source.includes('keep completed statistics'));
+    });
+
     test('automatically resolves task and function names on RTA start', () => {
         assert.ok(source.includes('requestTaskMap();'));
         assert.ok(source.includes('requestSymbolMap();'));
         assert.ok(source.includes("__import__('trace_pump').get_symmap()"));
         assert.ok(source.includes("evt: 'rta_name'"));
+        assert.ok(source.includes("existing.kind === 'task'"));
         assert.ok(source.includes("op === 'rta_resolve_names'"));
     });
 
