@@ -1,13 +1,10 @@
-# boot_dual_cdc.py — upload to the Pico 2 W as `boot.py`
+# boot.py — MicroPython Studio dual-CDC debugger wiring.
 #
-# Phase 2 proof: adds a SECOND USB-CDC interface at boot.
-# After reboot, Windows should show TWO COM ports for the board.
-#
-# Safety:
-#   - 3-second window before activation — press Ctrl-C in the REPL to abort
-#   - Entire thing is try/except so failures can't brick the REPL
+# Configure the runtime debug CDC immediately during boot so Windows sees one
+# stable composite USB device (built-in REPL CDC + debug CDC). Do not delay the
+# USB configuration: delaying can expose a transient single-CDC device first
+# and leave Windows/pyserial with stale COM handles after re-enumeration.
 
-import time
 import sys
 
 
@@ -15,32 +12,29 @@ def _enable_dual_cdc():
     import usb.device
     from usb.device.cdc import CDCInterface
 
-    dbg_cdc = CDCInterface()
-    dbg_cdc.init(timeout=0)
+    # One initialization only. Non-blocking reads are required by trace_pump.
+    # Larger TX buffering gives RTA/trace bursts room without changing the wire
+    # protocol. RX only carries short debugger command frames.
+    dbg_cdc = CDCInterface(timeout=0, txbuf=4096, rxbuf=512)
     usb.device.get().init(dbg_cdc, builtin_driver=True)
 
     import dbgref
     dbgref.cdc = dbg_cdc
-    print("[boot] second CDC registered as dbgref.cdc")
+    print("[boot] debug CDC registered")
 
-    # This boot.py belongs to the debugger package, so start the pump here
-    # after the debug CDC exists. Users should not need to manually import and
-    # start trace_pump for every reset/debug session.
+    # Starting the thread is safe before the PC opens the debug COM port:
+    # trace_pump waits for cdc.is_open() + DTR before touching the endpoints.
     try:
         import trace_pump
         trace_pump.start()
-        print("[boot] trace_pump auto-start requested")
+        print("[boot] trace_pump supervisor started")
     except Exception as e:
         sys.print_exception(e)
-        print("[boot] trace_pump auto-start failed; REPL remains available")
+        print("[boot] trace_pump start failed; REPL remains available")
 
 
 try:
-    print("[boot] dual-CDC enabling in 3s — Ctrl-C to skip")
-    time.sleep(3)
     _enable_dual_cdc()
-except KeyboardInterrupt:
-    print("[boot] skipped dual-CDC (Ctrl-C)")
 except Exception as e:
     sys.print_exception(e)
     print("[boot] dual-CDC setup failed, continuing with REPL only")
