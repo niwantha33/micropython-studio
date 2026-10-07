@@ -400,8 +400,13 @@ function openDebuggerPanel(context, port, venvPython) {
 
     let rtaSymRemaining = 0;
     let rtaSymRefreshActive = false;
+    let rtaSymTimer = null;
 
     function requestSymbolMap() {
+        if (rtaSymTimer) {
+            clearTimeout(rtaSymTimer);
+            rtaSymTimer = null;
+        }
         rtaSymRemaining = 0;
         rtaSymRefreshActive = true;
         try {
@@ -429,6 +434,16 @@ function openDebuggerPanel(context, port, venvPython) {
         } catch (e) {
             return false;
         }
+    }
+
+    function scheduleNextSymbolMapChunk(delayMs = 25) {
+        if (rtaSymTimer) clearTimeout(rtaSymTimer);
+        rtaSymTimer = setTimeout(() => {
+            rtaSymTimer = null;
+            if (rtaSymRefreshActive && rtaSymRemaining > 0) {
+                requestNextSymbolMapChunk();
+            }
+        }, delayMs);
     }
 
     function installCurrentBreakpoints() {
@@ -590,7 +605,7 @@ function openDebuggerPanel(context, port, venvPython) {
                                 countText = countText.slice(1, -1);
                             }
                             rtaSymRemaining = parseInt(countText, 10) || 0;
-                            if (rtaSymRemaining > 0) requestNextSymbolMapChunk();
+                            if (rtaSymRemaining > 0) scheduleNextSymbolMapChunk();
                         }
                     } else if (msg.text.startsWith("poked global __rta_sym_chunk")) {
                         const eqIdx = msg.text.indexOf("=");
@@ -614,7 +629,7 @@ function openDebuggerPanel(context, port, venvPython) {
                             }
                             rtaSymRemaining = Math.max(0, rtaSymRemaining - parsed);
                             if (rtaSymRemaining > 0 && mapText !== "None") {
-                                requestNextSymbolMapChunk();
+                                scheduleNextSymbolMapChunk();
                             } else {
                                 rtaSymRefreshActive = false;
                             }
@@ -1015,6 +1030,10 @@ function openDebuggerPanel(context, port, venvPython) {
         if (startupTimer) {
             clearTimeout(startupTimer);
             startupTimer = null;
+        }
+        if (rtaSymTimer) {
+            clearTimeout(rtaSymTimer);
+            rtaSymTimer = null;
         }
         if (bpDisposable) { bpDisposable.dispose(); bpDisposable = null; }
         if (rtaEvents.length > 0) {
