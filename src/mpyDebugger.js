@@ -164,8 +164,11 @@ function openDebuggerPanel(context, port, venvPython) {
     localNamesByFn.clear();
     let sessionReady = false;
     let pumpVerified = false;
-    let rtaSupported = false;
+    let legacyPump = false;
+    let supportsListBp = false;
+    let rtaSupported = null;
     let startupTimer = null;
+    let legacyProbeTimer = null;
     let targetBreakpointList = [];
 
     function getBreakpointInfo(bp) {
@@ -446,19 +449,30 @@ function openDebuggerPanel(context, port, venvPython) {
                 const msg = JSON.parse(line);
 
                 if (msg.evt === 'open' && !sessionReady) {
-                    // Connect-only never touches the REPL port. Verify the
-                    // exact pump and firmware capability over the debug CDC.
+                    // Connect-only never touches the REPL port. Prefer the v5
+                    // capability handshake, but fall back to the proven legacy
+                    // clear-all handshake so v4 pumps remain usable.
                     try {
                         bridge.stdin.write(JSON.stringify({ op: 'pump_info' }) + '\n');
-                        panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; checking trace_pump capability' });
+                        panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; probing pump capability' });
+
+                        legacyProbeTimer = setTimeout(() => {
+                            if (!pumpVerified && !sessionReady && bridge) {
+                                try {
+                                    bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+                                    panel.webview.postMessage({ evt: 'sent', op: 'no pump_info reply; trying legacy breakpoint handshake' });
+                                } catch (e) {}
+                            }
+                        }, 500);
+
                         startupTimer = setTimeout(() => {
                             if (!sessionReady && panel) {
                                 panel.webview.postMessage({
                                     evt: 'error',
-                                    msg: `Debug CDC opened, but compatible trace_pump v${REQUIRED_PUMP_PROTOCOL} did not answer. Upload debugger files once, reset the board, then Connect only.`
+                                    msg: 'Debug CDC opened, but the pump did not answer either the v5 capability probe or the legacy breakpoint probe. Check the debug CDC wiring / reset state.'
                                 });
                             }
-                        }, 2500);
+                        }, 3500);
                     } catch (e) {
                         panel.webview.postMessage({ evt: 'error', msg: 'Failed to start debugger handshake: ' + String(e) });
                     }
@@ -474,23 +488,57 @@ function openDebuggerPanel(context, port, venvPython) {
                         const rtaPart = parts.find(x => x.startsWith('rta='));
                         const rta = rtaPart ? rtaPart.split('=')[1] === '1' : false;
 
-                        if (protocol !== REQUIRED_PUMP_PROTOCOL || build !== REQUIRED_PUMP_BUILD) {
-                            if (startupTimer) {
-                                clearTimeout(startupTimer);
-                                startupTimer = null;
-                            }
-                            panel.webview.postMessage({
-                                evt: 'error',
-                                msg: `Incompatible trace_pump: device v${protocol} ${build}; Studio requires v${REQUIRED_PUMP_PROTOCOL} ${REQUIRED_PUMP_BUILD}. Upload debugger files and reset.`
-                            });
-                        } else {
+                        if (legacyProbeTimer) {
+                            clearTimeout(legacyProbeTimer);
+                            legacyProbeTimer = null;
+                        }
+
+                        if (protocol === REQUIRED_PUMP_PROTOCOL) {
                             pumpVerified = true;
+                            legacyPump = false;
+                            supportsListBp = true;
                             rtaSupported = rta;
-                            panel.webview.postMessage({ evt: 'pump_capability', protocol, build, rtaSupported });
+                            panel.webview.postMessage({
+                                evt: 'pump_capability',
+                                protocol,
+                                build,
+                                expectedBuild: REQUIRED_PUMP_BUILD,
+                                rtaSupported,
+                                legacy: false
+                            });
+                            if (build !== REQUIRED_PUMP_BUILD) {
+                                panel.webview.postMessage({
+                                    evt: 'sent',
+                                    op: `pump protocol compatible; build differs (${build})`
+                                });
+                            }
+                            bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+                        } else {
+                            panel.webview.postMessage({
+                                evt: 'sent',
+                                op: `pump protocol ${protocol} is not v${REQUIRED_PUMP_PROTOCOL}; trying legacy handshake`
+                            });
                             bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
                         }
                     }
-                    if (pumpVerified && !sessionReady && msg.text.startsWith('cleared all bp slots')) {
+
+                    if (!sessionReady && msg.text.startsWith('cleared all bp slots')) {
+                        if (!pumpVerified) {
+                            // Legacy v4 (or earlier compatible) pump: it does
+                            // not know pump_info/list_bp, but all core breakpoint
+                            // commands still work.
+                            pumpVerified = true;
+                            legacyPump = true;
+                            supportsListBp = false;
+                            rtaSupported = null;
+                            panel.webview.postMessage({
+                                evt: 'pump_capability',
+                                protocol: 'legacy',
+                                build: 'legacy pump',
+                                rtaSupported: null,
+                                legacy: true
+                            });
+                        }
                         targetBreakpointList = [];
                         sessionReady = true;
                         if (startupTimer) {
@@ -498,7 +546,7 @@ function openDebuggerPanel(context, port, venvPython) {
                             startupTimer = null;
                         }
                         installCurrentBreakpoints();
-                        panel.webview.postMessage({ evt: 'pump_ready', rtaSupported });
+                        panel.webview.postMessage({ evt: 'pump_ready', rtaSupported, legacy: legacyPump });
                     }
                     const m = msg.text.match(/^bp (\d+) @ (.*)\.([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
                     if (m) {
@@ -832,9 +880,16 @@ function openDebuggerPanel(context, port, venvPython) {
             return;
         }
         if (msg.op === 'bp_refresh') {
-            try {
-                bridge.stdin.write(JSON.stringify({ op: 'list_bp' }) + '\n');
-            } catch (e) {}
+            if (supportsListBp) {
+                try {
+                    bridge.stdin.write(JSON.stringify({ op: 'list_bp' }) + '\n');
+                } catch (e) {}
+            } else if (panel) {
+                panel.webview.postMessage({
+                    evt: 'sent',
+                    op: 'legacy pump: target-only breakpoint inventory requires pump v5'
+                });
+            }
             postBreakpointSnapshot();
             return;
         }
@@ -966,6 +1021,10 @@ function openDebuggerPanel(context, port, venvPython) {
         if (startupTimer) {
             clearTimeout(startupTimer);
             startupTimer = null;
+        }
+        if (legacyProbeTimer) {
+            clearTimeout(legacyProbeTimer);
+            legacyProbeTimer = null;
         }
         if (bpDisposable) { bpDisposable.dispose(); bpDisposable = null; }
         if (rtaEvents.length > 0) {
