@@ -18,7 +18,12 @@ suite('Breakpoint clear regression', () => {
             'utf8'
         );
         assert.ok(source.includes("op: 'clear_all_bp'"));
-        assert.ok(source.indexOf("op: 'clear_all_bp'") < source.indexOf('// Send existing breakpoints'));
+        assert.ok(source.includes("msg.text.startsWith('cleared all bp slots')"));
+        assert.ok(source.includes('installCurrentBreakpoints();'));
+        assert.ok(
+            source.indexOf("msg.text.startsWith('cleared all bp slots')") < source.indexOf('installCurrentBreakpoints();'),
+            'IDE breakpoints must be installed only after the target confirms stale-slot cleanup'
+        );
         assert.ok(bridge.includes('"clear_all_bp": 0x1D'));
         assert.ok(pump.includes('active = dbg.list_bp()'));
         assert.ok(pump.includes('dbg.clear_bp(slot)'));
