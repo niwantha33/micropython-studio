@@ -5,6 +5,16 @@ const fs = require('fs');
 const os = require('os');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 
+let outputChannel = null;
+
+function getOutputChannel() {
+    if (!outputChannel) {
+        const vscode = require('vscode');
+        outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
+    }
+    return outputChannel;
+}
+
 function logToFile() {
     // Disabled debug file logging
 }
@@ -13,9 +23,7 @@ function logMsg(msg) {
     console.log(msg);
     logToFile(msg);
     try {
-        const vscode = require('vscode');
-        const channel = vscode.window.createOutputChannel('MicroPython IDE');
-        channel.appendLine(msg);
+        getOutputChannel().appendLine(msg);
     } catch (_) {}
 }
 
