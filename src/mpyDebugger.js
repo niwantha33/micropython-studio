@@ -164,6 +164,7 @@ function openDebuggerPanel(context, port, venvPython) {
     localNamesByFn.clear();
     let sessionReady = false;
     let startupTimer = null;
+    let targetBreakpointList = [];
 
     function getBreakpointInfo(bp) {
         if (!(bp instanceof vscode.SourceBreakpoint)) return null;
@@ -256,7 +257,34 @@ function openDebuggerPanel(context, port, venvPython) {
                 state
             });
         }
-        items.sort((a, b) => a.file.localeCompare(b.file) || a.line1 - b.line1);
+        const knownSlots = new Set();
+        for (const item of items) {
+            for (const slot of item.slots) knownSlots.add(slot);
+        }
+        for (const target of targetBreakpointList) {
+            if (knownSlots.has(target.slot)) continue;
+            const mappedName = funToName.get(target.fun);
+            items.push({
+                key: `target-only:${target.slot}`,
+                fsPath: '',
+                file: '(target only)',
+                line1: null,
+                module: '',
+                func: mappedName || ('fun=0x' + Number(target.fun).toString(16)),
+                enabled: true,
+                condition: '',
+                slots: [target.slot],
+                ip: target.ip,
+                fun: target.fun,
+                state: 'TARGET ONLY',
+                targetOnly: true
+            });
+        }
+        items.sort((a, b) => {
+            if (a.targetOnly && !b.targetOnly) return 1;
+            if (!a.targetOnly && b.targetOnly) return -1;
+            return String(a.file).localeCompare(String(b.file)) || ((a.line1 || 0) - (b.line1 || 0));
+        });
         return items;
     }
 
@@ -324,10 +352,12 @@ function openDebuggerPanel(context, port, venvPython) {
                 keysToClear.add(k);
             }
         }
+        const clearedSlots = new Set();
         for (const key of keysToClear) {
             const slots = bpSlotMap.get(key);
             if (slots) {
                 for (const slot of slots) {
+                    clearedSlots.add(slot);
                     bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
                     if (announce && panel) {
                         panel.webview.postMessage({ evt: 'sent', op: `clear_bp slot=${slot} ${key}` });
@@ -335,6 +365,9 @@ function openDebuggerPanel(context, port, venvPython) {
                 }
                 bpSlotMap.delete(key);
             }
+        }
+        if (clearedSlots.size) {
+            targetBreakpointList = targetBreakpointList.filter(t => !clearedSlots.has(t.slot));
         }
         for (const [hitKey, rec] of bpHitLocMap.entries()) {
             if (rec.fsPath === fsPath && rec.line1 === line1) {
