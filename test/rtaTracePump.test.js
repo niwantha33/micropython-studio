@@ -59,7 +59,7 @@ suite('RTA on/off regression', () => {
         );
 
         assert.ok(pump.includes('PUMP_PROTOCOL = 5'));
-        assert.ok(pump.includes('PUMP_BUILD = "2026-10-07-bp-manager-v5"'));
+        assert.ok(pump.includes('PUMP_BUILD = "2026-10-07-rta-viewer-v5"'));
         assert.ok(host.includes("'cat', '--port', replPort, '--path', '/trace_pump.py'"));
         assert.ok(host.includes("const hasOldPop = r.out.includes('cmd_buf.pop(0)')"));
 
@@ -124,6 +124,25 @@ suite('RTA on/off regression', () => {
         assert.ok(bridge.includes('evt="transport_lost"'));
         assert.ok(host.includes("msg.evt === 'transport_lost'"));
         assert.ok(host.includes('DEBUG CDC LOST'));
+    });
+
+    test('RTA symbol refresh is quiet and does not truncate fixed-size chunks', () => {
+        const pump = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'debugger_files', 'trace_pump.py'),
+            'utf8'
+        );
+        const host = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'mpyDebugger.js'),
+            'utf8'
+        );
+
+        assert.ok(!pump.includes('get_symmap populated _sym_list'));
+        assert.ok(!pump.includes('get_symmap_chunk called'));
+        assert.ok(!pump.includes('returning chunk:'));
+        assert.ok(pump.includes('if chunk and (used + add) > 170:'));
+        assert.ok(host.includes('rtaSymRefreshActive = true'));
+        assert.ok(host.includes("msg.text.startsWith('poked global __rta_sym_')"));
+        assert.ok(host.includes('internalRtaSymbolSend'));
     });
 
 });
