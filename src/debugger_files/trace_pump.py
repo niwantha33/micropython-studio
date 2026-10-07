@@ -354,8 +354,11 @@ def _pump():
                     pass
             elif cmd_type == 0x1B:
                 try:
-                    dbg.rta_on()
-                    text = "RTA trace enabled"
+                    if not hasattr(dbg, "rta_on"):
+                        text = "RTA unsupported by firmware: flash an RTA-capable debug firmware"
+                    else:
+                        dbg.rta_on()
+                        text = "RTA trace enabled"
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
@@ -366,8 +369,11 @@ def _pump():
                     pass
             elif cmd_type == 0x1C:
                 try:
-                    dbg.rta_off()
-                    text = "RTA trace disabled"
+                    if not hasattr(dbg, "rta_off"):
+                        text = "RTA unsupported by firmware: flash an RTA-capable debug firmware"
+                    else:
+                        dbg.rta_off()
+                        text = "RTA trace disabled"
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
