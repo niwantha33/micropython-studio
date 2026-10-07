@@ -44,4 +44,28 @@ suite('RTA on/off regression', () => {
         assert.ok(source.includes('cmd_buf[:] = cmd_buf[1:]'));
     });
 
+    test('Studio verifies the exact pump on flash and in RAM before connecting', () => {
+        const pump = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'debugger_files', 'trace_pump.py'),
+            'utf8'
+        );
+        const host = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'mpyDebugger.js'),
+            'utf8'
+        );
+
+        assert.ok(pump.includes('PUMP_PROTOCOL = 4'));
+        assert.ok(pump.includes('PUMP_BUILD = "2026-10-07-bytearray-resync-v4"'));
+        assert.ok(pump.includes('trace_pump: started protocol=%d build=%s'));
+
+        assert.ok(host.includes('const REQUIRED_PUMP_PROTOCOL = 4'));
+        assert.ok(host.includes("const REQUIRED_PUMP_BUILD = '2026-10-07-bytearray-resync-v4'"));
+        assert.ok(host.includes("'cat', '--port', replPort, '--path', '/trace_pump.py'"));
+        assert.ok(host.includes("const hasOldPop = r.out.includes('cmd_buf.pop(0)')"));
+        assert.ok(host.includes('MPS_PUMP_PROTOCOL='));
+        assert.ok(host.includes('MPS_PUMP_BUILD='));
+        assert.ok(host.includes('Verify and start debugger pump'));
+        assert.ok(host.includes('Reset the board, then Start Debug again and choose Connect only.'));
+    });
+
 });
