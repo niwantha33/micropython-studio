@@ -58,15 +58,17 @@ suite('RTA on/off regression', () => {
             'utf8'
         );
 
-        assert.ok(pump.includes('PUMP_PROTOCOL = 4'));
-        assert.ok(pump.includes('PUMP_BUILD = "2026-10-07-bytearray-resync-v4"'));
+        assert.ok(pump.includes('PUMP_PROTOCOL = 5'));
+        assert.ok(pump.includes('PUMP_BUILD = "2026-10-07-bp-manager-v5"'));
         assert.ok(host.includes("'cat', '--port', replPort, '--path', '/trace_pump.py'"));
         assert.ok(host.includes("const hasOldPop = r.out.includes('cmd_buf.pop(0)')"));
 
         assert.ok(!host.includes('async function prepareLivePump'));
         assert.ok(host.includes("prompt: 'Debug CDC port (the SECOND COM port Windows shows for the board)'"));
-        assert.ok(host.includes("op: 'debug CDC open; verifying trace_pump'"));
+        assert.ok(host.includes("op: 'debug CDC open; checking trace_pump capability'"));
+        assert.ok(host.includes("msg.text.startsWith('pump_info=')"));
         assert.ok(host.includes("msg.text.startsWith('cleared all bp slots')"));
+        assert.ok(host.includes("evt: 'pump_capability'"));
         assert.ok(host.includes('installCurrentBreakpoints();'));
 
         assert.ok(boot.includes('trace_pump.start()'));
