@@ -48,6 +48,7 @@ CMDS = {
     "globals":  0x1A,
     "rta_on":   0x1B,
     "rta_off":  0x1C,
+    "clear_all_bp": 0x1D,
 }
 
 
