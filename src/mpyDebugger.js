@@ -1281,7 +1281,7 @@ td.v:focus, td.vg:focus {
       </tbody>
     </table>
   </div>
-  <div class="rta-note">Runtime % is the share of observed exclusive RTA time. It is not claimed as exact scheduler CPU% until the firmware emits task-switch events.</div>
+  <div class="rta-note">Firmware timestamps are microseconds. Runtime % is the share of observed exclusive RTA time; it is not claimed as exact scheduler CPU% until the firmware emits scheduler task-switch/idle events.</div>
 </div>
 
 <div class="dashboard-grid">
@@ -1442,11 +1442,12 @@ function rtaTsDiff(end, start) {
 }
 
 function formatRtaTime(value) {
-  const v = Number(value) || 0;
-  if (v >= 1000) return (v / 1000).toFixed(v >= 10000 ? 1 : 2) + ' s';
-  if (v >= 100) return v.toFixed(1) + ' ms';
-  if (v >= 10) return v.toFixed(2) + ' ms';
-  return v.toFixed(3) + ' ms';
+  const us = Number(value) || 0;
+  if (us >= 1000000) return (us / 1000000).toFixed(us >= 10000000 ? 1 : 2) + ' s';
+  if (us >= 1000) return (us / 1000).toFixed(us >= 100000 ? 1 : 2) + ' ms';
+  if (us >= 100) return us.toFixed(0) + ' µs';
+  if (us >= 10) return us.toFixed(1) + ' µs';
+  return us.toFixed(2) + ' µs';
 }
 
 function setRtaName(fun, name, kind) {
