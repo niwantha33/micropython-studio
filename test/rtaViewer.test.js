@@ -39,7 +39,9 @@ suite('Live RTA viewer', () => {
         assert.ok(source.includes("op === 'rta_resolve_names'"));
     });
 
-    test('does not label observed runtime share as exact CPU load', () => {
+    test('uses firmware microsecond timestamps and does not claim exact CPU load', () => {
+        assert.ok(source.includes("return us.toFixed(0) + ' µs'"));
+        assert.ok(source.includes('Firmware timestamps are microseconds'));
         assert.ok(source.includes('not claimed as exact scheduler CPU%'));
         assert.ok(source.includes('observed exclusive RTA time'));
     });
