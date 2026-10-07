@@ -165,6 +165,193 @@ function openDebuggerPanel(context, port, venvPython) {
     let sessionReady = false;
     let startupTimer = null;
 
+    function getBreakpointInfo(bp) {
+        if (!(bp instanceof vscode.SourceBreakpoint)) return null;
+        const fsPath = bp.location.uri.fsPath;
+        if (!fsPath.endsWith('.py')) return null;
+        const line1 = bp.location.range.start.line + 1;
+        try {
+            const fs = require('fs');
+            const text = fs.readFileSync(fsPath, 'utf8');
+            const fn = findEnclosingFunction(text, line1);
+            if (!fn) {
+                return {
+                    bp, fsPath, line1,
+                    file: path.basename(fsPath),
+                    module: path.basename(fsPath, '.py'),
+                    func: '(no enclosing def)',
+                    fnKey: '',
+                    defLine: null,
+                    relLine: null,
+                    key: `${path.basename(fsPath, '.py')}:?:${line1}`,
+                    names: [],
+                    enabled: bp.enabled !== false,
+                    cond: (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null
+                };
+            }
+            const module = path.basename(fsPath, '.py');
+            const key = `${module}:${fn.func}:${line1}`;
+            return {
+                bp, fsPath, line1,
+                file: path.basename(fsPath),
+                module,
+                func: fn.func,
+                fnKey: `${module}:${fn.func}`,
+                defLine: fn.defLine,
+                relLine: line1 - fn.defLine,
+                key,
+                names: extractLocalNames(text, fn.defLine, fn.args),
+                enabled: bp.enabled !== false,
+                cond: (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null
+            };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function hasPendingRegistration(fsPath, line1) {
+        return pendingBpReplies.some(p => !p.cancelled && p.fsPath === fsPath && p.line1 === line1);
+    }
+
+    function hasTargetRegistration(info) {
+        if (!info) return false;
+        const slots = bpSlotMap.get(info.key);
+        if (slots && slots.size > 0) return true;
+        for (const rec of bpHitLocMap.values()) {
+            if (rec.fsPath === info.fsPath && rec.line1 === info.line1) return true;
+        }
+        return false;
+    }
+
+    function buildBreakpointSnapshot() {
+        const items = [];
+        for (const bp of vscode.debug.breakpoints) {
+            const info = getBreakpointInfo(bp);
+            if (!info) continue;
+            const slots = Array.from(bpSlotMap.get(info.key) || []).sort((a, b) => a - b);
+            let hitRec = null;
+            for (const rec of bpHitLocMap.values()) {
+                if (rec.fsPath === info.fsPath && rec.line1 === info.line1) {
+                    hitRec = rec;
+                    break;
+                }
+            }
+            const pending = hasPendingRegistration(info.fsPath, info.line1);
+            let state = 'NOT SET';
+            if (!info.enabled) state = 'DISABLED';
+            else if (slots.length > 0) state = 'VERIFIED';
+            else if (pending) state = 'PENDING';
+            items.push({
+                key: info.key,
+                fsPath: info.fsPath,
+                file: info.file,
+                line1: info.line1,
+                module: info.module,
+                func: info.func,
+                enabled: info.enabled,
+                condition: info.cond || '',
+                slots,
+                ip: hitRec ? hitRec.ip : null,
+                fun: hitRec ? hitRec.fun : null,
+                state
+            });
+        }
+        items.sort((a, b) => a.file.localeCompare(b.file) || a.line1 - b.line1);
+        return items;
+    }
+
+    function postBreakpointSnapshot() {
+        if (panel) panel.webview.postMessage({ evt: 'breakpoints', items: buildBreakpointSnapshot() });
+    }
+
+    function registerSourceBreakpoint(bp, announce = true) {
+        const info = getBreakpointInfo(bp);
+        if (!info) return;
+        if (!info.enabled) {
+            postBreakpointSnapshot();
+            return;
+        }
+        if (!sessionReady) {
+            postBreakpointSnapshot();
+            return;
+        }
+        if (info.relLine === null) {
+            if (panel) panel.webview.postMessage({ evt: 'error', msg: `no enclosing def for ${info.file}:${info.line1}` });
+            postBreakpointSnapshot();
+            return;
+        }
+        if (hasTargetRegistration(info) || hasPendingRegistration(info.fsPath, info.line1)) {
+            postBreakpointSnapshot();
+            return;
+        }
+
+        localNamesByFn.set(info.fnKey, info.names);
+        pendingBpReplies.push({
+            key: info.key,
+            fsPath: info.fsPath,
+            line1: info.line1,
+            fnKey: info.fnKey,
+            cond: info.cond,
+            defLine: info.defLine
+        });
+        bridge.stdin.write(JSON.stringify({
+            op: 'set_bp',
+            module: info.module,
+            func: info.func,
+            line: info.relLine
+        }) + '\n');
+        if (announce && panel) {
+            panel.webview.postMessage({
+                evt: 'sent',
+                op: `set_bp ${info.key} rel=${info.relLine}${info.cond ? ' cond=' + info.cond : ''}`
+            });
+        }
+        postBreakpointSnapshot();
+    }
+
+    function clearSourceBreakpoint(fsPath, line1, announce = true) {
+        const modName = path.basename(fsPath, '.py');
+        const keysToClear = new Set();
+
+        for (const pending of pendingBpReplies) {
+            if (pending.fsPath === fsPath && pending.line1 === line1) {
+                pending.cancelled = true;
+                keysToClear.add(pending.key);
+            }
+        }
+        for (const k of bpSlotMap.keys()) {
+            if (k.startsWith(`${modName}:`) && k.endsWith(`:${line1}`)) {
+                keysToClear.add(k);
+            }
+        }
+        for (const key of keysToClear) {
+            const slots = bpSlotMap.get(key);
+            if (slots) {
+                for (const slot of slots) {
+                    bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
+                    if (announce && panel) {
+                        panel.webview.postMessage({ evt: 'sent', op: `clear_bp slot=${slot} ${key}` });
+                    }
+                }
+                bpSlotMap.delete(key);
+            }
+        }
+        for (const [hitKey, rec] of bpHitLocMap.entries()) {
+            if (rec.fsPath === fsPath && rec.line1 === line1) {
+                bpHitLocMap.delete(hitKey);
+            }
+        }
+        postBreakpointSnapshot();
+    }
+
+    function findVsCodeBreakpoint(fsPath, line1) {
+        return vscode.debug.breakpoints.find(bp =>
+            bp instanceof vscode.SourceBreakpoint &&
+            bp.location.uri.fsPath === fsPath &&
+            (bp.location.range.start.line + 1) === line1
+        );
+    }
+
     function requestTaskMap() {
         try {
             bridge.stdin.write(JSON.stringify({ op: 'taskmap' }) + '\n');
