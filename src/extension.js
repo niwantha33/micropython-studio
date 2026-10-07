@@ -145,7 +145,11 @@ function runPythonProcess(exe, args, onComplete) {
         proc.on('close', async code => {
             await connectionManager.resume();
             _notifyAiOnError(fullOutput, args);
-            channel.appendLine("[SUCCESS] Task complete.");
+            if (code === 0) {
+                channel.appendLine("[SUCCESS] Task complete.");
+            } else {
+                channel.appendLine(`[ERROR] Task failed with exit code ${code}.`);
+            }
             if (onComplete) onComplete(code);
         });
         proc.on('error', async err => {
