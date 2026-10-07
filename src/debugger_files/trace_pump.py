@@ -29,10 +29,14 @@ def _pump():
 
     while _running:
         dbg.mute()
-        while True:
+        # Bound each drain pass so continuous RTA traffic cannot starve
+        # inbound debugger commands such as RTA OFF.
+        chunks = 0
+        while chunks < 8:
             data = dbg.read_trace(256)
             if not data:
                 break
+            chunks += 1
             try:
                 written = 0
                 retries = 0
