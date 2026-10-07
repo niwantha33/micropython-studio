@@ -197,7 +197,10 @@ def _pump():
                         slot = bp[0]
                         dbg.clear_bp(slot)
                         cleared.append(slot)
-                    text = "cleared all bp slots %r" % cleared
+                    rta = 1 if hasattr(dbg, "rta_on") and hasattr(dbg, "rta_off") else 0
+                    text = "cleared all bp slots %r pump=%d build=%s rta=%d" % (
+                        cleared, PUMP_PROTOCOL, PUMP_BUILD, rta
+                    )
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
