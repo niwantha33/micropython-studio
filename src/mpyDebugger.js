@@ -448,6 +448,20 @@ function openDebuggerPanel(context, port, venvPython) {
             try {
                 const msg = JSON.parse(line);
 
+                if (msg.evt === 'transport_lost') {
+                    sessionReady = false;
+                    if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+                    if (legacyProbeTimer) { clearTimeout(legacyProbeTimer); legacyProbeTimer = null; }
+                    if (panel) {
+                        panel.webview.postMessage({
+                            evt: 'transport_lost',
+                            msg: msg.msg || 'Debug CDC transport lost'
+                        });
+                    }
+                    try { bridge.kill(); } catch (e) {}
+                    continue;
+                }
+
                 if (msg.evt === 'open' && !sessionReady) {
                     // Connect-only never touches the REPL port. Prefer the v5
                     // capability handshake, but fall back to the proven legacy
@@ -791,8 +805,10 @@ function openDebuggerPanel(context, port, venvPython) {
                         if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: false });
                         scheduleRtaTraceDump();
                     } else if (msg.text.startsWith('RTA unsupported by firmware:')) {
+                        rtaSupported = false;
                         if (panel) {
                             panel.webview.postMessage({ evt: 'rta_status', enabled: false });
+                            panel.webview.postMessage({ evt: 'rta_capability', supported: false });
                             panel.webview.postMessage({ evt: 'error', msg: msg.text });
                         }
                         vscode.window.showWarningMessage(msg.text);
@@ -1893,8 +1909,9 @@ const log = document.getElementById('log');
 let currentNames = [];
 const funNames = {};
 let lastIp = 0;
+let debugReady = false;
 let rtaEnabled = false;
-let rtaAvailable = null;
+let rtaAvailable = null; // true / false / null = legacy capability unknown
 const rtaProfiles = new Map();
 const rtaNames = new Map();
 const rtaStack = [];
@@ -2071,20 +2088,27 @@ function updateRtaControls(enabled) {
   const onBtn = document.querySelector('button[data-op="rta_on"]');
   const offBtn = document.querySelector('button[data-op="rta_off"]');
   const badge = document.getElementById('rta-live-badge');
-  const available = rtaAvailable === true;
+  const explicitlyUnsupported = rtaAvailable === false;
+
   if (onBtn) {
-    onBtn.disabled = !available || rtaEnabled;
-    onBtn.title = available
-      ? 'Enable Real-time Analysis tracing (t)'
-      : 'RTA requires an RTA-capable debugger firmware';
+    onBtn.disabled = !debugReady || explicitlyUnsupported || rtaEnabled;
+    onBtn.title = explicitlyUnsupported
+      ? 'RTA requires an RTA-capable debugger firmware'
+      : (rtaAvailable === null
+          ? 'Legacy pump: firmware RTA capability will be checked when RTA On is used'
+          : 'Enable Real-time Analysis tracing (t)');
   }
-  if (offBtn) offBtn.disabled = !available || !rtaEnabled;
+  if (offBtn) offBtn.disabled = !debugReady || explicitlyUnsupported || !rtaEnabled;
+
   if (badge) {
-    if (rtaAvailable === false) {
+    if (!debugReady) {
+      badge.textContent = 'CHECKING';
+      badge.className = 'rta-live-badge';
+    } else if (rtaAvailable === false) {
       badge.textContent = 'FW REQUIRED';
       badge.className = 'rta-live-badge unsupported';
     } else if (rtaAvailable === null) {
-      badge.textContent = 'CHECKING';
+      badge.textContent = 'LEGACY';
       badge.className = 'rta-live-badge';
     } else {
       badge.textContent = rtaEnabled ? 'LIVE' : 'OFF';
@@ -2307,15 +2331,28 @@ window.addEventListener('message', (e) => {
     lastIp = m.ip;
   }
   else if (m.evt === 'pump_capability') {
-    rtaAvailable = !!m.rtaSupported;
+    rtaAvailable = (m.rtaSupported === null || m.rtaSupported === undefined)
+      ? null
+      : !!m.rtaSupported;
     updateRtaControls(false);
-    add('reply', 'DEBUG PUMP v' + m.protocol + ' · ' + m.build);
-    if (!rtaAvailable) {
+    if (m.legacy) {
+      add('reply', 'DEBUG PUMP · legacy compatibility mode');
+    } else {
+      add('reply', 'DEBUG PUMP v' + m.protocol + ' · ' + m.build);
+    }
+    if (rtaAvailable === false) {
       add('err', 'RTA firmware support is not present in the currently flashed UF2. Breakpoints/stepping still work.');
     }
   }
   else if (m.evt === 'pump_ready') {
-    add('reply', 'DEBUG CDC READY · breakpoint table synchronized');
+    debugReady = true;
+    updateRtaControls(false);
+    add('reply', 'DEBUG CDC READY · breakpoint table synchronized' + (m.legacy ? ' · legacy pump' : ''));
+  }
+  else if (m.evt === 'transport_lost') {
+    debugReady = false;
+    updateRtaControls(false);
+    add('err', 'DEBUG CDC LOST · ' + (m.msg || 'transport disconnected'));
   }
   else if (m.evt === 'no_source') {
     add('err', '⚠ ' + m.msg);
@@ -2415,6 +2452,10 @@ window.addEventListener('message', (e) => {
       html += '</table>';
       document.getElementById('locals-body').innerHTML = html;
     }
+  }
+  else if (m.evt === 'rta_capability') {
+    rtaAvailable = !!m.supported;
+    updateRtaControls(false);
   }
   else if (m.evt === 'rta_status') {
     if (m.enabled) {
