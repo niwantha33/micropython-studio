@@ -50,6 +50,7 @@ CMDS = {
     "rta_off":  0x1C,
     "clear_all_bp": 0x1D,
     "taskmap": 0x1E,
+    "tasks": 0x1F,
 }
 
 
