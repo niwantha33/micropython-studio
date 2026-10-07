@@ -21,6 +21,16 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+let logChannel = null;
+
+function getLogChannel() {
+  if (!logChannel) {
+    const vscode = require('vscode');
+    logChannel = vscode.window.createOutputChannel('MicroPython IDE');
+  }
+  return logChannel;
+}
+
 function getLockFilePath(port) {
   if (!port) return null;
   const lockName = `mps_lock_${port.replace(/\//g, '_').replace(/\\/g, '_').replace(/:/g, '_')}.lock`;
@@ -127,9 +137,7 @@ class DeviceOperationQueue {
       console.log(msg);
       logToFile(msg);
       try {
-        const vscode = require('vscode');
-        const channel = vscode.window.createOutputChannel('MicroPython IDE');
-        channel.appendLine(msg);
+        getLogChannel().appendLine(msg);
       } catch (_) {}
     };
 
