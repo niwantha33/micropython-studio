@@ -822,96 +822,48 @@ function openDebuggerPanel(context, port, venvPython) {
         bridge.stdin.write(JSON.stringify(msg) + '\n');
     });
 
-    // Watch VS Code's own breakpoint list; on add/remove for .py files, translate
-    // to (module, func, relative_line) and send to bridge.
+    // VS Code is the source of truth for Python breakpoints. Editor gutter,
+    // VS Code Breakpoints view, and this debugger panel all converge here.
     bpDisposable = vscode.debug.onDidChangeBreakpoints((ev) => {
         for (const bp of ev.added) {
-            if (!(bp instanceof vscode.SourceBreakpoint)) continue;
-            const loc = bp.location;
-            const fsPath = loc.uri.fsPath;
-            if (!fsPath.endsWith('.py')) continue;
-            const line1 = loc.range.start.line + 1;
-            try {
-                const fs = require('fs');
-                const text = fs.readFileSync(fsPath, 'utf8');
-                const info = findEnclosingFunction(text, line1);
-                if (!info) {
-                    panel.webview.postMessage({ evt: 'error', msg: `no enclosing def for ${path.basename(fsPath)}:${line1}` });
-                    continue;
-                }
-                const modName = path.basename(fsPath, '.py');
-                const relLine = line1 - info.defLine;
-                const key = `${modName}:${info.func}:${line1}`;
-                const names = extractLocalNames(text, info.defLine, info.args);
-                localNamesByFn.set(`${modName}:${info.func}`, names);
-                const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
-                pendingBpReplies.push({ key, fsPath, line1, fnKey: `${modName}:${info.func}`, cond, defLine: info.defLine });
-                const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
-                bridge.stdin.write(JSON.stringify(out) + '\n');
-                panel.webview.postMessage({ evt: 'sent', op: `set_bp ${key} rel=${relLine}${cond ? ' cond=' + cond : ''}` });
-            } catch (e) {
-                panel.webview.postMessage({ evt: 'error', msg: String(e) });
-            }
+            registerSourceBreakpoint(bp, true);
         }
+
         for (const bp of ev.changed) {
-            if (!(bp instanceof vscode.SourceBreakpoint)) continue;
-            const fsPath = bp.location.uri.fsPath;
-            if (!fsPath.endsWith('.py')) continue;
-            const line1 = bp.location.range.start.line + 1;
-            const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
-            for (const l of bpHitLocMap.values()) {
-                if (l.fsPath === fsPath && l.line1 === line1) {
-                    l.cond = cond;
-                    panel.webview.postMessage({ evt: 'sent', op: `cond ${path.basename(fsPath)}:${line1} = ${cond || '(none)'}` });
+            const info = getBreakpointInfo(bp);
+            if (!info) continue;
+
+            if (!info.enabled) {
+                clearSourceBreakpoint(info.fsPath, info.line1, true);
+                continue;
+            }
+
+            let mapped = false;
+            for (const rec of bpHitLocMap.values()) {
+                if (rec.fsPath === info.fsPath && rec.line1 === info.line1) {
+                    rec.cond = info.cond;
+                    mapped = true;
                 }
             }
+
+            if (!mapped && !hasPendingRegistration(info.fsPath, info.line1)) {
+                registerSourceBreakpoint(bp, true);
+            } else if (panel) {
+                panel.webview.postMessage({
+                    evt: 'sent',
+                    op: `bp update ${info.file}:${info.line1}${info.cond ? ' cond=' + info.cond : ''}`
+                });
+            }
         }
+
         for (const bp of ev.removed) {
             if (!(bp instanceof vscode.SourceBreakpoint)) continue;
             const fsPath = bp.location.uri.fsPath;
             if (!fsPath.endsWith('.py')) continue;
-            const line1 = bp.location.range.start.line + 1;
-            const modName = path.basename(fsPath, '.py');
-
-            // First cancel every set request for this source location that has
-            // not received its device slot yet. Its late reply will be cleared
-            // immediately in the reply handler above.
-            const keysToClear = new Set();
-            for (const pending of pendingBpReplies) {
-                if (pending.fsPath === fsPath && pending.line1 === line1) {
-                    pending.cancelled = true;
-                    keysToClear.add(pending.key);
-                }
-            }
-
-            // Also collect every already-registered key at this location.
-            // A Set of slots is used because duplicate set requests must not
-            // leave an older target slot behind.
-            for (const k of bpSlotMap.keys()) {
-                if (k.startsWith(`${modName}:`) && k.endsWith(`:${line1}`)) {
-                    keysToClear.add(k);
-                }
-            }
-
-            for (const key of keysToClear) {
-                const slots = bpSlotMap.get(key);
-                if (slots) {
-                    for (const slot of slots) {
-                        bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
-                        panel.webview.postMessage({ evt: 'sent', op: `clear_bp slot=${slot} ${key}` });
-                    }
-                    bpSlotMap.delete(key);
-                }
-            }
-
-            // Drop host-side exact hit mappings even when the set reply is
-            // still pending. This keeps the IDE state authoritative.
-            for (const [hitKey, l] of bpHitLocMap.entries()) {
-                if (l.fsPath === fsPath && l.line1 === line1) {
-                    bpHitLocMap.delete(hitKey);
-                }
-            }
+            clearSourceBreakpoint(fsPath, bp.location.range.start.line + 1, true);
         }
+
+        postBreakpointSnapshot();
     });
 
     panel.onDidDispose(() => {
