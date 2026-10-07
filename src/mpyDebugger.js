@@ -7,6 +7,7 @@ const vscode = require('vscode');
 const path = require('path');
 const { spawn } = require('child_process');
 const wsQueue = require('./wsQueue');
+const { getBuildInfo } = require('./buildInfo');
 
 let panel = null;
 let bridge = null;
@@ -88,7 +89,8 @@ function openDebuggerPanel(context, port, venvPython) {
         vscode.ViewColumn.Beside,
         { enableScripts: true, retainContextWhenHidden: true }
     );
-    panel.webview.html = getHtml();
+    const buildInfo = getBuildInfo(context.extensionPath, context.extensionMode);
+    panel.webview.html = getHtml(buildInfo);
 
     hlDeco = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(255, 200, 0, 0.25)',
@@ -725,7 +727,14 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
     openDebuggerPanel(context, port, venvPython);
 }
 
-function getHtml() {
+function getHtml(buildInfo) {
+    const rawBuildDate = String(buildInfo?.buildDate || 'unknown');
+    const buildDate = rawBuildDate === 'development'
+        ? 'development'
+        : rawBuildDate.replace('T', ' ').replace(/\.\d{3}Z$/, 'Z');
+    const safeVersion = String(buildInfo?.version || 'unknown').replace(/[^0-9A-Za-z._+-]/g, '');
+    const safeCommit = String(buildInfo?.commitShort || 'unknown').replace(/[^0-9A-Za-z._-]/g, '');
+    const safeBuildDate = buildDate.replace(/[^0-9A-Za-z:._+\- Z]/g, '');
     return `<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
@@ -786,6 +795,24 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.header-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.build-identity {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: #64748b;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .status-badge {
   display: flex;
@@ -1236,13 +1263,18 @@ td.v:focus, td.vg:focus {
 </head><body>
 
 <div class="header-bar">
-  <div class="header-title">
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
-    MicroPython Bytecode Debugger
+  <div class="header-title-wrap">
+    <div class="header-title">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+      MicroPython Bytecode Debugger
+    </div>
+    <div class="build-identity">Studio v${safeVersion} · Build ${safeBuildDate} · Commit ${safeCommit}</div>
   </div>
-  <div id="status" class="status-badge running">
-    <span class="status-dot"></span>
-    <span class="status-text">running</span>
+  <div class="header-right">
+    <div id="status" class="status-badge running">
+      <span class="status-dot"></span>
+      <span class="status-text">running</span>
+    </div>
   </div>
 </div>
 
@@ -1656,7 +1688,12 @@ window.addEventListener('message', (e) => {
     handleRtaEvent(m);
   }
   else if (m.evt === 'reply') {
-    add('reply', 'REPLY  ' + m.text);
+    // Locals/globals replies feed the dedicated panels; do not duplicate large
+    // internal state dictionaries in the Debug Console.
+    const isPanelDataReply = /^depth=\d+\s+(?:state=\[|globals=\{)/.test(m.text);
+    if (!isPanelDataReply) {
+      add('reply', 'REPLY  ' + m.text);
+    }
     
     // Parse globals
     const globIdx = m.text.indexOf("globals={");
