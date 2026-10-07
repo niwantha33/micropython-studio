@@ -1708,7 +1708,11 @@ document.addEventListener('click', (e) => {
 window.addEventListener('message', (e) => {
   const m = e.data;
   if (m.evt === 'bp_hit') {
-    add('bp', 'BP_HIT  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
+    const funRec = (m.fun !== undefined && m.fun !== null) ? funNames[m.fun] : null;
+    const funText = (m.fun !== undefined && m.fun !== null)
+      ? '  fun=' + (funRec ? funRec.name : ('0x' + Number(m.fun).toString(16)))
+      : '';
+    add('bp', 'BP_HIT' + funText + '  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
     lastIp = m.ip;
   }
   else if (m.evt === 'no_source') {
