@@ -39,6 +39,8 @@ suite('Live RTA viewer', () => {
 
     test('automatically resolves task and function names on RTA start', () => {
         assert.ok(source.includes('requestTaskMap();'));
+        assert.ok(source.includes("__import__('trace_pump').get_taskmap()"));
+        assert.ok(!source.includes('g=globals();exec("import sys,machine'));
         assert.ok(source.includes('requestSymbolMap();'));
         assert.ok(source.includes("__import__('trace_pump').get_symmap()"));
         assert.ok(source.includes("evt: 'rta_name'"));
