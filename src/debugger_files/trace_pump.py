@@ -92,7 +92,7 @@ def _pump():
                 is_valid = False
 
             if not is_valid:
-                cmd_buf.pop(0)
+                cmd_buf[:] = cmd_buf[1:]
                 continue
 
             total = 3 + cmd_len
@@ -429,7 +429,7 @@ def _pump():
                     pass
             cmd_buf[:] = cmd_buf[total:]
         while cmd_buf and cmd_buf[0] != 0xAA:
-            cmd_buf.pop(0)
+            cmd_buf[:] = cmd_buf[1:]
 
         dbg.unmute()
         time.sleep_ms(5)
