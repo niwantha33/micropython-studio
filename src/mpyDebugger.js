@@ -426,6 +426,12 @@ function openDebuggerPanel(context, port, venvPython) {
                     } else if (msg.text === 'RTA trace disabled') {
                         if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: false });
                         scheduleRtaTraceDump();
+                    } else if (msg.text.startsWith('RTA unsupported by firmware:')) {
+                        if (panel) {
+                            panel.webview.postMessage({ evt: 'rta_status', enabled: false });
+                            panel.webview.postMessage({ evt: 'error', msg: msg.text });
+                        }
+                        vscode.window.showWarningMessage(msg.text);
                     }
                 }
                 if (msg.evt === 'rta_entry') {
@@ -1268,7 +1274,7 @@ td.v:focus, td.vg:focus {
           <th>State</th>
           <th>Task / Function</th>
           <th>Type</th>
-          <th>Calls</th>
+          <th>Activations</th>
           <th>Runtime %</th>
           <th>Total</th>
           <th>Average</th>
@@ -1455,7 +1461,9 @@ function setRtaName(fun, name, kind) {
   const existing = rtaNames.get(key);
   const next = {
     name: name || (existing && existing.name) || ('0x' + Number(fun).toString(16)),
-    kind: kind || (existing && existing.kind) || 'function'
+    kind: ((existing && existing.kind === 'task') || kind === 'task')
+      ? 'task'
+      : (kind || (existing && existing.kind) || 'function')
   };
   rtaNames.set(key, next);
   const profile = rtaProfiles.get(key);
@@ -1734,7 +1742,13 @@ window.addEventListener('message', (e) => {
     }
   }
   else if (m.evt === 'rta_status') {
-    if (m.enabled) resetRtaProfiler();
+    if (m.enabled) {
+      resetRtaProfiler();
+    } else {
+      // Firmware stops emission before it can safely close the final segment
+      // from the pump core. Drop only the live stack; keep completed statistics.
+      rtaStack.length = 0;
+    }
     updateRtaControls(m.enabled);
     renderRtaProfiler();
     add('rta', m.enabled ? 'RTA: ON (device confirmed)' : 'RTA: OFF (device confirmed)');
