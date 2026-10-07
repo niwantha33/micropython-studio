@@ -1520,7 +1520,10 @@ print("<<MIP_DONE>>")
     if not is_network_error and not is_no_mip:
         if MPS_DEBUG: sys.stderr.write(f"INFO: On-device installation failed with code {rc}. No network error or missing mip/upip detected.\n")
         print(f"On-device installation failed.", file=sys.stderr)
-        sys.exit(rc)
+        # Raw-REPL execution can return rc=0 even when the device-side script
+        # reports a failed install. Never propagate a successful process exit
+        # when the explicit success marker was not observed.
+        sys.exit(rc if rc != 0 else 1)
 
     # ── Fallback: PC-side download ─────────────────────────────────────────
     if "digidotcom" in package.lower():
