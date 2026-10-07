@@ -74,7 +74,7 @@ def _pump():
 
             # Robust frame validation for commands from host
             is_valid = True
-            if cmd_type in (0x10, 0x11, 0x13, 0x14, 0x17, 0x1B, 0x1C, 0x20) and cmd_len != 0:
+            if cmd_type in (0x10, 0x11, 0x13, 0x14, 0x17, 0x1B, 0x1C, 0x1D, 0x20) and cmd_len != 0:
                 is_valid = False
             elif cmd_type in (0x12, 0x1A) and cmd_len > 1:
                 is_valid = False
@@ -86,7 +86,7 @@ def _pump():
                 is_valid = False
             elif cmd_type == 0x15 and cmd_len < 4:
                 is_valid = False
-            elif cmd_type not in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x20):
+            elif cmd_type not in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x20):
                 is_valid = False
             elif cmd_len > 256:
                 is_valid = False
@@ -143,6 +143,26 @@ def _pump():
                     slot = cmd_buf[3]
                     dbg.clear_bp(slot)
                     text = "cleared bp %d" % slot
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x1D:
+                # clear_all_bp: make the IDE breakpoint set authoritative for
+                # each new debugger session. This removes stale target slots
+                # left behind by a previous host/debugger process.
+                try:
+                    active = dbg.list_bp()
+                    cleared = []
+                    for bp in active:
+                        slot = bp[0]
+                        dbg.clear_bp(slot)
+                        cleared.append(slot)
+                    text = "cleared all bp slots %r" % cleared
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
