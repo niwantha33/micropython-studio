@@ -52,6 +52,7 @@ CMDS = {
     "taskmap": 0x1E,
     "tasks": 0x1F,
     "list_bp": 0x21,
+    "pump_info": 0x22,
 }
 
 
