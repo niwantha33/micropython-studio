@@ -15,6 +15,15 @@ suite('RTA on/off regression', () => {
         assert.ok(source.includes('RTA unsupported by firmware: flash an RTA-capable debug firmware'));
     });
 
+    test('bridge closes RTA before dropping the CDC connection', () => {
+        const bridge = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'dbg_bridge.py'),
+            'utf8'
+        );
+        assert.ok(bridge.includes('ser.write(bytes([0xAA, 0x1C, 0x00]))'));
+        assert.ok(bridge.includes('do not leave target RTA running'));
+    });
+
     test('host waits for device confirmation before changing RTA state', () => {
         const source = fs.readFileSync(
             path.resolve(__dirname, '..', 'src', 'mpyDebugger.js'),
