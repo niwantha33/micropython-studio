@@ -1726,7 +1726,7 @@ window.addEventListener('message', (e) => {
   else if (m.evt === 'reply') {
     // Locals/globals replies feed the dedicated panels; do not duplicate large
     // internal state dictionaries in the Debug Console.
-    const isPanelDataReply = /^depth=\d+\s+(?:state=\[|globals=\{)/.test(m.text);
+    const isPanelDataReply = /^depth=\\d+\\s+(?:state=\\[|globals=\\{)/.test(m.text);
     if (!isPanelDataReply) {
       add('reply', 'REPLY  ' + m.text);
     }
