@@ -25,6 +25,21 @@ suite('Breakpoint clear regression', () => {
         assert.ok(pump.includes('cleared all bp slots'));
     });
 
+    test('function-aware breakpoint hits disambiguate equal bytecode offsets', () => {
+        const bridge = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'dbg_bridge.py'),
+            'utf8'
+        );
+        assert.ok(source.includes('const bpHitLocMap = new Map()'));
+        assert.ok(source.includes('resolveBreakpointRecord(msg.fun, msg.ip)'));
+        assert.ok(source.includes('`${funPtr}:${bpIp}`'));
+        assert.ok(bridge.includes('n not in (2, 6)'));
+        assert.ok(bridge.includes('say(evt="bp_hit", ip=ip, fun=fun)'));
+        assert.ok(
+            bridge.includes('Legacy firmware only identifies the relative bytecode IP'),
+            'legacy 2-byte breakpoint hit packets must remain supported'
+        );
+    });
     test('removed breakpoint cancels a pending device registration', () => {
         assert.ok(
             source.includes('pending.cancelled = true'),
