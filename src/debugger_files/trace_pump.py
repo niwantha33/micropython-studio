@@ -32,8 +32,35 @@ def _pump():
     cdc = dbgref.cdc
     cmd_buf = bytearray()
     dbg.set_pump_fun(_pump)
+    host_was_connected = False
 
     while _running:
+        # CDCInterface.is_open() means the USB interface is configured.
+        # DTR means Windows has actually opened this COM port. Never submit
+        # debug endpoint I/O before both are true; doing so can race Windows
+        # enumeration/open and leave pyserial holding a stale COM handle.
+        try:
+            host_connected = bool(cdc.is_open() and cdc.dtr)
+        except Exception:
+            host_connected = False
+
+        if not host_connected:
+            if host_was_connected:
+                cmd_buf[:] = b''
+            host_was_connected = False
+            try:
+                dbg.unmute()
+            except Exception:
+                pass
+            time.sleep_ms(20)
+            continue
+
+        if not host_was_connected:
+            # New host session: discard any partial command frame from a prior
+            # COM close before accepting traffic from the new handle.
+            cmd_buf[:] = b''
+            host_was_connected = True
+
         dbg.mute()
         # Bound each drain pass so continuous RTA traffic cannot starve
         # inbound debugger commands such as RTA OFF.
@@ -48,6 +75,8 @@ def _pump():
                 retries = 0
                 while written < len(data) and _running:
                     try:
+                        if not (cdc.is_open() and cdc.dtr):
+                            break
                         w = cdc.write(data[written:])
                         if w:
                             written += w
