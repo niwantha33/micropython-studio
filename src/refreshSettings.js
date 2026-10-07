@@ -13,6 +13,15 @@ const net = require('net');
 const { getConnectedDevices } = require('./runCommand');
 const { getConfigValue, updateCfgComponent } = require('./commonFxn');
 
+let outputChannel = null;
+
+function getOutputChannel() {
+    if (!outputChannel) {
+        outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
+    }
+    return outputChannel;
+}
+
 /**
  * Test whether a WebREPL device is reachable on port 8266.
  * @param {string} ip
@@ -96,8 +105,7 @@ function filterDualCdcPorts(devices) {
             const logStr = `[Port Detection] Dual-CDC detected for serial ${ser}: Primary REPL = ${groupDevices[0].port}, Debug/Secondary = ${groupDevices.slice(1).map(x => x.port).join(', ')}`;
             console.log(logStr);
             try {
-                const channel = vscode.window.createOutputChannel('MicroPython IDE');
-                channel.appendLine(logStr);
+                getOutputChannel().appendLine(logStr);
             } catch (_) {}
 
             for (let i = 1; i < groupDevices.length; i++) {
@@ -155,8 +163,7 @@ async function getValidDevicePort(resource) {
     const logMsg = (msg) => {
         console.log(msg);
         try {
-            const channel = vscode.window.createOutputChannel('MicroPython IDE');
-            channel.appendLine(msg);
+            getOutputChannel().appendLine(msg);
         } catch (_) {}
     };
 
