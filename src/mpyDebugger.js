@@ -11,8 +11,8 @@ const wsQueue = require('./wsQueue');
 let panel = null;
 let bridge = null;
 let bpDisposable = null;
-const bpSlotMap = new Map(); // key "module:func:line" -> slot (filled on reply)
-const pendingBpReplies = []; // queue of {key, fsPath, line1}
+const bpSlotMap = new Map(); // key "module:func:line" -> Set<slot> (filled on reply)
+const pendingBpReplies = []; // queue of {key, fsPath, line1, cancelled}
 const ipToLoc = new Map();   // ip -> {fsPath, line1}
 const ipToCond = new Map();  // ip -> condition string (optional)
 let pendingCondEval = null;  // { ip, cond, names } while awaiting locals reply
@@ -174,13 +174,26 @@ function openDebuggerPanel(context, port, venvPython) {
                         const bpIp = parseInt(m[5], 10);
                         const info = popPendingBp(modName, funcName, relLine);
                         if (info) {
-                            bpSlotMap.set(info.key, slot);
-                            ipToLoc.set(bpIp, { fsPath: info.fsPath, line1: info.line1, fnKey: info.fnKey });
-                            if (info.cond) ipToCond.set(bpIp, info.cond);
-                            if (m[6]) {
-                                const funPtr = m[6];
-                                funToName.set(parseInt(funPtr, 10), info.fnKey);
-                                panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
+                            if (info.cancelled) {
+                                // The IDE breakpoint was removed before the device finished
+                                // registering it. Clear the late slot immediately so it can
+                                // never become a ghost breakpoint on the target.
+                                bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
+                                panel.webview.postMessage({ evt: 'sent', op: `clear_bp slot=${slot} (late set reply)` });
+                            } else {
+                                let slots = bpSlotMap.get(info.key);
+                                if (!slots) {
+                                    slots = new Set();
+                                    bpSlotMap.set(info.key, slots);
+                                }
+                                slots.add(slot);
+                                ipToLoc.set(bpIp, { fsPath: info.fsPath, line1: info.line1, fnKey: info.fnKey });
+                                if (info.cond) ipToCond.set(bpIp, info.cond);
+                                if (m[6]) {
+                                    const funPtr = m[6];
+                                    funToName.set(parseInt(funPtr, 10), info.fnKey);
+                                    panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
+                                }
                             }
                         }
                     } else if (msg.text.startsWith("poked global __t")) {
@@ -480,19 +493,44 @@ function openDebuggerPanel(context, port, venvPython) {
             if (!fsPath.endsWith('.py')) continue;
             const line1 = bp.location.range.start.line + 1;
             const modName = path.basename(fsPath, '.py');
-            // We don't know func here w/o re-scan; try any matching key.
-            for (const [k, slot] of bpSlotMap.entries()) {
+
+            // First cancel every set request for this source location that has
+            // not received its device slot yet. Its late reply will be cleared
+            // immediately in the reply handler above.
+            const keysToClear = new Set();
+            for (const pending of pendingBpReplies) {
+                if (pending.fsPath === fsPath && pending.line1 === line1) {
+                    pending.cancelled = true;
+                    keysToClear.add(pending.key);
+                }
+            }
+
+            // Also collect every already-registered key at this location.
+            // A Set of slots is used because duplicate set requests must not
+            // leave an older target slot behind.
+            for (const k of bpSlotMap.keys()) {
                 if (k.startsWith(`${modName}:`) && k.endsWith(`:${line1}`)) {
-                    bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
-                    bpSlotMap.delete(k);
-                    // also drop any ipToCond and ipToLoc entries for this location
-                    for (const [ip, l] of ipToLoc.entries()) {
-                        if (l.fsPath === fsPath && l.line1 === line1) {
-                            ipToCond.delete(ip);
-                            ipToLoc.delete(ip);
-                        }
+                    keysToClear.add(k);
+                }
+            }
+
+            for (const key of keysToClear) {
+                const slots = bpSlotMap.get(key);
+                if (slots) {
+                    for (const slot of slots) {
+                        bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
+                        panel.webview.postMessage({ evt: 'sent', op: `clear_bp slot=${slot} ${key}` });
                     }
-                    break;
+                    bpSlotMap.delete(key);
+                }
+            }
+
+            // Drop host-side source/condition mappings even when the set reply
+            // is still pending. This keeps the IDE state authoritative.
+            for (const [ip, l] of ipToLoc.entries()) {
+                if (l.fsPath === fsPath && l.line1 === line1) {
+                    ipToCond.delete(ip);
+                    ipToLoc.delete(ip);
                 }
             }
         }
