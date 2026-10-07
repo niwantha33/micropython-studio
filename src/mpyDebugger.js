@@ -394,27 +394,9 @@ function openDebuggerPanel(context, port, venvPython) {
 
     function installCurrentBreakpoints() {
         for (const bp of vscode.debug.breakpoints) {
-            if (!(bp instanceof vscode.SourceBreakpoint)) continue;
-            const loc = bp.location;
-            const fsPath = loc.uri.fsPath;
-            if (!fsPath.endsWith('.py')) continue;
-            const line1 = loc.range.start.line + 1;
-            try {
-                const fs = require('fs');
-                const text = fs.readFileSync(fsPath, 'utf8');
-                const info = findEnclosingFunction(text, line1);
-                if (!info) continue;
-                const modName = path.basename(fsPath, '.py');
-                const relLine = line1 - info.defLine;
-                const key = `${modName}:${info.func}:${line1}`;
-                const names = extractLocalNames(text, info.defLine, info.args);
-                localNamesByFn.set(`${modName}:${info.func}`, names);
-                const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
-                pendingBpReplies.push({ key, fsPath, line1, fnKey: `${modName}:${info.func}`, cond, defLine: info.defLine });
-                const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
-                bridge.stdin.write(JSON.stringify(out) + '\n');
-            } catch (e) {}
+            registerSourceBreakpoint(bp, false);
         }
+        postBreakpointSnapshot();
     }
 
     let buf = '';
