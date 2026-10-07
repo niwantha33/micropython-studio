@@ -1908,6 +1908,8 @@ document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.contentEditable === 'true') return;
   const match = COMMANDS.find(cmd => cmd.key === e.key);
   if (match) {
+    const button = document.querySelector('button[data-op="' + match.op + '"]');
+    if (button && button.disabled) return;
     e.preventDefault();
     send(match.op);
   }
