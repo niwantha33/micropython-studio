@@ -168,7 +168,6 @@ function openDebuggerPanel(context, port, venvPython) {
     let supportsListBp = false;
     let rtaSupported = null;
     let startupTimer = null;
-    let legacyProbeTimer = null;
     let targetBreakpointList = [];
 
     function getBreakpointInfo(bp) {
@@ -451,7 +450,6 @@ function openDebuggerPanel(context, port, venvPython) {
                 if (msg.evt === 'transport_lost') {
                     sessionReady = false;
                     if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
-                    if (legacyProbeTimer) { clearTimeout(legacyProbeTimer); legacyProbeTimer = null; }
                     if (panel) {
                         panel.webview.postMessage({
                             evt: 'transport_lost',
@@ -463,27 +461,17 @@ function openDebuggerPanel(context, port, venvPython) {
                 }
 
                 if (msg.evt === 'open' && !sessionReady) {
-                    // Connect-only never touches the REPL port. Prefer the v5
-                    // capability handshake, but fall back to the proven legacy
-                    // clear-all handshake so v4 pumps remain usable.
+                    // Start with a command supported by both legacy v4 and v5.
+                    // v5 appends capability metadata to this same reply; legacy
+                    // pumps simply return the old "cleared all bp slots [...]".
                     try {
-                        bridge.stdin.write(JSON.stringify({ op: 'pump_info' }) + '\n');
-                        panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; probing pump capability' });
-
-                        legacyProbeTimer = setTimeout(() => {
-                            if (!pumpVerified && !sessionReady && bridge) {
-                                try {
-                                    bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
-                                    panel.webview.postMessage({ evt: 'sent', op: 'no pump_info reply; trying legacy breakpoint handshake' });
-                                } catch (e) {}
-                            }
-                        }, 500);
-
+                        bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+                        panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; synchronizing breakpoint table' });
                         startupTimer = setTimeout(() => {
                             if (!sessionReady && panel) {
                                 panel.webview.postMessage({
                                     evt: 'error',
-                                    msg: 'Debug CDC opened, but the pump did not answer either the v5 capability probe or the legacy breakpoint probe. Check the debug CDC wiring / reset state.'
+                                    msg: 'Debug CDC opened, but clear_all_bp received no reply. The debug CDC transport or trace_pump is not responding.'
                                 });
                             }
                         }, 3500);
@@ -494,53 +482,26 @@ function openDebuggerPanel(context, port, venvPython) {
 
                 // Capture slot numbers from reply text: "bp N @ mod.func:line ip=..."
                 if (msg.evt === 'reply' && typeof msg.text === 'string') {
-                    if (!pumpVerified && msg.text.startsWith('pump_info=')) {
-                        const raw = msg.text.slice('pump_info='.length);
-                        const parts = raw.split('|');
-                        const protocol = parseInt(parts[0], 10);
-                        const build = parts[1] || '';
-                        const rtaPart = parts.find(x => x.startsWith('rta='));
-                        const rta = rtaPart ? rtaPart.split('=')[1] === '1' : false;
-
-                        if (legacyProbeTimer) {
-                            clearTimeout(legacyProbeTimer);
-                            legacyProbeTimer = null;
-                        }
-
-                        if (protocol === REQUIRED_PUMP_PROTOCOL) {
-                            pumpVerified = true;
-                            legacyPump = false;
-                            supportsListBp = true;
-                            rtaSupported = rta;
+                    if (!sessionReady && msg.text.startsWith('cleared all bp slots')) {
+                        const cap = msg.text.match(/\spump=(\d+)\s+build=([^\s]+)\s+rta=(\d+)/);
+                        if (cap) {
+                            const protocol = parseInt(cap[1], 10);
+                            const build = cap[2];
+                            pumpVerified = protocol === REQUIRED_PUMP_PROTOCOL;
+                            legacyPump = !pumpVerified;
+                            supportsListBp = pumpVerified;
+                            rtaSupported = cap[3] === '1';
                             panel.webview.postMessage({
                                 evt: 'pump_capability',
                                 protocol,
                                 build,
                                 expectedBuild: REQUIRED_PUMP_BUILD,
                                 rtaSupported,
-                                legacy: false
+                                legacy: legacyPump
                             });
-                            if (build !== REQUIRED_PUMP_BUILD) {
-                                panel.webview.postMessage({
-                                    evt: 'sent',
-                                    op: `pump protocol compatible; build differs (${build})`
-                                });
-                            }
-                            bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
                         } else {
-                            panel.webview.postMessage({
-                                evt: 'sent',
-                                op: `pump protocol ${protocol} is not v${REQUIRED_PUMP_PROTOCOL}; trying legacy handshake`
-                            });
-                            bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
-                        }
-                    }
-
-                    if (!sessionReady && msg.text.startsWith('cleared all bp slots')) {
-                        if (!pumpVerified) {
-                            // Legacy v4 (or earlier compatible) pump: it does
-                            // not know pump_info/list_bp, but all core breakpoint
-                            // commands still work.
+                            // Legacy pump: core breakpoint commands are fully
+                            // usable; v5-only target inventory is unavailable.
                             pumpVerified = true;
                             legacyPump = true;
                             supportsListBp = false;
@@ -1037,10 +998,6 @@ function openDebuggerPanel(context, port, venvPython) {
         if (startupTimer) {
             clearTimeout(startupTimer);
             startupTimer = null;
-        }
-        if (legacyProbeTimer) {
-            clearTimeout(legacyProbeTimer);
-            legacyProbeTimer = null;
         }
         if (bpDisposable) { bpDisposable.dispose(); bpDisposable = null; }
         if (rtaEvents.length > 0) {
