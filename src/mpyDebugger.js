@@ -154,11 +154,8 @@ function openDebuggerPanel(context, port, venvPython) {
     bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
 
     function requestTaskMap() {
-        // trace_pump already provides get_taskmap(); use that directly instead
-        // of sending a fragile multi-line exec expression through eval().
-        const expr = "__import__('trace_pump').get_taskmap()";
         try {
-            bridge.stdin.write(JSON.stringify({ op: 'poke_global', name: '__t', depth: 0, expr: expr }) + '\n');
+            bridge.stdin.write(JSON.stringify({ op: 'taskmap' }) + '\n');
             return true;
         } catch (e) {
             return false;
@@ -308,31 +305,25 @@ function openDebuggerPanel(context, port, venvPython) {
                                 requestNextSymbolMapChunk();
                             }
                         }
-                    } else if (msg.text.startsWith("poked global __t")) {
-                        const eqIdx = msg.text.indexOf("=");
-                        if (eqIdx !== -1) {
-                            let valStr = msg.text.slice(eqIdx + 1).trim();
-                            if (valStr.startsWith("'") || valStr.startsWith('"')) {
-                                valStr = valStr.slice(1, -1);
-                            }
-                            if (valStr && valStr !== "no_asyncio") {
-                                const chunks = valStr.split(",");
-                                for (const chunk of chunks) {
-                                    if (chunk.includes(":")) {
-                                        const [addrStr, genStr] = chunk.split(":", 2);
-                                        const funBc = parseInt(addrStr, 10);
-                                        if (!isNaN(funBc)) {
-                                            const m1 = genStr.match(/object '([^']+)'/);
-                                            let taskName;
-                                            if (m1) {
-                                                taskName = m1[1];
-                                            } else {
-                                                const m2 = genStr.match(/object ([^\s]+)/);
-                                                taskName = m2 ? m2[1] : "task";
-                                            }
-                                            taskMap.set(funBc, taskName);
-                                            panel.webview.postMessage({ evt: 'rta_name', fun: funBc, name: taskName, kind: 'task' });
+                    } else if (msg.text.startsWith("taskmap=")) {
+                        const valStr = msg.text.slice("taskmap=".length).trim();
+                        if (valStr && valStr !== "no_asyncio" && !valStr.startsWith("err:")) {
+                            const chunks = valStr.split(",");
+                            for (const chunk of chunks) {
+                                if (chunk.includes(":")) {
+                                    const [addrStr, genStr] = chunk.split(":", 2);
+                                    const funBc = parseInt(addrStr, 10);
+                                    if (!isNaN(funBc)) {
+                                        const m1 = genStr.match(/object '([^']+)'/);
+                                        let taskName;
+                                        if (m1) {
+                                            taskName = m1[1];
+                                        } else {
+                                            const m2 = genStr.match(/object ([^\s]+)/);
+                                            taskName = m2 ? m2[1] : "task";
                                         }
+                                        taskMap.set(funBc, taskName);
+                                        panel.webview.postMessage({ evt: 'rta_name', fun: funBc, name: taskName, kind: 'task' });
                                     }
                                 }
                             }
@@ -553,9 +544,7 @@ function openDebuggerPanel(context, port, venvPython) {
             return;
         }
         if (msg.op === 'tasks') {
-            const expr = 'g=globals();exec("import sys,machine\\nM=machine.mem32\\nq=sys.modules[\'asyncio\'].core._task_queue\\nt=[]\\nwhile q.peek():t.append(q.pop())\\n__t=\',\'.join(str(x.coro) for x in t)\\nfor x in t:q.push(x,M[id(x)+20])",g) or g.get(\'__t\')';
-            bridge.stdin.write(JSON.stringify({ op: 'poke_local', slot: 0, depth: 0, expr: expr }) + '\n');
-            panel.webview.postMessage({ evt: 'sent', op: 'tasks' });
+            bridge.stdin.write(JSON.stringify({ op: 'tasks' }) + '\n');
             return;
         }
         if (msg.op === 'rta_resolve_names') {
@@ -567,9 +556,7 @@ function openDebuggerPanel(context, port, venvPython) {
             return;
         }
         if (msg.op === 'taskmap') {
-            if (requestTaskMap()) {
-                panel.webview.postMessage({ evt: 'sent', op: 'taskmap' });
-            }
+            requestTaskMap();
             return;
         }
         bridge.stdin.write(JSON.stringify(msg) + '\n');
