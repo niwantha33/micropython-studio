@@ -1281,6 +1281,77 @@ body {
   font-size: 11px;
   min-height: 40px;
 }
+.panel-card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 6px;
+}
+.panel-card-header-row h3 {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.bp-toolbar {
+  display: flex;
+  gap: 6px;
+}
+.bp-table-wrap {
+  max-height: 220px;
+  overflow: auto;
+}
+.bp-table {
+  min-width: 720px;
+  font-size: 10px;
+}
+.bp-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  background: var(--bg-card);
+}
+.bp-table td {
+  padding: 5px 6px;
+}
+.bp-location {
+  color: #88c0ff;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.bp-state {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  border: 1px solid var(--border-color);
+}
+.bp-state.verified {
+  color: #86efac;
+  border-color: rgba(34,197,94,0.35);
+}
+.bp-state.pending {
+  color: #fcd34d;
+  border-color: rgba(245,158,11,0.35);
+}
+.bp-state.disabled {
+  color: #94a3b8;
+}
+.bp-state.not-set {
+  color: #fca5a5;
+  border-color: rgba(244,63,94,0.35);
+}
+.bp-remove {
+  padding: 2px 7px;
+  font-size: 10px;
+}
 
 /* Custom States / Output Classes */
 .bp { color: var(--accent-warning); font-weight: 600; }
@@ -1607,6 +1678,17 @@ td.v:focus, td.vg:focus {
   </div>
 
   <div class="panels-container">
+    <div id="panel-breakpoints" class="panel-card">
+      <div class="panel-card-header-row">
+        <h3>Breakpoints <span id="bp-count" style="color:#64748b">(0)</span></h3>
+        <div class="bp-toolbar">
+          <button class="btn btn-action" style="padding:3px 7px;font-size:10px" onclick="refreshBreakpoints()">Refresh</button>
+          <button class="btn btn-clear" style="padding:3px 7px;font-size:10px" onclick="clearAllBreakpoints()">Clear All</button>
+        </div>
+      </div>
+      <div id="breakpoints-body" class="panel-card-body">(waiting for debugger)</div>
+    </div>
+
     <div id="panel-locals" class="panel-card">
       <h3>Locals / Frame</h3>
       <div id="locals-body" class="panel-card-body">(not paused)</div>
@@ -1657,6 +1739,7 @@ let rtaEventCount = 0;
 let rtaFirstTs = null;
 let rtaLastTs = null;
 let rtaRenderTimer = null;
+let currentBreakpoints = [];
 
 // Configuration list of commands to enable modular scaling
 const COMMANDS = [
@@ -1735,6 +1818,77 @@ function add(cls, text) {
 }
 
 function send(op) { vscode.postMessage({op}); }
+
+function refreshBreakpoints() {
+  vscode.postMessage({ op: 'bp_refresh' });
+  const panel = document.getElementById('panel-breakpoints');
+  if (panel && panel.scrollIntoView) panel.scrollIntoView({ block: 'nearest' });
+}
+
+function clearAllBreakpoints() {
+  if (!currentBreakpoints.length) return;
+  vscode.postMessage({ op: 'bp_clear_all' });
+}
+
+function toggleBreakpoint(index, enabled) {
+  const bp = currentBreakpoints[index];
+  if (!bp) return;
+  vscode.postMessage({
+    op: 'bp_toggle',
+    fsPath: bp.fsPath,
+    line1: bp.line1,
+    enabled: !!enabled
+  });
+}
+
+function removeBreakpoint(index) {
+  const bp = currentBreakpoints[index];
+  if (!bp) return;
+  vscode.postMessage({ op: 'bp_remove', fsPath: bp.fsPath, line1: bp.line1 });
+}
+
+function gotoBreakpoint(index) {
+  const bp = currentBreakpoints[index];
+  if (!bp) return;
+  vscode.postMessage({ op: 'bp_goto', fsPath: bp.fsPath, line1: bp.line1 });
+}
+
+function renderBreakpoints(items) {
+  currentBreakpoints = Array.isArray(items) ? items : [];
+  const body = document.getElementById('breakpoints-body');
+  const count = document.getElementById('bp-count');
+  if (count) count.textContent = '(' + currentBreakpoints.length + ')';
+  if (!body) return;
+
+  if (!currentBreakpoints.length) {
+    body.innerHTML = '<div style="color:#64748b;padding:6px 0">No Python breakpoints. Set one in the editor gutter or use Set BP.</div>';
+    return;
+  }
+
+  let html = '<div class="bp-table-wrap"><table class="bp-table"><thead><tr>' +
+    '<th>On</th><th>Location</th><th>Function</th><th>Slot</th><th>IP</th><th>Condition</th><th>Status</th><th></th>' +
+    '</tr></thead><tbody>';
+
+  currentBreakpoints.forEach((bp, i) => {
+    const stateClass = String(bp.state || 'NOT SET').toLowerCase().replace(/\s+/g, '-');
+    const slots = (bp.slots && bp.slots.length) ? bp.slots.map(x => 'S' + x).join(',') : '—';
+    const ip = (bp.ip === null || bp.ip === undefined) ? '—' : ('0x' + Number(bp.ip).toString(16).padStart(4, '0'));
+    const condition = bp.condition ? escapeHtml(bp.condition) : '—';
+    html += '<tr>' +
+      '<td><input type="checkbox" ' + (bp.enabled ? 'checked' : '') + ' onchange="toggleBreakpoint(' + i + ',this.checked)" title="Enable / disable breakpoint"></td>' +
+      '<td><a class="bp-location" onclick="gotoBreakpoint(' + i + ');return false">' + escapeHtml(bp.file) + ':' + bp.line1 + '</a></td>' +
+      '<td>' + escapeHtml(bp.func || '—') + '</td>' +
+      '<td>' + slots + '</td>' +
+      '<td>' + ip + '</td>' +
+      '<td title="' + condition + '">' + condition + '</td>' +
+      '<td><span class="bp-state ' + stateClass + '">' + escapeHtml(bp.state || 'NOT SET') + '</span></td>' +
+      '<td><button class="btn btn-clear bp-remove" onclick="removeBreakpoint(' + i + ')">Remove</button></td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+  body.innerHTML = html;
+}
 
 function updateRtaControls(enabled) {
   rtaEnabled = !!enabled;
@@ -1951,7 +2105,10 @@ document.addEventListener('click', (e) => {
 
 window.addEventListener('message', (e) => {
   const m = e.data;
-  if (m.evt === 'bp_hit') {
+  if (m.evt === 'breakpoints') {
+    renderBreakpoints(m.items);
+  }
+  else if (m.evt === 'bp_hit') {
     const funRec = (m.fun !== undefined && m.fun !== null) ? funNames[m.fun] : null;
     const funText = (m.fun !== undefined && m.fun !== null)
       ? '  fun=' + (funRec ? funRec.name : ('0x' + Number(m.fun).toString(16)))
