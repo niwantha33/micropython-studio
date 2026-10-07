@@ -139,6 +139,37 @@ function openDebuggerPanel(context, port, venvPython) {
         }
     }
 
+    let rtaSymRemaining = 0;
+
+    function requestSymbolMap() {
+        rtaSymRemaining = 0;
+        try {
+            bridge.stdin.write(JSON.stringify({
+                op: 'poke_global',
+                name: '__rta_sym_count',
+                depth: 0,
+                expr: "__import__('trace_pump').get_symmap()"
+            }) + '\n');
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function requestNextSymbolMapChunk() {
+        try {
+            bridge.stdin.write(JSON.stringify({
+                op: 'poke_global',
+                name: '__rta_sym_chunk',
+                depth: 0,
+                expr: "__import__('trace_pump').get_symmap_chunk()"
+            }) + '\n');
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     // Send existing breakpoints
     for (const bp of vscode.debug.breakpoints) {
         if (!(bp instanceof vscode.SourceBreakpoint)) continue;
@@ -204,6 +235,42 @@ function openDebuggerPanel(context, port, venvPython) {
                                     funToName.set(parseInt(funPtr, 10), info.fnKey);
                                     panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
                                 }
+                            }
+                        }
+                    } else if (msg.text.startsWith("poked global __rta_sym_count")) {
+                        const eqIdx = msg.text.indexOf("=");
+                        if (eqIdx !== -1) {
+                            let countText = msg.text.slice(eqIdx + 1).trim();
+                            if ((countText.startsWith("'") && countText.endsWith("'")) ||
+                                (countText.startsWith('"') && countText.endsWith('"'))) {
+                                countText = countText.slice(1, -1);
+                            }
+                            rtaSymRemaining = parseInt(countText, 10) || 0;
+                            if (rtaSymRemaining > 0) requestNextSymbolMapChunk();
+                        }
+                    } else if (msg.text.startsWith("poked global __rta_sym_chunk")) {
+                        const eqIdx = msg.text.indexOf("=");
+                        if (eqIdx !== -1) {
+                            let mapText = msg.text.slice(eqIdx + 1).trim();
+                            if ((mapText.startsWith("'") && mapText.endsWith("'")) ||
+                                (mapText.startsWith('"') && mapText.endsWith('"'))) {
+                                mapText = mapText.slice(1, -1);
+                            }
+                            let parsed = 0;
+                            if (mapText && mapText !== "None") {
+                                for (const item of mapText.split(",")) {
+                                    const sm = item.trim().match(/^(\d+):object '([^']+)'$/);
+                                    if (!sm) continue;
+                                    const funPtr = parseInt(sm[1], 10);
+                                    const funName = sm[2];
+                                    funToName.set(funPtr, funName);
+                                    panel.webview.postMessage({ evt: 'rta_name', fun: funPtr, name: funName, kind: 'function' });
+                                    parsed += 1;
+                                }
+                            }
+                            rtaSymRemaining = Math.max(0, rtaSymRemaining - parsed);
+                            if (rtaSymRemaining > 0 && mapText !== "None") {
+                                requestNextSymbolMapChunk();
                             }
                         }
                     } else if (msg.text.startsWith("poked global __t")) {
@@ -354,6 +421,7 @@ function openDebuggerPanel(context, port, venvPython) {
                         rtaEvents = [];
                         taskMap.clear();
                         requestTaskMap();
+                        requestSymbolMap();
                         if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: true });
                     } else if (msg.text === 'RTA trace disabled') {
                         if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: false });
@@ -447,6 +515,14 @@ function openDebuggerPanel(context, port, venvPython) {
             const expr = 'g=globals();exec("import sys,machine\\nM=machine.mem32\\nq=sys.modules[\'asyncio\'].core._task_queue\\nt=[]\\nwhile q.peek():t.append(q.pop())\\n__t=\',\'.join(str(x.coro) for x in t)\\nfor x in t:q.push(x,M[id(x)+20])",g) or g.get(\'__t\')';
             bridge.stdin.write(JSON.stringify({ op: 'poke_local', slot: 0, depth: 0, expr: expr }) + '\n');
             panel.webview.postMessage({ evt: 'sent', op: 'tasks' });
+            return;
+        }
+        if (msg.op === 'rta_resolve_names') {
+            const taskOk = requestTaskMap();
+            const symbolOk = requestSymbolMap();
+            if (taskOk || symbolOk) {
+                panel.webview.postMessage({ evt: 'sent', op: 'RTA name refresh' });
+            }
             return;
         }
         if (msg.op === 'taskmap') {
@@ -1175,7 +1251,7 @@ td.v:focus, td.vg:focus {
       <span id="rta-live-badge" class="rta-live-badge">OFF</span>
     </div>
     <div class="rta-viewer-actions">
-      <button class="btn btn-action" style="padding:4px 8px" onclick="send('taskmap')" title="Refresh asyncio task names">Refresh Names</button>
+      <button class="btn btn-action" style="padding:4px 8px" onclick="send('rta_resolve_names')" title="Refresh asyncio task and function names">Refresh Names</button>
       <button class="btn btn-clear" style="padding:4px 8px" onclick="resetRtaProfiler()" title="Clear local RTA statistics">Reset Stats</button>
     </div>
   </div>
