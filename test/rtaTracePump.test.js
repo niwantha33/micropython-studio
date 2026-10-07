@@ -65,8 +65,8 @@ suite('RTA on/off regression', () => {
 
         assert.ok(!host.includes('async function prepareLivePump'));
         assert.ok(host.includes("prompt: 'Debug CDC port (the SECOND COM port Windows shows for the board)'"));
-        assert.ok(host.includes("op: 'debug CDC open; probing pump capability'"));
-        assert.ok(host.includes("msg.text.startsWith('pump_info=')"));
+        assert.ok(host.includes("op: 'debug CDC open; synchronizing breakpoint table'"));
+        assert.ok(!host.includes("JSON.stringify({ op: 'pump_info' })"));
         assert.ok(host.includes("msg.text.startsWith('cleared all bp slots')"));
         assert.ok(host.includes("evt: 'pump_capability'"));
         assert.ok(host.includes('installCurrentBreakpoints();'));
@@ -95,15 +95,21 @@ suite('RTA on/off regression', () => {
         assert.ok(bridge.includes('time.sleep(0.20)'));
     });
 
-    test('v5 capability probe falls back to legacy breakpoint handshake', () => {
+    test('connect handshake is legacy-safe and v5 piggybacks capability metadata', () => {
+        const pump = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'debugger_files', 'trace_pump.py'),
+            'utf8'
+        );
         const host = fs.readFileSync(
             path.resolve(__dirname, '..', 'src', 'mpyDebugger.js'),
             'utf8'
         );
-        assert.ok(host.includes("op: 'no pump_info reply; trying legacy breakpoint handshake'"));
+        assert.ok(host.includes("JSON.stringify({ op: 'clear_all_bp' })"));
+        assert.ok(!host.includes("JSON.stringify({ op: 'pump_info' })"));
+        assert.ok(pump.includes('pump=%d build=%s rta=%d'));
+        assert.ok(host.includes("msg.text.match(/\\spump=(\\d+)\\s+build=([^\\s]+)\\s+rta=(\\d+)/)"));
         assert.ok(host.includes('legacy compatibility mode'));
         assert.ok(host.includes('supportsListBp = false'));
-        assert.ok(host.includes("msg.text.startsWith('cleared all bp slots')"));
     });
 
     test('transport loss stops repeated writes to a dead COM handle', () => {
