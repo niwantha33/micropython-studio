@@ -465,6 +465,7 @@ function openDebuggerPanel(context, port, venvPython) {
                 // Capture slot numbers from reply text: "bp N @ mod.func:line ip=..."
                 if (msg.evt === 'reply' && typeof msg.text === 'string') {
                     if (!sessionReady && msg.text.startsWith('cleared all bp slots')) {
+                        targetBreakpointList = [];
                         sessionReady = true;
                         if (startupTimer) {
                             clearTimeout(startupTimer);
@@ -496,6 +497,8 @@ function openDebuggerPanel(context, port, venvPython) {
                                 }
                                 slots.add(slot);
                                 const funPtr = m[6] ? parseInt(m[6], 10) : null;
+                                targetBreakpointList = targetBreakpointList.filter(t => t.slot !== slot);
+                                targetBreakpointList.push({ slot, fun: funPtr, ip: bpIp });
                                 const hitKey = funPtr !== null
                                     ? `${funPtr}:${bpIp}`
                                     : `legacy:${info.key}:${bpIp}`;
@@ -513,6 +516,20 @@ function openDebuggerPanel(context, port, venvPython) {
                                 }
                             }
                         }
+                    } else if (msg.text.startsWith("bp_list=")) {
+                        const rawList = msg.text.slice("bp_list=".length);
+                        const parsed = [];
+                        const bpRe = /\((\d+),\s*(\d+),\s*(\d+)(?:,\s*(?:True|False|0|1))?\)/g;
+                        let bm;
+                        while ((bm = bpRe.exec(rawList)) !== null) {
+                            parsed.push({
+                                slot: parseInt(bm[1], 10),
+                                fun: parseInt(bm[2], 10),
+                                ip: parseInt(bm[3], 10)
+                            });
+                        }
+                        targetBreakpointList = parsed;
+                        postBreakpointSnapshot();
                     } else if (msg.text.startsWith("poked global __rta_sym_count")) {
                         const eqIdx = msg.text.indexOf("=");
                         if (eqIdx !== -1) {
@@ -789,6 +806,9 @@ function openDebuggerPanel(context, port, venvPython) {
             return;
         }
         if (msg.op === 'bp_refresh') {
+            try {
+                bridge.stdin.write(JSON.stringify({ op: 'list_bp' }) + '\n');
+            } catch (e) {}
             postBreakpointSnapshot();
             return;
         }
@@ -808,6 +828,16 @@ function openDebuggerPanel(context, port, venvPython) {
         if (msg.op === 'bp_remove') {
             const bp = findVsCodeBreakpoint(msg.fsPath, Number(msg.line1));
             if (bp) vscode.debug.removeBreakpoints([bp]);
+            return;
+        }
+        if (msg.op === 'bp_remove_target') {
+            const slot = Number(msg.slot);
+            if (!Number.isInteger(slot)) return;
+            try {
+                bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
+            } catch (e) {}
+            targetBreakpointList = targetBreakpointList.filter(t => t.slot !== slot);
+            postBreakpointSnapshot();
             return;
         }
         if (msg.op === 'bp_toggle') {
@@ -835,6 +865,7 @@ function openDebuggerPanel(context, port, venvPython) {
             for (const pending of pendingBpReplies) pending.cancelled = true;
             bpSlotMap.clear();
             bpHitLocMap.clear();
+            targetBreakpointList = [];
             try {
                 bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
             } catch (e) {}
