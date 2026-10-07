@@ -15,6 +15,14 @@ const REQUIRED_PUMP_BUILD = '2026-10-07-bytearray-resync-v4';
 let panel = null;
 let bridge = null;
 let bpDisposable = null;
+let debugSetupOutputChannel = null;
+
+function getDebugSetupOutputChannel() {
+    if (!debugSetupOutputChannel) {
+        debugSetupOutputChannel = vscode.window.createOutputChannel('MPy Debugger Setup');
+    }
+    return debugSetupOutputChannel;
+}
 const bpSlotMap = new Map(); // key "module:func:line" -> Set<slot> (filled on reply)
 const pendingBpReplies = []; // queue of {key, fsPath, line1, cancelled}
 const bpHitLocMap = new Map(); // "funPtr:ip" -> {fsPath,line1,fnKey,ip,fun,cond}
@@ -147,14 +155,15 @@ function openDebuggerPanel(context, port, venvPython) {
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
     bridge = spawn(pyCmd, [script, port, workspaceFolder], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-    // A new debugger session owns the target breakpoint table. Clear both
-    // host-side mappings and every stale target slot before re-installing the
-    // breakpoints that currently exist in VS Code.
+    // A new debugger session owns the target breakpoint table, but target
+    // commands are not sent until the SECOND COM/debug CDC has opened and the
+    // pump answers our clear-all handshake.
     bpSlotMap.clear();
     pendingBpReplies.length = 0;
     bpHitLocMap.clear();
     localNamesByFn.clear();
-    bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+    let sessionReady = false;
+    let startupTimer = null;
 
     function requestTaskMap() {
         try {
@@ -196,28 +205,29 @@ function openDebuggerPanel(context, port, venvPython) {
         }
     }
 
-    // Send existing breakpoints
-    for (const bp of vscode.debug.breakpoints) {
-        if (!(bp instanceof vscode.SourceBreakpoint)) continue;
-        const loc = bp.location;
-        const fsPath = loc.uri.fsPath;
-        if (!fsPath.endsWith('.py')) continue;
-        const line1 = loc.range.start.line + 1;
-        try {
-            const fs = require('fs');
-            const text = fs.readFileSync(fsPath, 'utf8');
-            const info = findEnclosingFunction(text, line1);
-            if (!info) continue;
-            const modName = path.basename(fsPath, '.py');
-            const relLine = line1 - info.defLine;
-            const key = `${modName}:${info.func}:${line1}`;
-            const names = extractLocalNames(text, info.defLine, info.args);
-            localNamesByFn.set(`${modName}:${info.func}`, names);
-            const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
-            pendingBpReplies.push({ key, fsPath, line1, fnKey: `${modName}:${info.func}`, cond, defLine: info.defLine });
-            const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
-            bridge.stdin.write(JSON.stringify(out) + '\n');
-        } catch (e) {}
+    function installCurrentBreakpoints() {
+        for (const bp of vscode.debug.breakpoints) {
+            if (!(bp instanceof vscode.SourceBreakpoint)) continue;
+            const loc = bp.location;
+            const fsPath = loc.uri.fsPath;
+            if (!fsPath.endsWith('.py')) continue;
+            const line1 = loc.range.start.line + 1;
+            try {
+                const fs = require('fs');
+                const text = fs.readFileSync(fsPath, 'utf8');
+                const info = findEnclosingFunction(text, line1);
+                if (!info) continue;
+                const modName = path.basename(fsPath, '.py');
+                const relLine = line1 - info.defLine;
+                const key = `${modName}:${info.func}:${line1}`;
+                const names = extractLocalNames(text, info.defLine, info.args);
+                localNamesByFn.set(`${modName}:${info.func}`, names);
+                const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
+                pendingBpReplies.push({ key, fsPath, line1, fnKey: `${modName}:${info.func}`, cond, defLine: info.defLine });
+                const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
+                bridge.stdin.write(JSON.stringify(out) + '\n');
+            } catch (e) {}
+        }
     }
 
     let buf = '';
@@ -230,8 +240,37 @@ function openDebuggerPanel(context, port, venvPython) {
             if (!line) continue;
             try {
                 const msg = JSON.parse(line);
+
+                if (msg.evt === 'open' && !sessionReady) {
+                    // Connect-only must never touch the REPL port. The live
+                    // pump is verified on the debug CDC itself.
+                    try {
+                        bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+                        panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; verifying trace_pump' });
+                        startupTimer = setTimeout(() => {
+                            if (!sessionReady && panel) {
+                                panel.webview.postMessage({
+                                    evt: 'error',
+                                    msg: 'Debug CDC opened, but trace_pump did not answer. Reset the board or upload debugger files; Connect only does not use the REPL port.'
+                                });
+                            }
+                        }, 2500);
+                    } catch (e) {
+                        panel.webview.postMessage({ evt: 'error', msg: 'Failed to start debugger handshake: ' + String(e) });
+                    }
+                }
+
                 // Capture slot numbers from reply text: "bp N @ mod.func:line ip=..."
                 if (msg.evt === 'reply' && typeof msg.text === 'string') {
+                    if (!sessionReady && msg.text.startsWith('cleared all bp slots')) {
+                        sessionReady = true;
+                        if (startupTimer) {
+                            clearTimeout(startupTimer);
+                            startupTimer = null;
+                        }
+                        installCurrentBreakpoints();
+                        panel.webview.postMessage({ evt: 'pump_ready', protocol: REQUIRED_PUMP_PROTOCOL, build: REQUIRED_PUMP_BUILD });
+                    }
                     const m = msg.text.match(/^bp (\d+) @ (.*)\.([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
                     if (m) {
                         const slot = parseInt(m[1], 10);
@@ -658,6 +697,10 @@ function openDebuggerPanel(context, port, venvPython) {
     });
 
     panel.onDidDispose(() => {
+        if (startupTimer) {
+            clearTimeout(startupTimer);
+            startupTimer = null;
+        }
         if (bpDisposable) { bpDisposable.dispose(); bpDisposable = null; }
         if (rtaEvents.length > 0) {
             dumpRtaTrace();
@@ -719,37 +762,12 @@ async function verifyUploadedPumpFile(context, replPort, venvPython, out) {
     return true;
 }
 
-async function prepareLivePump(context, replPort, venvPython) {
-    const backend = path.join(context.extensionPath, 'src', 'mps_backend.py');
-    const code = [
-        'import trace_pump as _tp',
-        '_p=getattr(_tp,"PUMP_PROTOCOL",-1)',
-        '_b=getattr(_tp,"PUMP_BUILD","missing")',
-        'print("MPS_PUMP_PROTOCOL="+str(_p))',
-        'print("MPS_PUMP_BUILD="+str(_b))',
-        `_p==${REQUIRED_PUMP_PROTOCOL} and _b=="${REQUIRED_PUMP_BUILD}" and _tp.start()`
-    ].join(';');
-
-    const r = await wsQueue.run(() => runBackend(venvPython, backend, [
-        'exec', '--port', replPort, '--code', code
-    ]), 'Verify and start debugger pump');
-
-    const protocolOk = r.out.includes(`MPS_PUMP_PROTOCOL=${REQUIRED_PUMP_PROTOCOL}`);
-    const buildOk = r.out.includes(`MPS_PUMP_BUILD=${REQUIRED_PUMP_BUILD}`);
-    if (r.code !== 0 || !protocolOk || !buildOk) {
-        return {
-            ok: false,
-            detail: (r.out + '\n' + r.err).trim()
-        };
-    }
-    return { ok: true, detail: r.out.trim() };
-}
-
 async function uploadDebuggerFiles(context, replPort, venvPython) {
     const dir = path.join(context.extensionPath, 'src', 'debugger_files');
     const backend = path.join(context.extensionPath, 'src', 'mps_backend.py');
     const files = ['dbgref.py', 'trace_pump.py', 'boot.py'];
-    const out = vscode.window.createOutputChannel('MPy Debugger Setup');
+    const out = getDebugSetupOutputChannel();
+    out.clear();
     out.show(true);
     out.appendLine(`Uploading debugger files to ${replPort} via mps_backend...`);
     for (const f of files) {
@@ -775,8 +793,8 @@ async function uploadDebuggerFiles(context, replPort, venvPython) {
     }
 
     out.appendLine('Debugger files uploaded and VERIFIED.');
-    out.appendLine('Reset the board now so boot.py and trace_pump.py are reloaded from flash.');
-    out.appendLine('After reset, Start Debug again and choose Connect only. Studio will verify and start trace_pump automatically.');
+    out.appendLine('Reset the board now so boot.py reloads the verified files and auto-starts trace_pump.');
+    out.appendLine('After reset, Start Debug again and choose Connect only. Connect only talks directly to the SECOND COM/debug CDC.');
     return true;
 }
 
@@ -799,15 +817,6 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
         if (!ok) return;
         vscode.window.showInformationMessage(
             'Debugger files verified on the Pico. Reset the board, then Start Debug again and choose Connect only.'
-        );
-        return;
-    }
-
-    const pump = await prepareLivePump(context, replPort, venvPython);
-    if (!pump.ok) {
-        const detail = pump.detail ? ` Details: ${pump.detail.slice(0, 240)}` : '';
-        vscode.window.showErrorMessage(
-            `Stale/incompatible trace_pump is loaded. Required protocol ${REQUIRED_PUMP_PROTOCOL} (${REQUIRED_PUMP_BUILD}). Upload debugger files and reset the board.${detail}`
         );
         return;
     }
