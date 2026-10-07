@@ -58,5 +58,8 @@
       "method": "esptool",
       "available": false
     }
-  ]
+  ],
+  "rta_certified": false,
+  "rta_certified_source_commit": null,
+  "_rta_comment": "Set rta_certified=true only after hardware verification and publication of the matching RTA firmware build."
 }

@@ -48,6 +48,11 @@ CMDS = {
     "globals":  0x1A,
     "rta_on":   0x1B,
     "rta_off":  0x1C,
+    "clear_all_bp": 0x1D,
+    "taskmap": 0x1E,
+    "tasks": 0x1F,
+    "list_bp": 0x21,
+    "pump_info": 0x22,
 }
 
 
@@ -62,7 +67,8 @@ def reader_loop(ser, stop_evt):
         try:
             data = ser.read(128)
         except Exception as e:
-            say(evt="error", msg=f"read: {e}")
+            say(evt="transport_lost", msg=f"read: {e}")
+            stop_evt.set()
             return
         if not data:
             continue
@@ -75,7 +81,7 @@ def reader_loop(ser, stop_evt):
             is_valid = True
             if t == 0x01 and n != 3:
                 is_valid = False
-            elif t == 0x02 and n != 2:
+            elif t == 0x02 and n not in (2, 6):
                 is_valid = False
             elif t in (0x05, 0x06) and n != 8:
                 is_valid = False
@@ -100,9 +106,14 @@ def reader_loop(ser, stop_evt):
             if t == 0x01 and n == 3:
                 ip = payload[0] | (payload[1] << 8)
                 say(evt="trace", ip=ip, op=payload[2])
-            elif t == 0x02 and n == 2:
+            elif t == 0x02 and n in (2, 6):
                 ip = payload[0] | (payload[1] << 8)
-                say(evt="bp_hit", ip=ip)
+                if n == 6:
+                    fun = payload[2] | (payload[3] << 8) | (payload[4] << 16) | (payload[5] << 24)
+                    say(evt="bp_hit", ip=ip, fun=fun)
+                else:
+                    # Legacy firmware only identifies the relative bytecode IP.
+                    say(evt="bp_hit", ip=ip)
             elif t == 0x03:
                 text = payload.decode(errors="replace")
                 say(evt="reply", text=text)
@@ -205,12 +216,26 @@ def main():
     if len(sys.argv) > 2:
         workspace_dir = sys.argv[2]
     try:
-        ser = serial.Serial(port, 115200, timeout=0.1, write_timeout=1.0,
-                            dsrdtr=False, rtscts=False)
+        # Configure line state before open. The device-side pump treats DTR as
+        # the explicit "host owns the debug CDC now" signal and does no endpoint
+        # I/O until DTR is asserted.
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = 115200
+        ser.timeout = 0.1
+        ser.write_timeout = 1.0
+        ser.dsrdtr = False
+        ser.rtscts = False
+        ser.dtr = True
+        ser.rts = False
+        ser.open()
     except Exception as e:
         say(evt="error", msg=f"open {port}: {e}")
         sys.exit(1)
-    time.sleep(0.1)
+
+    # Give the runtime CDC one scheduling slice to observe DTR and arm its
+    # OUT endpoint before the first command frame is sent.
+    time.sleep(0.20)
     say(evt="open", port=port)
 
     stop_evt = threading.Event()
@@ -229,6 +254,14 @@ def main():
                 continue
             op = msg.get("op")
             if op == "quit":
+                # Best-effort safety shutdown: do not leave target RTA running
+                # after a normal debugger-panel close. Older firmware will
+                # simply reply that RTA is unsupported.
+                try:
+                    ser.write(bytes([0xAA, 0x1C, 0x00]))
+                    time.sleep(0.05)
+                except Exception:
+                    pass
                 break
             code = CMDS.get(op)
             if code is None and op not in ("set_bp", "clear_bp", "poke_local", "poke_global"):
@@ -259,10 +292,11 @@ def main():
                     ser.write(bytes([0xAA, 0x19, len(payload)]) + payload)
                 else:
                     ser.write(bytes([0xAA, code, 0x00]))
-                ser.flush()
                 say(evt="sent", op=op)
             except Exception as e:
-                say(evt="error", msg=f"write: {e}")
+                say(evt="transport_lost", msg=f"write: {e}")
+                stop_evt.set()
+                break
     finally:
         stop_evt.set()
         time.sleep(0.2)

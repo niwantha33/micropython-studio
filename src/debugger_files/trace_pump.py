@@ -14,6 +14,12 @@ import _thread
 import time
 import dbg
 
+# Increment whenever the host<->pump command contract or required pump
+# behaviour changes. Studio checks both the uploaded file and the live imported
+# module before opening a debug session, so stale RAM/file copies are rejected.
+PUMP_PROTOCOL = 5
+PUMP_BUILD = "2026-10-07-rta-viewer-v5"
+
 _running = False
 bytes_in = 0
 cmds = 0
@@ -26,18 +32,51 @@ def _pump():
     cdc = dbgref.cdc
     cmd_buf = bytearray()
     dbg.set_pump_fun(_pump)
+    host_was_connected = False
 
     while _running:
+        # CDCInterface.is_open() means the USB interface is configured.
+        # DTR means Windows has actually opened this COM port. Never submit
+        # debug endpoint I/O before both are true; doing so can race Windows
+        # enumeration/open and leave pyserial holding a stale COM handle.
+        try:
+            host_connected = bool(cdc.is_open() and cdc.dtr)
+        except Exception:
+            host_connected = False
+
+        if not host_connected:
+            if host_was_connected:
+                cmd_buf[:] = b''
+            host_was_connected = False
+            try:
+                dbg.unmute()
+            except Exception:
+                pass
+            time.sleep_ms(20)
+            continue
+
+        if not host_was_connected:
+            # New host session: discard any partial command frame from a prior
+            # COM close before accepting traffic from the new handle.
+            cmd_buf[:] = b''
+            host_was_connected = True
+
         dbg.mute()
-        while True:
+        # Bound each drain pass so continuous RTA traffic cannot starve
+        # inbound debugger commands such as RTA OFF.
+        chunks = 0
+        while chunks < 8:
             data = dbg.read_trace(256)
             if not data:
                 break
+            chunks += 1
             try:
                 written = 0
                 retries = 0
                 while written < len(data) and _running:
                     try:
+                        if not (cdc.is_open() and cdc.dtr):
+                            break
                         w = cdc.write(data[written:])
                         if w:
                             written += w
@@ -70,7 +109,7 @@ def _pump():
 
             # Robust frame validation for commands from host
             is_valid = True
-            if cmd_type in (0x10, 0x11, 0x13, 0x14, 0x17, 0x1B, 0x1C, 0x20) and cmd_len != 0:
+            if cmd_type in (0x10, 0x11, 0x13, 0x14, 0x17, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22) and cmd_len != 0:
                 is_valid = False
             elif cmd_type in (0x12, 0x1A) and cmd_len > 1:
                 is_valid = False
@@ -82,13 +121,13 @@ def _pump():
                 is_valid = False
             elif cmd_type == 0x15 and cmd_len < 4:
                 is_valid = False
-            elif cmd_type not in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x20):
+            elif cmd_type not in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22):
                 is_valid = False
             elif cmd_len > 256:
                 is_valid = False
 
             if not is_valid:
-                cmd_buf.pop(0)
+                cmd_buf[:] = cmd_buf[1:]
                 continue
 
             total = 3 + cmd_len
@@ -139,6 +178,54 @@ def _pump():
                     slot = cmd_buf[3]
                     dbg.clear_bp(slot)
                     text = "cleared bp %d" % slot
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x1D:
+                # clear_all_bp: make the IDE breakpoint set authoritative for
+                # each new debugger session. This removes stale target slots
+                # left behind by a previous host/debugger process.
+                try:
+                    active = dbg.list_bp()
+                    cleared = []
+                    for bp in active:
+                        slot = bp[0]
+                        dbg.clear_bp(slot)
+                        cleared.append(slot)
+                    rta = 1 if hasattr(dbg, "rta_on") and hasattr(dbg, "rta_off") else 0
+                    text = "cleared all bp slots %r pump=%d build=%s rta=%d" % (
+                        cleared, PUMP_PROTOCOL, PUMP_BUILD, rta
+                    )
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x1E:
+                # taskmap: use the on-device helper directly. This avoids
+                # fragile multi-line eval/exec strings from the host.
+                try:
+                    text = "taskmap=" + get_taskmap()
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x1F:
+                # tasks: readable asyncio coroutine list.
+                try:
+                    text = "tasks=" + get_tasks()
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
@@ -336,6 +423,32 @@ def _pump():
                     cdc.write(frame)
                 except Exception:
                     pass
+            elif cmd_type == 0x22:
+                # pump_info: debug-CDC capability handshake. This lets Studio
+                # verify the exact Python pump without touching the REPL port.
+                try:
+                    rta = 1 if hasattr(dbg, "rta_on") and hasattr(dbg, "rta_off") else 0
+                    text = "pump_info=%d|%s|rta=%d" % (PUMP_PROTOCOL, PUMP_BUILD, rta)
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x21:
+                # list_bp: authoritative target breakpoint table.
+                try:
+                    text = "bp_list=" + repr(dbg.list_bp())
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
             elif cmd_type == 0x20:
                 try:
                     dbg.halt()
@@ -350,8 +463,11 @@ def _pump():
                     pass
             elif cmd_type == 0x1B:
                 try:
-                    dbg.rta_on()
-                    text = "RTA trace enabled"
+                    if not hasattr(dbg, "rta_on"):
+                        text = "RTA unsupported by firmware: flash an RTA-capable debug firmware"
+                    else:
+                        dbg.rta_on()
+                        text = "RTA trace enabled"
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
@@ -362,8 +478,11 @@ def _pump():
                     pass
             elif cmd_type == 0x1C:
                 try:
-                    dbg.rta_off()
-                    text = "RTA trace disabled"
+                    if not hasattr(dbg, "rta_off"):
+                        text = "RTA unsupported by firmware: flash an RTA-capable debug firmware"
+                    else:
+                        dbg.rta_off()
+                        text = "RTA trace disabled"
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
@@ -374,7 +493,7 @@ def _pump():
                     pass
             cmd_buf[:] = cmd_buf[total:]
         while cmd_buf and cmd_buf[0] != 0xAA:
-            cmd_buf.pop(0)
+            cmd_buf[:] = cmd_buf[1:]
 
         dbg.unmute()
         time.sleep_ms(5)
@@ -387,7 +506,7 @@ def start():
         return
     _running = True
     _thread.start_new_thread(_pump, ())
-    print("trace_pump: started")
+    print("trace_pump: started protocol=%d build=%s" % (PUMP_PROTOCOL, PUMP_BUILD))
 
 
 def stop():
@@ -455,23 +574,38 @@ def get_symmap():
                                             res.append('%d:object \'%s.%s.%s\'' % (id(f), n, k, c))
                         except:
                             pass
+
+        # Deterministic order makes refreshes stable and moves user-facing
+        # module names ahead of most runtime/USB internals without hardcoding
+        # any project-specific module names.
+        res.sort(key=lambda x: x.split("object '", 1)[-1])
         _sym_list = res
-        print("get_symmap populated _sym_list with", len(res), "items")
         return str(len(res))
     except Exception as e:
-        print("get_symmap error:", e)
         return "err: " + repr(e)
 
 
 def get_symmap_chunk():
     global _sym_list
     try:
-        print("get_symmap_chunk called, current _sym_list len =", len(_sym_list))
-        chunk = _sym_list[:6]
-        del _sym_list[:6]
-        res = ','.join(chunk) if chunk else "None"
-        print("returning chunk:", res[:50])
-        return res
+        if not _sym_list:
+            return "None"
+
+        # poke_global replies are capped at 250 bytes. The old fixed 6-entry
+        # chunk was frequently truncated mid-symbol, which silently lost names.
+        # Build a bounded chunk that leaves room for the reply wrapper.
+        chunk = []
+        used = 0
+        while _sym_list:
+            item = _sym_list[0]
+            add = len(item.encode()) + (1 if chunk else 0)
+            if chunk and (used + add) > 170:
+                break
+            chunk.append(item)
+            del _sym_list[0]
+            used += add
+            if used >= 170:
+                break
+        return ','.join(chunk) if chunk else "None"
     except Exception as e:
-        print("get_symmap_chunk error:", e)
         return "err: " + repr(e)

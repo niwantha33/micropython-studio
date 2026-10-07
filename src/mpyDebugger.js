@@ -7,24 +7,58 @@ const vscode = require('vscode');
 const path = require('path');
 const { spawn } = require('child_process');
 const wsQueue = require('./wsQueue');
+const { getBuildInfo } = require('./buildInfo');
+
+const REQUIRED_PUMP_PROTOCOL = 5;
+const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
 
 let panel = null;
 let bridge = null;
 let bpDisposable = null;
-const bpSlotMap = new Map(); // key "module:func:line" -> slot (filled on reply)
-const pendingBpReplies = []; // queue of {key, fsPath, line1}
-const ipToLoc = new Map();   // ip -> {fsPath, line1}
-const ipToCond = new Map();  // ip -> condition string (optional)
+let debugSetupOutputChannel = null;
+
+function getDebugSetupOutputChannel() {
+    if (!debugSetupOutputChannel) {
+        debugSetupOutputChannel = vscode.window.createOutputChannel('MPy Debugger Setup');
+    }
+    return debugSetupOutputChannel;
+}
+const bpSlotMap = new Map(); // key "module:func:line" -> Set<slot> (filled on reply)
+const pendingBpReplies = []; // queue of {key, fsPath, line1, cancelled}
+const bpHitLocMap = new Map(); // "funPtr:ip" -> {fsPath,line1,fnKey,ip,fun,cond}
 let pendingCondEval = null;  // { ip, cond, names } while awaiting locals reply
 let hlDeco = null;            // TextEditorDecorationType for current line (yellow — breakpoint)
 let stepInDeco = null;        // TextEditorDecorationType for step-in line (cyan)
 let lastActionWasStepIn = false; // tracks whether the last resume action was step_in
 
 let rtaEvents = [];
+let rtaDumpTimer = null;
 const taskMap = new Map();
 const funToName = new Map();
 
+function scheduleRtaTraceDump() {
+    if (rtaDumpTimer) clearTimeout(rtaDumpTimer);
+    rtaDumpTimer = setTimeout(() => {
+        rtaDumpTimer = null;
+        dumpRtaTrace();
+    }, 100);
+}
+
 // Pop matching pending breakpoint reply by module, function, and relative line.
+function resolveBreakpointRecord(fun, ip) {
+    if (fun !== undefined && fun !== null) {
+        const exact = bpHitLocMap.get(`${Number(fun)}:${Number(ip)}`);
+        if (exact) return exact;
+    }
+    // Legacy firmware reports only ip. Use it only when exactly one active
+    // source breakpoint has that offset; otherwise the hit is ambiguous.
+    const matches = [];
+    for (const rec of bpHitLocMap.values()) {
+        if (rec.ip === Number(ip)) matches.push(rec);
+    }
+    return matches.length === 1 ? matches[0] : null;
+}
+
 function popPendingBp(module, func, relLine) {
     const fnKey = `${module}:${func}`;
     const idx = pendingBpReplies.findIndex(item => item.fnKey === fnKey && (item.line1 - item.defLine) === relLine);
@@ -79,7 +113,8 @@ function openDebuggerPanel(context, port, venvPython) {
         vscode.ViewColumn.Beside,
         { enableScripts: true, retainContextWhenHidden: true }
     );
-    panel.webview.html = getHtml();
+    const buildInfo = getBuildInfo(context.extensionPath, context.extensionMode);
+    panel.webview.html = getHtml(buildInfo);
 
     hlDeco = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(255, 200, 0, 0.25)',
@@ -120,28 +155,287 @@ function openDebuggerPanel(context, port, venvPython) {
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
     bridge = spawn(pyCmd, [script, port, workspaceFolder], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-    // Send existing breakpoints
-    for (const bp of vscode.debug.breakpoints) {
-        if (!(bp instanceof vscode.SourceBreakpoint)) continue;
-        const loc = bp.location;
-        const fsPath = loc.uri.fsPath;
-        if (!fsPath.endsWith('.py')) continue;
-        const line1 = loc.range.start.line + 1;
+    // A new debugger session owns the target breakpoint table, but target
+    // commands are not sent until the SECOND COM/debug CDC has opened and the
+    // pump answers our clear-all handshake.
+    bpSlotMap.clear();
+    pendingBpReplies.length = 0;
+    bpHitLocMap.clear();
+    localNamesByFn.clear();
+    let sessionReady = false;
+    let pumpVerified = false;
+    let legacyPump = false;
+    let supportsListBp = false;
+    let rtaSupported = null;
+    let startupTimer = null;
+    let targetBreakpointList = [];
+
+    function getBreakpointInfo(bp) {
+        if (!(bp instanceof vscode.SourceBreakpoint)) return null;
+        const fsPath = bp.location.uri.fsPath;
+        if (!fsPath.endsWith('.py')) return null;
+        const line1 = bp.location.range.start.line + 1;
         try {
             const fs = require('fs');
             const text = fs.readFileSync(fsPath, 'utf8');
-            const info = findEnclosingFunction(text, line1);
+            const fn = findEnclosingFunction(text, line1);
+            if (!fn) {
+                return {
+                    bp, fsPath, line1,
+                    file: path.basename(fsPath),
+                    module: path.basename(fsPath, '.py'),
+                    func: '(no enclosing def)',
+                    fnKey: '',
+                    defLine: null,
+                    relLine: null,
+                    key: `${path.basename(fsPath, '.py')}:?:${line1}`,
+                    names: [],
+                    enabled: bp.enabled !== false,
+                    cond: (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null
+                };
+            }
+            const module = path.basename(fsPath, '.py');
+            const key = `${module}:${fn.func}:${line1}`;
+            return {
+                bp, fsPath, line1,
+                file: path.basename(fsPath),
+                module,
+                func: fn.func,
+                fnKey: `${module}:${fn.func}`,
+                defLine: fn.defLine,
+                relLine: line1 - fn.defLine,
+                key,
+                names: extractLocalNames(text, fn.defLine, fn.args),
+                enabled: bp.enabled !== false,
+                cond: (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null
+            };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function hasPendingRegistration(fsPath, line1) {
+        return pendingBpReplies.some(p => !p.cancelled && p.fsPath === fsPath && p.line1 === line1);
+    }
+
+    function hasTargetRegistration(info) {
+        if (!info) return false;
+        const slots = bpSlotMap.get(info.key);
+        if (slots && slots.size > 0) return true;
+        for (const rec of bpHitLocMap.values()) {
+            if (rec.fsPath === info.fsPath && rec.line1 === info.line1) return true;
+        }
+        return false;
+    }
+
+    function buildBreakpointSnapshot() {
+        const items = [];
+        for (const bp of vscode.debug.breakpoints) {
+            const info = getBreakpointInfo(bp);
             if (!info) continue;
-            const modName = path.basename(fsPath, '.py');
-            const relLine = line1 - info.defLine;
-            const key = `${modName}:${info.func}:${line1}`;
-            const names = extractLocalNames(text, info.defLine, info.args);
-            localNamesByFn.set(`${modName}:${info.func}`, names);
-            const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
-            pendingBpReplies.push({ key, fsPath, line1, fnKey: `${modName}:${info.func}`, cond, defLine: info.defLine });
-            const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
-            bridge.stdin.write(JSON.stringify(out) + '\n');
-        } catch (e) {}
+            const slots = Array.from(bpSlotMap.get(info.key) || []).sort((a, b) => a - b);
+            let hitRec = null;
+            for (const rec of bpHitLocMap.values()) {
+                if (rec.fsPath === info.fsPath && rec.line1 === info.line1) {
+                    hitRec = rec;
+                    break;
+                }
+            }
+            const pending = hasPendingRegistration(info.fsPath, info.line1);
+            let state = 'NOT SET';
+            if (!info.enabled) state = 'DISABLED';
+            else if (slots.length > 0) state = 'VERIFIED';
+            else if (pending) state = 'PENDING';
+            items.push({
+                key: info.key,
+                fsPath: info.fsPath,
+                file: info.file,
+                line1: info.line1,
+                module: info.module,
+                func: info.func,
+                enabled: info.enabled,
+                condition: info.cond || '',
+                slots,
+                ip: hitRec ? hitRec.ip : null,
+                fun: hitRec ? hitRec.fun : null,
+                state
+            });
+        }
+        const knownSlots = new Set();
+        for (const item of items) {
+            for (const slot of item.slots) knownSlots.add(slot);
+        }
+        for (const target of targetBreakpointList) {
+            if (knownSlots.has(target.slot)) continue;
+            const mappedName = funToName.get(target.fun);
+            items.push({
+                key: `target-only:${target.slot}`,
+                fsPath: '',
+                file: '(target only)',
+                line1: null,
+                module: '',
+                func: mappedName || ('fun=0x' + Number(target.fun).toString(16)),
+                enabled: true,
+                condition: '',
+                slots: [target.slot],
+                ip: target.ip,
+                fun: target.fun,
+                state: 'TARGET ONLY',
+                targetOnly: true
+            });
+        }
+        items.sort((a, b) => {
+            if (a.targetOnly && !b.targetOnly) return 1;
+            if (!a.targetOnly && b.targetOnly) return -1;
+            return String(a.file).localeCompare(String(b.file)) || ((a.line1 || 0) - (b.line1 || 0));
+        });
+        return items;
+    }
+
+    function postBreakpointSnapshot() {
+        if (panel) panel.webview.postMessage({ evt: 'breakpoints', items: buildBreakpointSnapshot() });
+    }
+
+    function registerSourceBreakpoint(bp, announce = true) {
+        const info = getBreakpointInfo(bp);
+        if (!info) return;
+        if (!info.enabled) {
+            postBreakpointSnapshot();
+            return;
+        }
+        if (!sessionReady) {
+            postBreakpointSnapshot();
+            return;
+        }
+        if (info.relLine === null) {
+            if (panel) panel.webview.postMessage({ evt: 'error', msg: `no enclosing def for ${info.file}:${info.line1}` });
+            postBreakpointSnapshot();
+            return;
+        }
+        if (hasTargetRegistration(info) || hasPendingRegistration(info.fsPath, info.line1)) {
+            postBreakpointSnapshot();
+            return;
+        }
+
+        localNamesByFn.set(info.fnKey, info.names);
+        pendingBpReplies.push({
+            key: info.key,
+            fsPath: info.fsPath,
+            line1: info.line1,
+            fnKey: info.fnKey,
+            cond: info.cond,
+            defLine: info.defLine
+        });
+        bridge.stdin.write(JSON.stringify({
+            op: 'set_bp',
+            module: info.module,
+            func: info.func,
+            line: info.relLine
+        }) + '\n');
+        if (announce && panel) {
+            panel.webview.postMessage({
+                evt: 'sent',
+                op: `set_bp ${info.key} rel=${info.relLine}${info.cond ? ' cond=' + info.cond : ''}`
+            });
+        }
+        postBreakpointSnapshot();
+    }
+
+    function clearSourceBreakpoint(fsPath, line1, announce = true) {
+        const modName = path.basename(fsPath, '.py');
+        const keysToClear = new Set();
+
+        for (const pending of pendingBpReplies) {
+            if (pending.fsPath === fsPath && pending.line1 === line1) {
+                pending.cancelled = true;
+                keysToClear.add(pending.key);
+            }
+        }
+        for (const k of bpSlotMap.keys()) {
+            if (k.startsWith(`${modName}:`) && k.endsWith(`:${line1}`)) {
+                keysToClear.add(k);
+            }
+        }
+        const clearedSlots = new Set();
+        for (const key of keysToClear) {
+            const slots = bpSlotMap.get(key);
+            if (slots) {
+                for (const slot of slots) {
+                    clearedSlots.add(slot);
+                    bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
+                    if (announce && panel) {
+                        panel.webview.postMessage({ evt: 'sent', op: `clear_bp slot=${slot} ${key}` });
+                    }
+                }
+                bpSlotMap.delete(key);
+            }
+        }
+        if (clearedSlots.size) {
+            targetBreakpointList = targetBreakpointList.filter(t => !clearedSlots.has(t.slot));
+        }
+        for (const [hitKey, rec] of bpHitLocMap.entries()) {
+            if (rec.fsPath === fsPath && rec.line1 === line1) {
+                bpHitLocMap.delete(hitKey);
+            }
+        }
+        postBreakpointSnapshot();
+    }
+
+    function findVsCodeBreakpoint(fsPath, line1) {
+        return vscode.debug.breakpoints.find(bp =>
+            bp instanceof vscode.SourceBreakpoint &&
+            bp.location.uri.fsPath === fsPath &&
+            (bp.location.range.start.line + 1) === line1
+        );
+    }
+
+    function requestTaskMap() {
+        try {
+            bridge.stdin.write(JSON.stringify({ op: 'taskmap' }) + '\n');
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    let rtaSymRemaining = 0;
+    let rtaSymRefreshActive = false;
+
+    function requestSymbolMap() {
+        rtaSymRemaining = 0;
+        rtaSymRefreshActive = true;
+        try {
+            bridge.stdin.write(JSON.stringify({
+                op: 'poke_global',
+                name: '__rta_sym_count',
+                depth: 0,
+                expr: "__import__('trace_pump').get_symmap()"
+            }) + '\n');
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function requestNextSymbolMapChunk() {
+        try {
+            bridge.stdin.write(JSON.stringify({
+                op: 'poke_global',
+                name: '__rta_sym_chunk',
+                depth: 0,
+                expr: "__import__('trace_pump').get_symmap_chunk()"
+            }) + '\n');
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function installCurrentBreakpoints() {
+        for (const bp of vscode.debug.breakpoints) {
+            registerSourceBreakpoint(bp, false);
+        }
+        postBreakpointSnapshot();
     }
 
     let buf = '';
@@ -154,8 +448,83 @@ function openDebuggerPanel(context, port, venvPython) {
             if (!line) continue;
             try {
                 const msg = JSON.parse(line);
+
+                if (msg.evt === 'transport_lost') {
+                    sessionReady = false;
+                    if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+                    if (panel) {
+                        panel.webview.postMessage({
+                            evt: 'transport_lost',
+                            msg: msg.msg || 'Debug CDC transport lost'
+                        });
+                    }
+                    try { bridge.kill(); } catch (e) {}
+                    continue;
+                }
+
+                if (msg.evt === 'open' && !sessionReady) {
+                    // Start with a command supported by both legacy v4 and v5.
+                    // v5 appends capability metadata to this same reply; legacy
+                    // pumps simply return the old "cleared all bp slots [...]".
+                    try {
+                        bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+                        panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; synchronizing breakpoint table' });
+                        startupTimer = setTimeout(() => {
+                            if (!sessionReady && panel) {
+                                panel.webview.postMessage({
+                                    evt: 'error',
+                                    msg: 'Debug CDC opened, but clear_all_bp received no reply. The debug CDC transport or trace_pump is not responding.'
+                                });
+                            }
+                        }, 3500);
+                    } catch (e) {
+                        panel.webview.postMessage({ evt: 'error', msg: 'Failed to start debugger handshake: ' + String(e) });
+                    }
+                }
+
                 // Capture slot numbers from reply text: "bp N @ mod.func:line ip=..."
                 if (msg.evt === 'reply' && typeof msg.text === 'string') {
+                    if (!sessionReady && msg.text.startsWith('cleared all bp slots')) {
+                        const cap = msg.text.match(/\spump=(\d+)\s+build=([^\s]+)\s+rta=(\d+)/);
+                        if (cap) {
+                            const protocol = parseInt(cap[1], 10);
+                            const build = cap[2];
+                            pumpVerified = protocol === REQUIRED_PUMP_PROTOCOL;
+                            legacyPump = !pumpVerified;
+                            supportsListBp = pumpVerified;
+                            rtaSupported = cap[3] === '1';
+                            panel.webview.postMessage({
+                                evt: 'pump_capability',
+                                protocol,
+                                build,
+                                expectedBuild: REQUIRED_PUMP_BUILD,
+                                rtaSupported,
+                                legacy: legacyPump
+                            });
+                        } else {
+                            // Legacy pump: core breakpoint commands are fully
+                            // usable; v5-only target inventory is unavailable.
+                            pumpVerified = true;
+                            legacyPump = true;
+                            supportsListBp = false;
+                            rtaSupported = null;
+                            panel.webview.postMessage({
+                                evt: 'pump_capability',
+                                protocol: 'legacy',
+                                build: 'legacy pump',
+                                rtaSupported: null,
+                                legacy: true
+                            });
+                        }
+                        targetBreakpointList = [];
+                        sessionReady = true;
+                        if (startupTimer) {
+                            clearTimeout(startupTimer);
+                            startupTimer = null;
+                        }
+                        installCurrentBreakpoints();
+                        panel.webview.postMessage({ evt: 'pump_ready', rtaSupported, legacy: legacyPump });
+                    }
                     const m = msg.text.match(/^bp (\d+) @ (.*)\.([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
                     if (m) {
                         const slot = parseInt(m[1], 10);
@@ -165,37 +534,110 @@ function openDebuggerPanel(context, port, venvPython) {
                         const bpIp = parseInt(m[5], 10);
                         const info = popPendingBp(modName, funcName, relLine);
                         if (info) {
-                            bpSlotMap.set(info.key, slot);
-                            ipToLoc.set(bpIp, { fsPath: info.fsPath, line1: info.line1, fnKey: info.fnKey });
-                            if (info.cond) ipToCond.set(bpIp, info.cond);
-                            if (m[6]) {
-                                const funPtr = m[6];
-                                funToName.set(parseInt(funPtr, 10), info.fnKey);
-                                panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
+                            if (info.cancelled) {
+                                // The IDE breakpoint was removed before the device finished
+                                // registering it. Clear the late slot immediately so it can
+                                // never become a ghost breakpoint on the target.
+                                bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
+                                panel.webview.postMessage({ evt: 'sent', op: `clear_bp slot=${slot} (late set reply)` });
+                            } else {
+                                let slots = bpSlotMap.get(info.key);
+                                if (!slots) {
+                                    slots = new Set();
+                                    bpSlotMap.set(info.key, slots);
+                                }
+                                slots.add(slot);
+                                const funPtr = m[6] ? parseInt(m[6], 10) : null;
+                                targetBreakpointList = targetBreakpointList.filter(t => t.slot !== slot);
+                                targetBreakpointList.push({ slot, fun: funPtr, ip: bpIp });
+                                const hitKey = funPtr !== null
+                                    ? `${funPtr}:${bpIp}`
+                                    : `legacy:${info.key}:${bpIp}`;
+                                bpHitLocMap.set(hitKey, {
+                                    fsPath: info.fsPath,
+                                    line1: info.line1,
+                                    fnKey: info.fnKey,
+                                    ip: bpIp,
+                                    fun: funPtr,
+                                    cond: info.cond
+                                });
+                                if (funPtr !== null) {
+                                    funToName.set(funPtr, info.fnKey);
+                                    panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
+                                }
                             }
                         }
-                    } else if (msg.text.startsWith("poked global __t")) {
+                    } else if (msg.text.startsWith("bp_list=")) {
+                        const rawList = msg.text.slice("bp_list=".length);
+                        const parsed = [];
+                        const bpRe = /\((\d+),\s*(\d+),\s*(\d+)(?:,\s*(?:True|False|0|1))?\)/g;
+                        let bm;
+                        while ((bm = bpRe.exec(rawList)) !== null) {
+                            parsed.push({
+                                slot: parseInt(bm[1], 10),
+                                fun: parseInt(bm[2], 10),
+                                ip: parseInt(bm[3], 10)
+                            });
+                        }
+                        targetBreakpointList = parsed;
+                        postBreakpointSnapshot();
+                    } else if (msg.text.startsWith("poked global __rta_sym_count")) {
                         const eqIdx = msg.text.indexOf("=");
                         if (eqIdx !== -1) {
-                            let valStr = msg.text.slice(eqIdx + 1).trim();
-                            if (valStr.startsWith("'") || valStr.startsWith('"')) {
-                                valStr = valStr.slice(1, -1);
+                            let countText = msg.text.slice(eqIdx + 1).trim();
+                            if ((countText.startsWith("'") && countText.endsWith("'")) ||
+                                (countText.startsWith('"') && countText.endsWith('"'))) {
+                                countText = countText.slice(1, -1);
                             }
-                            if (valStr && valStr !== "no_asyncio") {
-                                const chunks = valStr.split(",");
-                                for (const chunk of chunks) {
-                                    if (chunk.includes(":")) {
-                                        const [addrStr, genStr] = chunk.split(":", 2);
-                                        const funBc = parseInt(addrStr, 10);
-                                        if (!isNaN(funBc)) {
-                                            const m1 = genStr.match(/object '([^']+)'/);
-                                            if (m1) {
-                                                taskMap.set(funBc, m1[1]);
-                                            } else {
-                                                const m2 = genStr.match(/object ([^\s]+)/);
-                                                taskMap.set(funBc, m2 ? m2[1] : "task");
-                                            }
+                            rtaSymRemaining = parseInt(countText, 10) || 0;
+                            if (rtaSymRemaining > 0) requestNextSymbolMapChunk();
+                        }
+                    } else if (msg.text.startsWith("poked global __rta_sym_chunk")) {
+                        const eqIdx = msg.text.indexOf("=");
+                        if (eqIdx !== -1) {
+                            let mapText = msg.text.slice(eqIdx + 1).trim();
+                            if ((mapText.startsWith("'") && mapText.endsWith("'")) ||
+                                (mapText.startsWith('"') && mapText.endsWith('"'))) {
+                                mapText = mapText.slice(1, -1);
+                            }
+                            let parsed = 0;
+                            if (mapText && mapText !== "None") {
+                                for (const item of mapText.split(",")) {
+                                    const sm = item.trim().match(/^(\d+):object '([^']+)'$/);
+                                    if (!sm) continue;
+                                    const funPtr = parseInt(sm[1], 10);
+                                    const funName = sm[2];
+                                    funToName.set(funPtr, funName);
+                                    panel.webview.postMessage({ evt: 'rta_name', fun: funPtr, name: funName, kind: 'function' });
+                                    parsed += 1;
+                                }
+                            }
+                            rtaSymRemaining = Math.max(0, rtaSymRemaining - parsed);
+                            if (rtaSymRemaining > 0 && mapText !== "None") {
+                                requestNextSymbolMapChunk();
+                            } else {
+                                rtaSymRefreshActive = false;
+                            }
+                        }
+                    } else if (msg.text.startsWith("taskmap=")) {
+                        const valStr = msg.text.slice("taskmap=".length).trim();
+                        if (valStr && valStr !== "no_asyncio" && !valStr.startsWith("err:")) {
+                            const chunks = valStr.split(",");
+                            for (const chunk of chunks) {
+                                if (chunk.includes(":")) {
+                                    const [addrStr, genStr] = chunk.split(":", 2);
+                                    const funBc = parseInt(addrStr, 10);
+                                    if (!isNaN(funBc)) {
+                                        const m1 = genStr.match(/object '([^']+)'/);
+                                        let taskName;
+                                        if (m1) {
+                                            taskName = m1[1];
+                                        } else {
+                                            const m2 = genStr.match(/object ([^\s]+)/);
+                                            taskName = m2 ? m2[1] : "task";
                                         }
+                                        taskMap.set(funBc, taskName);
+                                        panel.webview.postMessage({ evt: 'rta_name', fun: funBc, name: taskName, kind: 'task' });
                                     }
                                 }
                             }
@@ -206,6 +648,9 @@ function openDebuggerPanel(context, port, venvPython) {
                             popPendingBp(mFail[1], mFail[2], parseInt(mFail[3], 10));
                         }
                     }
+                    if (/^(?:bp |cleared bp |cleared all bp slots|no code on )/.test(msg.text)) {
+                        postBreakpointSnapshot();
+                    }
                 }
                 if (msg.evt === 'step_line') {
                     highlightLine(msg.file, msg.line, lastActionWasStepIn);
@@ -215,8 +660,8 @@ function openDebuggerPanel(context, port, venvPython) {
                     try { bridge.stdin.write(JSON.stringify({ op: 'globals' }) + '\n'); } catch (e) {}
                 }
                 if (msg.evt === 'bp_hit') {
-                    const loc = ipToLoc.get(msg.ip);
-                    const cond = ipToCond.get(msg.ip);
+                    const loc = resolveBreakpointRecord(msg.fun, msg.ip);
+                    const cond = loc ? loc.cond : null;
                     if (cond && loc) {
                         // Defer UI surface; ask for locals, evaluate, then decide.
                         pendingCondEval = { ip: msg.ip, cond, loc, names: localNamesByFn.get(loc.fnKey) || [] };
@@ -242,7 +687,7 @@ function openDebuggerPanel(context, port, venvPython) {
                 if (msg.evt === 'exception') {
                     panel.webview.postMessage({ evt: 'error', msg: `Exception: ${msg.msg} at ip=0x${msg.ip.toString(16)}`, ip: msg.ip });
                     panel.webview.postMessage({ evt: 'status', paused: true });
-                    const loc = ipToLoc.get(msg.ip);
+                    const loc = resolveBreakpointRecord(msg.fun, msg.ip);
                     if (loc) {
                         highlightLine(loc.fsPath, loc.line1, false);
                         panel.webview.postMessage({ evt: 'names', names: localNamesByFn.get(loc.fnKey) || [] });
@@ -310,6 +755,30 @@ function openDebuggerPanel(context, port, venvPython) {
                     clearHighlight();
                     panel.webview.postMessage({ evt: 'status', paused: false });
                 }
+                if (msg.evt === 'reply' && typeof msg.text === 'string') {
+                    if (msg.text === 'RTA trace enabled') {
+                        if (rtaDumpTimer) {
+                            clearTimeout(rtaDumpTimer);
+                            rtaDumpTimer = null;
+                        }
+                        rtaEvents = [];
+                        taskMap.clear();
+                        requestTaskMap();
+                        requestSymbolMap();
+                        if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: true });
+                    } else if (msg.text === 'RTA trace disabled') {
+                        if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: false });
+                        scheduleRtaTraceDump();
+                    } else if (msg.text.startsWith('RTA unsupported by firmware:')) {
+                        rtaSupported = false;
+                        if (panel) {
+                            panel.webview.postMessage({ evt: 'rta_status', enabled: false });
+                            panel.webview.postMessage({ evt: 'rta_capability', supported: false });
+                            panel.webview.postMessage({ evt: 'error', msg: msg.text });
+                        }
+                        vscode.window.showWarningMessage(msg.text);
+                    }
+                }
                 if (msg.evt === 'rta_entry') {
                     rtaEvents.push({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
@@ -318,6 +787,7 @@ function openDebuggerPanel(context, port, venvPython) {
                         pid: 1,
                         tid: 1
                     });
+                    if (rtaDumpTimer) scheduleRtaTraceDump();
                 }
                 if (msg.evt === 'rta_exit') {
                     rtaEvents.push({
@@ -327,14 +797,19 @@ function openDebuggerPanel(context, port, venvPython) {
                         pid: 1,
                         tid: 1
                     });
+                    if (rtaDumpTimer) scheduleRtaTraceDump();
                 }
-                if (msg.evt === 'sent' && msg.op === 'rta_on') {
-                    rtaEvents = [];
+                const internalRtaSymbolReply =
+                    msg.evt === 'reply' &&
+                    typeof msg.text === 'string' &&
+                    msg.text.startsWith('poked global __rta_sym_');
+                const internalRtaSymbolSend =
+                    msg.evt === 'sent' &&
+                    msg.op === 'poke_global' &&
+                    rtaSymRefreshActive;
+                if (panel && !internalRtaSymbolReply && !internalRtaSymbolSend) {
+                    panel.webview.postMessage(msg);
                 }
-                if (msg.evt === 'sent' && msg.op === 'rta_off') {
-                    dumpRtaTrace();
-                }
-                if (panel) panel.webview.postMessage(msg);
             } catch (e) {
                 if (panel) panel.webview.postMessage({ evt: 'raw', text: line });
             }
@@ -353,7 +828,6 @@ function openDebuggerPanel(context, port, venvPython) {
         if (msg.op === 'set_bp_here') {
             let ed = vscode.window.activeTextEditor;
             if (!ed || !ed.document.fileName.endsWith('.py')) {
-                // Webview has focus — fall back to any visible .py editor
                 ed = vscode.window.visibleTextEditors.find(
                     e => e.document && e.document.fileName.endsWith('.py')
                 );
@@ -363,25 +837,27 @@ function openDebuggerPanel(context, port, venvPython) {
                 return;
             }
             const line1 = ed.selection.active.line + 1;
-            const text = ed.document.getText();
-            const info = findEnclosingFunction(text, line1);
-            if (!info) {
-                panel.webview.postMessage({ evt: 'error', msg: `no enclosing def at line ${line1}` });
+            const fsPath = ed.document.fileName;
+            const existing = findVsCodeBreakpoint(fsPath, line1);
+            if (existing) {
+                panel.webview.postMessage({ evt: 'error', msg: `breakpoint already exists at ${path.basename(fsPath)}:${line1}` });
+                postBreakpointSnapshot();
                 return;
             }
-            const modName = path.basename(ed.document.fileName, '.py');
-            const relLine = line1 - info.defLine;
-            const key = `${modName}:${info.func}:${line1}`;
-            const names = extractLocalNames(text, info.defLine, info.args);
-            localNamesByFn.set(`${modName}:${info.func}`, names);
-            pendingBpReplies.push({ key, fsPath: ed.document.fileName, line1, fnKey: `${modName}:${info.func}`, defLine: info.defLine });
-            const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
-            bridge.stdin.write(JSON.stringify(out) + '\n');
-            panel.webview.postMessage({ evt: 'sent', op: `set_bp ${modName}.${info.func}:${line1} (rel=${relLine})` });
+            const location = new vscode.Location(
+                ed.document.uri,
+                new vscode.Position(line1 - 1, 0)
+            );
+            vscode.debug.addBreakpoints([
+                new vscode.SourceBreakpoint(location, true)
+            ]);
             return;
         }
         if (msg.op === 'flash_firmware') {
-            vscode.commands.executeCommand('micropython-ide.flashDebugFirmware');
+            vscode.commands.executeCommand('micropython-ide.flashDebugFirmware', {
+                source: 'debugger',
+                requireRta: rtaSupported === false
+            });
             return;
         }
         if (msg.op === 'goto_frame') {
@@ -397,93 +873,149 @@ function openDebuggerPanel(context, port, venvPython) {
             }
             return;
         }
+        if (msg.op === 'bp_refresh') {
+            if (supportsListBp) {
+                try {
+                    bridge.stdin.write(JSON.stringify({ op: 'list_bp' }) + '\n');
+                } catch (e) {}
+            } else if (panel) {
+                panel.webview.postMessage({
+                    evt: 'sent',
+                    op: 'legacy pump: target-only breakpoint inventory requires pump v5'
+                });
+            }
+            postBreakpointSnapshot();
+            return;
+        }
+        if (msg.op === 'bp_goto') {
+            const bp = findVsCodeBreakpoint(msg.fsPath, Number(msg.line1));
+            if (bp) {
+                vscode.workspace.openTextDocument(bp.location.uri).then(doc => {
+                    vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One }).then(ed => {
+                        const r = bp.location.range;
+                        ed.revealRange(r, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+                        ed.selection = new vscode.Selection(r.start, r.start);
+                    });
+                });
+            }
+            return;
+        }
+        if (msg.op === 'bp_remove') {
+            const bp = findVsCodeBreakpoint(msg.fsPath, Number(msg.line1));
+            if (bp) vscode.debug.removeBreakpoints([bp]);
+            return;
+        }
+        if (msg.op === 'bp_remove_target') {
+            const slot = Number(msg.slot);
+            if (!Number.isInteger(slot)) return;
+            try {
+                bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
+            } catch (e) {}
+            targetBreakpointList = targetBreakpointList.filter(t => t.slot !== slot);
+            postBreakpointSnapshot();
+            return;
+        }
+        if (msg.op === 'bp_toggle') {
+            const bp = findVsCodeBreakpoint(msg.fsPath, Number(msg.line1));
+            if (!bp) return;
+            // Clear the current target registration first so enable/disable is
+            // deterministic even if VS Code emits remove/add events later.
+            clearSourceBreakpoint(bp.location.uri.fsPath, bp.location.range.start.line + 1, false);
+            const replacement = new vscode.SourceBreakpoint(
+                bp.location,
+                !!msg.enabled,
+                bp.condition,
+                bp.hitCondition,
+                bp.logMessage
+            );
+            vscode.debug.removeBreakpoints([bp]);
+            vscode.debug.addBreakpoints([replacement]);
+            return;
+        }
+        if (msg.op === 'bp_clear_all') {
+            const pythonBps = vscode.debug.breakpoints.filter(bp =>
+                bp instanceof vscode.SourceBreakpoint &&
+                bp.location.uri.fsPath.endsWith('.py')
+            );
+            for (const pending of pendingBpReplies) pending.cancelled = true;
+            bpSlotMap.clear();
+            bpHitLocMap.clear();
+            targetBreakpointList = [];
+            try {
+                bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+            } catch (e) {}
+            if (pythonBps.length) vscode.debug.removeBreakpoints(pythonBps);
+            postBreakpointSnapshot();
+            return;
+        }
         if (msg.op === 'tasks') {
-            const expr = 'g=globals();exec("import sys,machine\\nM=machine.mem32\\nq=sys.modules[\'asyncio\'].core._task_queue\\nt=[]\\nwhile q.peek():t.append(q.pop())\\n__t=\',\'.join(str(x.coro) for x in t)\\nfor x in t:q.push(x,M[id(x)+20])",g) or g.get(\'__t\')';
-            bridge.stdin.write(JSON.stringify({ op: 'poke_local', slot: 0, depth: 0, expr: expr }) + '\n');
-            panel.webview.postMessage({ evt: 'sent', op: 'tasks' });
+            bridge.stdin.write(JSON.stringify({ op: 'tasks' }) + '\n');
+            return;
+        }
+        if (msg.op === 'rta_resolve_names') {
+            const taskOk = requestTaskMap();
+            const symbolOk = requestSymbolMap();
+            if (taskOk || symbolOk) {
+                panel.webview.postMessage({ evt: 'sent', op: 'RTA name refresh' });
+            }
             return;
         }
         if (msg.op === 'taskmap') {
-            const expr = 'g=globals();exec("import sys,machine\\nM=machine.mem32\\nq=sys.modules[\'asyncio\'].core._task_queue\\nt=[]\\nwhile q.peek():t.append(q.pop())\\n__t=\',\'.join(\'%d:%s\'%(M[id(x.coro)+8],x.coro) for x in t)\\nfor x in t:q.push(x,M[id(x)+20])",g) or g.get(\'__t\')';
-            bridge.stdin.write(JSON.stringify({ op: 'poke_global', name: '__t', depth: 0, expr: expr }) + '\n');
-            panel.webview.postMessage({ evt: 'sent', op: 'taskmap' });
+            requestTaskMap();
             return;
-        }
-        if (msg.op === 'rta_on') {
-            rtaEvents = [];
         }
         bridge.stdin.write(JSON.stringify(msg) + '\n');
     });
 
-    // Watch VS Code's own breakpoint list; on add/remove for .py files, translate
-    // to (module, func, relative_line) and send to bridge.
+    // VS Code is the source of truth for Python breakpoints. Editor gutter,
+    // VS Code Breakpoints view, and this debugger panel all converge here.
     bpDisposable = vscode.debug.onDidChangeBreakpoints((ev) => {
         for (const bp of ev.added) {
-            if (!(bp instanceof vscode.SourceBreakpoint)) continue;
-            const loc = bp.location;
-            const fsPath = loc.uri.fsPath;
-            if (!fsPath.endsWith('.py')) continue;
-            const line1 = loc.range.start.line + 1;
-            try {
-                const fs = require('fs');
-                const text = fs.readFileSync(fsPath, 'utf8');
-                const info = findEnclosingFunction(text, line1);
-                if (!info) {
-                    panel.webview.postMessage({ evt: 'error', msg: `no enclosing def for ${path.basename(fsPath)}:${line1}` });
-                    continue;
-                }
-                const modName = path.basename(fsPath, '.py');
-                const relLine = line1 - info.defLine;
-                const key = `${modName}:${info.func}:${line1}`;
-                const names = extractLocalNames(text, info.defLine, info.args);
-                localNamesByFn.set(`${modName}:${info.func}`, names);
-                const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
-                pendingBpReplies.push({ key, fsPath, line1, fnKey: `${modName}:${info.func}`, cond, defLine: info.defLine });
-                const out = { op: 'set_bp', module: modName, func: info.func, line: relLine };
-                bridge.stdin.write(JSON.stringify(out) + '\n');
-                panel.webview.postMessage({ evt: 'sent', op: `set_bp ${key} rel=${relLine}${cond ? ' cond=' + cond : ''}` });
-            } catch (e) {
-                panel.webview.postMessage({ evt: 'error', msg: String(e) });
-            }
+            registerSourceBreakpoint(bp, true);
         }
+
         for (const bp of ev.changed) {
-            if (!(bp instanceof vscode.SourceBreakpoint)) continue;
-            const fsPath = bp.location.uri.fsPath;
-            if (!fsPath.endsWith('.py')) continue;
-            const line1 = bp.location.range.start.line + 1;
-            const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
-            for (const [ip, l] of ipToLoc.entries()) {
-                if (l.fsPath === fsPath && l.line1 === line1) {
-                    if (cond) ipToCond.set(ip, cond); else ipToCond.delete(ip);
-                    panel.webview.postMessage({ evt: 'sent', op: `cond ${path.basename(fsPath)}:${line1} = ${cond || '(none)'}` });
+            const info = getBreakpointInfo(bp);
+            if (!info) continue;
+
+            if (!info.enabled) {
+                clearSourceBreakpoint(info.fsPath, info.line1, true);
+                continue;
+            }
+
+            let mapped = false;
+            for (const rec of bpHitLocMap.values()) {
+                if (rec.fsPath === info.fsPath && rec.line1 === info.line1) {
+                    rec.cond = info.cond;
+                    mapped = true;
                 }
             }
+
+            if (!mapped && !hasPendingRegistration(info.fsPath, info.line1)) {
+                registerSourceBreakpoint(bp, true);
+            } else if (panel) {
+                panel.webview.postMessage({
+                    evt: 'sent',
+                    op: `bp update ${info.file}:${info.line1}${info.cond ? ' cond=' + info.cond : ''}`
+                });
+            }
         }
+
         for (const bp of ev.removed) {
             if (!(bp instanceof vscode.SourceBreakpoint)) continue;
             const fsPath = bp.location.uri.fsPath;
             if (!fsPath.endsWith('.py')) continue;
-            const line1 = bp.location.range.start.line + 1;
-            const modName = path.basename(fsPath, '.py');
-            // We don't know func here w/o re-scan; try any matching key.
-            for (const [k, slot] of bpSlotMap.entries()) {
-                if (k.startsWith(`${modName}:`) && k.endsWith(`:${line1}`)) {
-                    bridge.stdin.write(JSON.stringify({ op: 'clear_bp', slot }) + '\n');
-                    bpSlotMap.delete(k);
-                    // also drop any ipToCond and ipToLoc entries for this location
-                    for (const [ip, l] of ipToLoc.entries()) {
-                        if (l.fsPath === fsPath && l.line1 === line1) {
-                            ipToCond.delete(ip);
-                            ipToLoc.delete(ip);
-                        }
-                    }
-                    break;
-                }
-            }
+            clearSourceBreakpoint(fsPath, bp.location.range.start.line + 1, true);
         }
+
+        postBreakpointSnapshot();
     });
 
     panel.onDidDispose(() => {
+        if (startupTimer) {
+            clearTimeout(startupTimer);
+            startupTimer = null;
+        }
         if (bpDisposable) { bpDisposable.dispose(); bpDisposable = null; }
         if (rtaEvents.length > 0) {
             dumpRtaTrace();
@@ -518,11 +1050,39 @@ function runBackend(venvPython, backendScript, args) {
     });
 }
 
+async function verifyUploadedPumpFile(context, replPort, venvPython, out) {
+    const backend = path.join(context.extensionPath, 'src', 'mps_backend.py');
+    const r = await wsQueue.run(() => runBackend(venvPython, backend, [
+        'cat', '--port', replPort, '--path', '/trace_pump.py'
+    ]), 'Verify uploaded trace_pump.py');
+
+    if (r.err) out.appendLine(r.err.trim());
+    if (r.code !== 0) {
+        out.appendLine('VERIFY FAILED: could not read /trace_pump.py back from the device.');
+        return false;
+    }
+
+    const protocolMarker = `PUMP_PROTOCOL = ${REQUIRED_PUMP_PROTOCOL}`;
+    const buildMarker = `PUMP_BUILD = "${REQUIRED_PUMP_BUILD}"`;
+    const hasProtocol = r.out.includes(protocolMarker);
+    const hasBuild = r.out.includes(buildMarker);
+    const hasOldPop = r.out.includes('cmd_buf.pop(0)');
+
+    out.appendLine(`  verify trace_pump: protocol=${hasProtocol ? 'OK' : 'MISSING'} build=${hasBuild ? 'OK' : 'MISSING'} bytearray.pop=${hasOldPop ? 'BAD' : 'ABSENT'}`);
+
+    if (!hasProtocol || !hasBuild || hasOldPop) {
+        out.appendLine('VERIFY FAILED: device trace_pump.py is not the Studio-required build.');
+        return false;
+    }
+    return true;
+}
+
 async function uploadDebuggerFiles(context, replPort, venvPython) {
     const dir = path.join(context.extensionPath, 'src', 'debugger_files');
     const backend = path.join(context.extensionPath, 'src', 'mps_backend.py');
     const files = ['dbgref.py', 'trace_pump.py', 'boot.py'];
-    const out = vscode.window.createOutputChannel('MPy Debugger Setup');
+    const out = getDebugSetupOutputChannel();
+    out.clear();
     out.show(true);
     out.appendLine(`Uploading debugger files to ${replPort} via mps_backend...`);
     for (const f of files) {
@@ -540,12 +1100,16 @@ async function uploadDebuggerFiles(context, replPort, venvPython) {
             return false;
         }
     }
-    out.appendLine('Files uploaded. Now:');
-    out.appendLine('  1. Install usb-device-cdc using Package Install:');
-    out.appendLine('  1. Open the Shell terminal');
-    out.appendLine('  2. Reset the board (Ctrl-D in REPL) so boot.py runs');
-    out.appendLine('  3. Type:  import trace_pump; trace_pump.start()');
-    out.appendLine('Then come back and click Connect only -> Start.');
+    out.appendLine('Verifying trace_pump.py by reading it back from the device...');
+    const verified = await verifyUploadedPumpFile(context, replPort, venvPython, out);
+    if (!verified) {
+        vscode.window.showErrorMessage('Debugger upload verification failed. The Pico does not contain the required trace_pump.py.');
+        return false;
+    }
+
+    out.appendLine('Debugger files uploaded and VERIFIED.');
+    out.appendLine('Reset the board now so boot.py reloads the verified files and auto-starts trace_pump.');
+    out.appendLine('After reset, Start Debug again and choose Connect only. Connect only talks directly to the SECOND COM/debug CDC.');
     return true;
 }
 
@@ -566,7 +1130,12 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
     if (pick.id === 'upload') {
         const ok = await uploadDebuggerFiles(context, replPort, venvPython);
         if (!ok) return;
+        vscode.window.showInformationMessage(
+            'Debugger files verified on the Pico. Reset the board, then Start Debug again and choose Connect only.'
+        );
+        return;
     }
+
     const port = await vscode.window.showInputBox({
         prompt: 'Debug CDC port (the SECOND COM port Windows shows for the board)',
         placeHolder: 'e.g. COM3',
@@ -575,7 +1144,14 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
     openDebuggerPanel(context, port, venvPython);
 }
 
-function getHtml() {
+function getHtml(buildInfo) {
+    const rawBuildDate = String(buildInfo?.buildDate || 'unknown');
+    const buildDate = rawBuildDate === 'development'
+        ? 'development'
+        : rawBuildDate.replace('T', ' ').replace(/\.\d{3}Z$/, 'Z');
+    const safeVersion = String(buildInfo?.version || 'unknown').replace(/[^0-9A-Za-z._+-]/g, '');
+    const safeCommit = String(buildInfo?.commitShort || 'unknown').replace(/[^0-9A-Za-z._-]/g, '');
+    const safeBuildDate = buildDate.replace(/[^0-9A-Za-z:._+\- Z]/g, '');
     return `<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
@@ -636,6 +1212,24 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.header-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.build-identity {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: #64748b;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .status-badge {
   display: flex;
@@ -707,6 +1301,11 @@ body {
 }
 .btn:active {
   transform: scale(0.98);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
 }
 .btn-control {
   border-color: rgba(99, 102, 241, 0.3);
@@ -824,6 +1423,82 @@ body {
   font-size: 11px;
   min-height: 40px;
 }
+.panel-card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 6px;
+}
+.panel-card-header-row h3 {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.bp-toolbar {
+  display: flex;
+  gap: 6px;
+}
+.bp-table-wrap {
+  max-height: 220px;
+  overflow: auto;
+}
+.bp-table {
+  min-width: 720px;
+  font-size: 10px;
+}
+.bp-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  background: var(--bg-card);
+}
+.bp-table td {
+  padding: 5px 6px;
+}
+.bp-location {
+  color: #88c0ff;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.bp-state {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  border: 1px solid var(--border-color);
+}
+.bp-state.verified {
+  color: #86efac;
+  border-color: rgba(34,197,94,0.35);
+}
+.bp-state.pending {
+  color: #fcd34d;
+  border-color: rgba(245,158,11,0.35);
+}
+.bp-state.disabled {
+  color: #94a3b8;
+}
+.bp-state.not-set {
+  color: #fca5a5;
+  border-color: rgba(244,63,94,0.35);
+}
+.bp-state.target-only {
+  color: #fb7185;
+  border-color: rgba(251,113,133,0.5);
+  background: rgba(251,113,133,0.06);
+}
+.bp-remove {
+  padding: 2px 7px;
+  font-size: 10px;
+}
 
 /* Custom States / Output Classes */
 .bp { color: var(--accent-warning); font-weight: 600; }
@@ -831,6 +1506,213 @@ body {
 .err { color: var(--accent-error); font-weight: 600; }
 .sent { color: var(--accent-primary); }
 .rta { color: var(--accent-purple); font-weight: 500; }
+
+/* Live RTA Viewer */
+.rta-viewer {
+  background: linear-gradient(180deg, rgba(217,70,239,0.06), rgba(21,24,36,0.92));
+  border: 1px solid rgba(217,70,239,0.22);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.rta-viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(255,255,255,0.02);
+}
+.rta-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.rta-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #f5d0fe;
+}
+.rta-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  background: rgba(255,255,255,0.03);
+}
+.rta-live-badge.on {
+  color: #86efac;
+  border-color: rgba(34,197,94,0.35);
+  background: rgba(34,197,94,0.08);
+}
+.rta-live-badge.unsupported {
+  color: #fca5a5;
+  border-color: rgba(244,63,94,0.35);
+  background: rgba(244,63,94,0.06);
+}
+.rta-live-badge.on::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34,197,94,0.8);
+}
+.rta-viewer-actions {
+  display: flex;
+  gap: 6px;
+}
+.rta-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+}
+.rta-kpi {
+  min-width: 0;
+  background: var(--bg-card);
+  padding: 9px 12px;
+}
+.rta-kpi-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.rta-kpi-value {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rta-table-wrap {
+  max-height: 260px;
+  overflow: auto;
+  background: var(--bg-input);
+}
+.rta-table {
+  min-width: 900px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.rta-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 7px 8px;
+  text-align: left;
+  color: var(--text-muted);
+  background: #11131d;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.rta-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.035);
+  white-space: nowrap;
+}
+.rta-table tbody tr:hover {
+  background: rgba(255,255,255,0.025);
+}
+.rta-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rta-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #475569;
+}
+.rta-state-dot.active {
+  background: #22c55e;
+  box-shadow: 0 0 7px rgba(34,197,94,0.75);
+}
+.rta-state-dot.idle {
+  background: #64748b;
+}
+.rta-kind {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(99,102,241,0.25);
+  color: #a5b4fc;
+  font-size: 9px;
+}
+.rta-kind.task {
+  border-color: rgba(6,182,212,0.3);
+  color: #67e8f9;
+}
+.rta-kind.system {
+  border-color: rgba(245,158,11,0.3);
+  color: #fbbf24;
+}
+.rta-kind.unknown {
+  border-color: rgba(148,163,184,0.25);
+  color: #94a3b8;
+}
+.rta-name-cell {
+  color: #e2e8f0;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rta-load {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 120px;
+}
+.rta-load-track {
+  width: 72px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+}
+.rta-load-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #8b5cf6, #d946ef);
+}
+.rta-load-text {
+  width: 42px;
+  text-align: right;
+  color: #e9d5ff;
+}
+.rta-empty {
+  padding: 18px !important;
+  text-align: center;
+  color: var(--text-muted);
+}
+.rta-note {
+  padding: 7px 12px;
+  color: #64748b;
+  font-size: 9px;
+  line-height: 1.4;
+  border-top: 1px solid var(--border-color);
+  background: rgba(255,255,255,0.015);
+}
+@media (max-width: 800px) {
+  .rta-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rta-viewer-header { align-items: flex-start; flex-direction: column; }
+}
 
 /* Table Styling */
 table {
@@ -887,18 +1769,63 @@ td.v:focus, td.vg:focus {
 </head><body>
 
 <div class="header-bar">
-  <div class="header-title">
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
-    MicroPython Bytecode Debugger
+  <div class="header-title-wrap">
+    <div class="header-title">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+      MicroPython Bytecode Debugger
+    </div>
+    <div class="build-identity">Studio v${safeVersion} · Build ${safeBuildDate} · Commit ${safeCommit}</div>
   </div>
-  <div id="status" class="status-badge running">
-    <span class="status-dot"></span>
-    <span class="status-text">running</span>
+  <div class="header-right">
+    <div id="status" class="status-badge running">
+      <span class="status-dot"></span>
+      <span class="status-text">running</span>
+    </div>
   </div>
 </div>
 
 <div class="controls-bar" id="controls-container">
   <!-- Dynamic configuration-driven buttons will render here -->
+</div>
+
+<div id="rta-viewer" class="rta-viewer">
+  <div class="rta-viewer-header">
+    <div class="rta-title-wrap">
+      <span class="rta-title">LIVE RTA · TASK / FUNCTION VIEWER</span>
+      <span id="rta-live-badge" class="rta-live-badge">OFF</span>
+    </div>
+    <div class="rta-viewer-actions">
+      <button class="btn btn-action" style="padding:4px 8px" onclick="send('rta_resolve_names')" title="Refresh asyncio task and function names">Refresh Names</button>
+      <button class="btn btn-clear" style="padding:4px 8px" onclick="resetRtaProfiler()" title="Clear local RTA statistics">Reset Stats</button>
+    </div>
+  </div>
+  <div class="rta-kpis">
+    <div class="rta-kpi"><div class="rta-kpi-label">Events</div><div id="rta-kpi-events" class="rta-kpi-value">0</div></div>
+    <div class="rta-kpi"><div class="rta-kpi-label">Functions / Tasks</div><div id="rta-kpi-functions" class="rta-kpi-value">0</div></div>
+    <div class="rta-kpi"><div class="rta-kpi-label">Trace Span</div><div id="rta-kpi-span" class="rta-kpi-value">—</div></div>
+    <div class="rta-kpi"><div class="rta-kpi-label">Highest Runtime</div><div id="rta-kpi-hot" class="rta-kpi-value">—</div></div>
+  </div>
+  <div class="rta-table-wrap">
+    <table class="rta-table">
+      <thead>
+        <tr>
+          <th>State</th>
+          <th>Task / Function</th>
+          <th>Type</th>
+          <th>Activations</th>
+          <th>Observed VM %</th>
+          <th>Total</th>
+          <th>Average</th>
+          <th>Max</th>
+          <th>Last</th>
+        </tr>
+      </thead>
+      <tbody id="rta-table-body">
+        <tr><td class="rta-empty" colspan="9">RTA is off. Click RTA On to begin live profiling.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="rta-note">Firmware timestamps are microseconds. Observed VM % is the share of completed MicroPython execution segments captured by RTA. It is not scheduler CPU%, task READY/BLOCKED state, or MCU idle time; those require future scheduler task-switch/idle events.</div>
 </div>
 
 <div class="dashboard-grid">
@@ -911,6 +1838,17 @@ td.v:focus, td.vg:focus {
   </div>
 
   <div class="panels-container">
+    <div id="panel-breakpoints" class="panel-card">
+      <div class="panel-card-header-row">
+        <h3>Breakpoints <span id="bp-count" style="color:#64748b">(0)</span></h3>
+        <div class="bp-toolbar">
+          <button class="btn btn-action" style="padding:3px 7px;font-size:10px" onclick="refreshBreakpoints()">Refresh</button>
+          <button class="btn btn-clear" style="padding:3px 7px;font-size:10px" onclick="clearAllBreakpoints()">Clear All</button>
+        </div>
+      </div>
+      <div id="breakpoints-body" class="panel-card-body">(waiting for debugger)</div>
+    </div>
+
     <div id="panel-locals" class="panel-card">
       <h3>Locals / Frame</h3>
       <div id="locals-body" class="panel-card-body">(not paused)</div>
@@ -953,6 +1891,17 @@ const log = document.getElementById('log');
 let currentNames = [];
 const funNames = {};
 let lastIp = 0;
+let debugReady = false;
+let rtaEnabled = false;
+let rtaAvailable = null; // true / false / null = legacy capability unknown
+const rtaProfiles = new Map();
+const rtaNames = new Map();
+const rtaStack = [];
+let rtaEventCount = 0;
+let rtaFirstTs = null;
+let rtaLastTs = null;
+let rtaRenderTimer = null;
+let currentBreakpoints = [];
 
 // Configuration list of commands to enable modular scaling
 const COMMANDS = [
@@ -968,6 +1917,7 @@ const COMMANDS = [
   { op: 'rta_on', label: 'RTA On', key: 't', icon: 'rta-on', category: 'action', desc: 'Enable Real-time Analysis tracing' },
   { op: 'rta_off', label: 'RTA Off', key: 'y', icon: 'rta-off', category: 'action', desc: 'Disable Real-time Analysis tracing' },
   { op: 'set_bp_here', label: 'Set BP', icon: 'bp', category: 'action', desc: 'Add breakpoint at editor cursor' },
+  { op: 'bp_refresh', label: 'Breakpoints', icon: 'bp', category: 'query', desc: 'Show and refresh active breakpoints' },
   { op: 'flash_firmware', label: 'Download Firmware', icon: 'flash', category: 'system', desc: 'Flash board debugger binary' }
 ];
 
@@ -993,6 +1943,7 @@ function renderButtons() {
   COMMANDS.forEach(cmd => {
     const btn = document.createElement('button');
     btn.className = 'btn btn-' + cmd.category;
+    btn.dataset.op = cmd.op;
     btn.title = cmd.desc + (cmd.key ? ' (' + cmd.key + ')' : '');
     btn.onclick = () => send(cmd.op);
 
@@ -1015,6 +1966,8 @@ document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.contentEditable === 'true') return;
   const match = COMMANDS.find(cmd => cmd.key === e.key);
   if (match) {
+    const button = document.querySelector('button[data-op="' + match.op + '"]');
+    if (button && button.disabled) return;
     e.preventDefault();
     send(match.op);
   }
@@ -1029,6 +1982,315 @@ function add(cls, text) {
 }
 
 function send(op) { vscode.postMessage({op}); }
+
+function refreshBreakpoints() {
+  vscode.postMessage({ op: 'bp_refresh' });
+  const panel = document.getElementById('panel-breakpoints');
+  if (panel && panel.scrollIntoView) panel.scrollIntoView({ block: 'nearest' });
+}
+
+function clearAllBreakpoints() {
+  if (!currentBreakpoints.length) return;
+  vscode.postMessage({ op: 'bp_clear_all' });
+}
+
+function toggleBreakpoint(index, enabled) {
+  const bp = currentBreakpoints[index];
+  if (!bp || bp.targetOnly) return;
+  vscode.postMessage({
+    op: 'bp_toggle',
+    fsPath: bp.fsPath,
+    line1: bp.line1,
+    enabled: !!enabled
+  });
+}
+
+function removeBreakpoint(index) {
+  const bp = currentBreakpoints[index];
+  if (!bp) return;
+  if (bp.targetOnly) {
+    const slot = bp.slots && bp.slots.length ? bp.slots[0] : null;
+    vscode.postMessage({ op: 'bp_remove_target', slot: slot });
+    return;
+  }
+  vscode.postMessage({ op: 'bp_remove', fsPath: bp.fsPath, line1: bp.line1 });
+}
+
+function gotoBreakpoint(index) {
+  const bp = currentBreakpoints[index];
+  if (!bp || bp.targetOnly) return;
+  vscode.postMessage({ op: 'bp_goto', fsPath: bp.fsPath, line1: bp.line1 });
+}
+
+function renderBreakpoints(items) {
+  currentBreakpoints = Array.isArray(items) ? items : [];
+  const body = document.getElementById('breakpoints-body');
+  const count = document.getElementById('bp-count');
+  if (count) count.textContent = '(' + currentBreakpoints.length + ')';
+  if (!body) return;
+
+  if (!currentBreakpoints.length) {
+    body.innerHTML = '<div style="color:#64748b;padding:6px 0">No Python breakpoints. Set one in the editor gutter or use Set BP.</div>';
+    return;
+  }
+
+  let html = '<div class="bp-table-wrap"><table class="bp-table"><thead><tr>' +
+    '<th>On</th><th>Location</th><th>Function</th><th>Slot</th><th>IP</th><th>Condition</th><th>Status</th><th></th>' +
+    '</tr></thead><tbody>';
+
+  currentBreakpoints.forEach((bp, i) => {
+    const stateClass = String(bp.state || 'NOT SET').toLowerCase().replace(/\s+/g, '-');
+    const slots = (bp.slots && bp.slots.length) ? bp.slots.map(x => 'S' + x).join(',') : '—';
+    const ip = (bp.ip === null || bp.ip === undefined) ? '—' : ('0x' + Number(bp.ip).toString(16).padStart(4, '0'));
+    const condition = bp.condition ? escapeHtml(bp.condition) : '—';
+    const onCell = bp.targetOnly
+      ? '<span style="color:#64748b">—</span>'
+      : '<input type="checkbox" ' + (bp.enabled ? 'checked' : '') + ' onchange="toggleBreakpoint(' + i + ',this.checked)" title="Enable / disable breakpoint">';
+    const locationCell = bp.targetOnly
+      ? '<span style="color:#fb7185">(target only)</span>'
+      : '<a class="bp-location" onclick="gotoBreakpoint(' + i + ');return false">' + escapeHtml(bp.file) + ':' + bp.line1 + '</a>';
+    html += '<tr>' +
+      '<td>' + onCell + '</td>' +
+      '<td>' + locationCell + '</td>' +
+      '<td>' + escapeHtml(bp.func || '—') + '</td>' +
+      '<td>' + slots + '</td>' +
+      '<td>' + ip + '</td>' +
+      '<td title="' + condition + '">' + condition + '</td>' +
+      '<td><span class="bp-state ' + stateClass + '">' + escapeHtml(bp.state || 'NOT SET') + '</span></td>' +
+      '<td><button class="btn btn-clear bp-remove" onclick="removeBreakpoint(' + i + ')">Remove</button></td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+  body.innerHTML = html;
+}
+
+function updateRtaControls(enabled) {
+  rtaEnabled = !!enabled;
+  const onBtn = document.querySelector('button[data-op="rta_on"]');
+  const offBtn = document.querySelector('button[data-op="rta_off"]');
+  const badge = document.getElementById('rta-live-badge');
+  const explicitlyUnsupported = rtaAvailable === false;
+
+  if (onBtn) {
+    onBtn.disabled = !debugReady || explicitlyUnsupported || rtaEnabled;
+    onBtn.title = explicitlyUnsupported
+      ? 'RTA requires an RTA-capable debugger firmware'
+      : (rtaAvailable === null
+          ? 'Legacy pump: firmware RTA capability will be checked when RTA On is used'
+          : 'Enable Real-time Analysis tracing (t)');
+  }
+  if (offBtn) offBtn.disabled = !debugReady || explicitlyUnsupported || !rtaEnabled;
+
+  if (badge) {
+    if (!debugReady) {
+      badge.textContent = 'CHECKING';
+      badge.className = 'rta-live-badge';
+    } else if (rtaAvailable === false) {
+      badge.textContent = 'FW REQUIRED';
+      badge.className = 'rta-live-badge unsupported';
+    } else if (rtaAvailable === null) {
+      badge.textContent = 'LEGACY';
+      badge.className = 'rta-live-badge';
+    } else {
+      badge.textContent = rtaEnabled ? 'LIVE' : 'OFF';
+      badge.className = rtaEnabled ? 'rta-live-badge on' : 'rta-live-badge';
+    }
+  }
+}
+
+function rtaTsDiff(end, start) {
+  const e = Number(end) >>> 0;
+  const s = Number(start) >>> 0;
+  return e >= s ? (e - s) : (0x100000000 - s + e);
+}
+
+function formatRtaTime(value) {
+  const us = Number(value) || 0;
+  if (us >= 1000000) return (us / 1000000).toFixed(us >= 10000000 ? 1 : 2) + ' s';
+  if (us >= 1000) return (us / 1000).toFixed(us >= 100000 ? 1 : 2) + ' ms';
+  if (us >= 100) return us.toFixed(0) + ' µs';
+  if (us >= 10) return us.toFixed(1) + ' µs';
+  return us.toFixed(2) + ' µs';
+}
+
+function classifyRtaKind(name, kind, existingKind) {
+  if (kind === 'task' || existingKind === 'task') return 'task';
+  const n = String(name || '');
+  if (
+    n.startsWith('trace_pump.') ||
+    n.startsWith('usb.device.') ||
+    n.startsWith('asyncio.') ||
+    n.startsWith('logging.') ||
+    n.startsWith('rp2.')
+  ) return 'system';
+  if (kind === 'function') return 'function';
+  if (existingKind && existingKind !== 'unknown') return existingKind;
+  return n.startsWith('0x') ? 'unknown' : 'function';
+}
+
+function setRtaName(fun, name, kind) {
+  const key = String(fun);
+  const existing = rtaNames.get(key);
+  const resolvedName = name || (existing && existing.name) || ('0x' + Number(fun).toString(16));
+  const next = {
+    name: resolvedName,
+    kind: classifyRtaKind(resolvedName, kind, existing && existing.kind)
+  };
+  rtaNames.set(key, next);
+  const profile = rtaProfiles.get(key);
+  if (profile) {
+    profile.name = next.name;
+    profile.kind = next.kind;
+  }
+  scheduleRtaRender();
+}
+
+function getRtaProfile(fun) {
+  const key = String(fun);
+  let profile = rtaProfiles.get(key);
+  if (!profile) {
+    const named = rtaNames.get(key);
+    profile = {
+      fun: Number(fun),
+      name: named ? named.name : ('0x' + Number(fun).toString(16)),
+      kind: named ? named.kind : 'unknown',
+      calls: 0,
+      totalExclusive: 0,
+      totalInclusive: 0,
+      max: 0,
+      last: 0,
+      lastTs: 0
+    };
+    rtaProfiles.set(key, profile);
+  }
+  return profile;
+}
+
+function resetRtaProfiler() {
+  rtaProfiles.clear();
+  rtaStack.length = 0;
+  rtaEventCount = 0;
+  rtaFirstTs = null;
+  rtaLastTs = null;
+  renderRtaProfiler();
+}
+
+function scheduleRtaRender() {
+  if (rtaRenderTimer) return;
+  rtaRenderTimer = setTimeout(() => {
+    rtaRenderTimer = null;
+    renderRtaProfiler();
+  }, 100);
+}
+
+function handleRtaEvent(m) {
+  rtaEventCount += 1;
+  if (rtaFirstTs === null) rtaFirstTs = Number(m.ts) >>> 0;
+  rtaLastTs = Number(m.ts) >>> 0;
+
+  if (m.evt === 'rta_entry') {
+    getRtaProfile(m.fun);
+    rtaStack.push({ fun: Number(m.fun), start: Number(m.ts) >>> 0, childTime: 0 });
+    scheduleRtaRender();
+    return;
+  }
+
+  let matchIndex = -1;
+  for (let i = rtaStack.length - 1; i >= 0; i--) {
+    if (rtaStack[i].fun === Number(m.fun)) {
+      matchIndex = i;
+      break;
+    }
+  }
+  if (matchIndex < 0) {
+    scheduleRtaRender();
+    return;
+  }
+
+  const frame = rtaStack[matchIndex];
+  const duration = rtaTsDiff(m.ts, frame.start);
+  const exclusive = Math.max(0, duration - frame.childTime);
+
+  // Drop the matched frame plus any malformed deeper frames. Normal traces
+  // always match the top frame; this keeps the viewer resilient to loss.
+  rtaStack.splice(matchIndex);
+
+  if (rtaStack.length > 0) {
+    rtaStack[rtaStack.length - 1].childTime += duration;
+  }
+
+  const profile = getRtaProfile(m.fun);
+  profile.calls += 1;
+  profile.totalExclusive += exclusive;
+  profile.totalInclusive += duration;
+  profile.last = duration;
+  profile.max = Math.max(profile.max, duration);
+  profile.lastTs = Number(m.ts) >>> 0;
+  scheduleRtaRender();
+}
+
+function isRtaActive(fun) {
+  const n = Number(fun);
+  for (let i = rtaStack.length - 1; i >= 0; i--) {
+    if (rtaStack[i].fun === n) return true;
+  }
+  return false;
+}
+
+function renderRtaProfiler() {
+  const body = document.getElementById('rta-table-body');
+  if (!body) return;
+
+  const profiles = Array.from(rtaProfiles.values());
+  const totalExclusive = profiles.reduce((sum, p) => sum + p.totalExclusive, 0);
+  profiles.sort((a, b) =>
+    (b.totalExclusive - a.totalExclusive) ||
+    (b.max - a.max) ||
+    (b.calls - a.calls)
+  );
+
+  document.getElementById('rta-kpi-events').textContent = String(rtaEventCount);
+  document.getElementById('rta-kpi-functions').textContent = String(profiles.length);
+  document.getElementById('rta-kpi-span').textContent =
+    (rtaFirstTs !== null && rtaLastTs !== null) ? formatRtaTime(rtaTsDiff(rtaLastTs, rtaFirstTs)) : '—';
+  document.getElementById('rta-kpi-hot').textContent = profiles.length ? profiles[0].name : '—';
+
+  if (!profiles.length) {
+    body.innerHTML = '<tr><td class="rta-empty" colspan="9">' +
+      (rtaEnabled ? 'Waiting for RTA function activity…' : 'RTA is off. Click RTA On to begin live profiling.') +
+      '</td></tr>';
+    return;
+  }
+
+  let html = '';
+  const visible = profiles.slice(0, 60);
+  for (const p of visible) {
+    const active = isRtaActive(p.fun);
+    const pct = totalExclusive > 0 ? (p.totalExclusive * 100 / totalExclusive) : 0;
+    const avg = p.calls > 0 ? (p.totalInclusive / p.calls) : 0;
+    const stateText = (rtaEnabled && active) ? 'RUNNING' : '—';
+    const stateClass = (rtaEnabled && active) ? 'active' : 'idle';
+    const kindLabel = p.kind === 'task'
+      ? 'TASK'
+      : (p.kind === 'system' ? 'SYSTEM' : (p.kind === 'unknown' ? 'UNKNOWN' : 'FUNC'));
+    html += '<tr>' +
+      '<td><span class="rta-state"><span class="rta-state-dot ' + stateClass + '"></span>' + stateText + '</span></td>' +
+      '<td class="rta-name-cell" title="' + escapeHtml(p.name) + '">' + escapeHtml(p.name) + '</td>' +
+      '<td><span class="rta-kind ' + p.kind + '">' + kindLabel + '</span></td>' +
+      '<td>' + p.calls + '</td>' +
+      '<td><div class="rta-load"><div class="rta-load-track"><div class="rta-load-fill" style="width:' + Math.min(100, pct).toFixed(1) + '%"></div></div><span class="rta-load-text">' + pct.toFixed(1) + '%</span></div></td>' +
+      '<td>' + formatRtaTime(p.totalInclusive) + '</td>' +
+      '<td>' + formatRtaTime(avg) + '</td>' +
+      '<td>' + formatRtaTime(p.max) + '</td>' +
+      '<td>' + formatRtaTime(p.last) + '</td>' +
+      '</tr>';
+  }
+  if (profiles.length > visible.length) {
+    html += '<tr><td class="rta-empty" colspan="9">Showing top ' + visible.length + ' of ' + profiles.length + ' by observed runtime.</td></tr>';
+  }
+  body.innerHTML = html;
+}
 
 function pokeGlobal() {
   const nameEl = document.getElementById('poke-global-name');
@@ -1058,9 +2320,40 @@ document.addEventListener('click', (e) => {
 
 window.addEventListener('message', (e) => {
   const m = e.data;
-  if (m.evt === 'bp_hit') {
-    add('bp', 'BP_HIT  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
+  if (m.evt === 'breakpoints') {
+    renderBreakpoints(m.items);
+  }
+  else if (m.evt === 'bp_hit') {
+    const funRec = (m.fun !== undefined && m.fun !== null) ? funNames[m.fun] : null;
+    const funText = (m.fun !== undefined && m.fun !== null)
+      ? '  fun=' + (funRec ? funRec.name : ('0x' + Number(m.fun).toString(16)))
+      : '';
+    add('bp', 'BP_HIT' + funText + '  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
     lastIp = m.ip;
+  }
+  else if (m.evt === 'pump_capability') {
+    rtaAvailable = (m.rtaSupported === null || m.rtaSupported === undefined)
+      ? null
+      : !!m.rtaSupported;
+    updateRtaControls(false);
+    if (m.legacy) {
+      add('reply', 'DEBUG PUMP · legacy compatibility mode');
+    } else {
+      add('reply', 'DEBUG PUMP v' + m.protocol + ' · ' + m.build);
+    }
+    if (rtaAvailable === false) {
+      add('err', 'RTA firmware support is not present in the currently flashed UF2. Breakpoints/stepping still work.');
+    }
+  }
+  else if (m.evt === 'pump_ready') {
+    debugReady = true;
+    updateRtaControls(false);
+    add('reply', 'DEBUG CDC READY · breakpoint table synchronized' + (m.legacy ? ' · legacy pump' : ''));
+  }
+  else if (m.evt === 'transport_lost') {
+    debugReady = false;
+    updateRtaControls(false);
+    add('err', 'DEBUG CDC LOST · ' + (m.msg || 'transport disconnected'));
   }
   else if (m.evt === 'no_source') {
     add('err', '⚠ ' + m.msg);
@@ -1068,15 +2361,15 @@ window.addEventListener('message', (e) => {
   }
   else if (m.evt === 'trace') add('', 'trace   ip=0x' + m.ip.toString(16).padStart(4,'0') + '  op=0x' + m.op.toString(16).padStart(2,'0'));
   else if (m.evt === 'rta_entry' || m.evt === 'rta_exit') {
-    const isEntry = m.evt === 'rta_entry';
-    const rec = funNames[m.fun];
-    const fnName = rec ? rec.name : ('0x' + m.fun.toString(16));
-    const dirIcon = isEntry ? '→ ENTER' : '← EXIT';
-    const timeStr = m.ts + 'ms';
-    add('rta', 'RTA: ' + dirIcon + ' ' + fnName + ' at ' + timeStr);
+    handleRtaEvent(m);
   }
   else if (m.evt === 'reply') {
-    add('reply', 'REPLY  ' + m.text);
+    // Locals/globals replies feed the dedicated panels; do not duplicate large
+    // internal state dictionaries in the Debug Console.
+    const isPanelDataReply = /^depth=\\d+\\s+(?:state=\\[|globals=\\{)/.test(m.text);
+    if (!isPanelDataReply) {
+      add('reply', 'REPLY  ' + m.text);
+    }
     
     // Parse globals
     const globIdx = m.text.indexOf("globals={");
@@ -1161,6 +2454,22 @@ window.addEventListener('message', (e) => {
       document.getElementById('locals-body').innerHTML = html;
     }
   }
+  else if (m.evt === 'rta_capability') {
+    rtaAvailable = !!m.supported;
+    updateRtaControls(false);
+  }
+  else if (m.evt === 'rta_status') {
+    if (m.enabled) {
+      resetRtaProfiler();
+    } else {
+      // Firmware stops emission before it can safely close the final segment
+      // from the pump core. Drop only the live stack; keep completed statistics.
+      rtaStack.length = 0;
+    }
+    updateRtaControls(m.enabled);
+    renderRtaProfiler();
+    add('rta', m.enabled ? 'RTA: ON (device confirmed)' : 'RTA: OFF (device confirmed)');
+  }
   else if (m.evt === 'sent') add('sent', '→ ' + m.op);
   else if (m.evt === 'error') {
     add('err', 'ERR ' + m.msg);
@@ -1169,7 +2478,11 @@ window.addEventListener('message', (e) => {
   else if (m.evt === 'closed') add('err', '(bridge closed)');
   else if (m.evt === 'open') add('reply', 'connected to ' + m.port);
   else if (m.evt === 'names') { currentNames = m.names || []; }
-  else if (m.evt === 'fun_name') { funNames[m.fun] = { name: m.name, fsPath: m.fsPath, defLine: m.defLine }; }
+  else if (m.evt === 'rta_name') { setRtaName(m.fun, m.name, m.kind || 'task'); }
+  else if (m.evt === 'fun_name') {
+    funNames[m.fun] = { name: m.name, fsPath: m.fsPath, defLine: m.defLine };
+    setRtaName(m.fun, m.name, 'function');
+  }
   else if (m.evt === 'status') {
     const el = document.getElementById('status');
     const badge = document.querySelector('.status-badge');
@@ -1190,6 +2503,8 @@ window.addEventListener('message', (e) => {
 
 // Setup dynamic elements on load
 renderButtons();
+updateRtaControls(false);
+renderRtaProfiler();
 
 document.addEventListener('keydown', (e) => {
   if (e.target.classList.contains('v')) {
