@@ -9,8 +9,8 @@ const { spawn } = require('child_process');
 const wsQueue = require('./wsQueue');
 const { getBuildInfo } = require('./buildInfo');
 
-const REQUIRED_PUMP_PROTOCOL = 4;
-const REQUIRED_PUMP_BUILD = '2026-10-07-bytearray-resync-v4';
+const REQUIRED_PUMP_PROTOCOL = 5;
+const REQUIRED_PUMP_BUILD = '2026-10-07-bp-manager-v5';
 
 let panel = null;
 let bridge = null;
@@ -163,6 +163,8 @@ function openDebuggerPanel(context, port, venvPython) {
     bpHitLocMap.clear();
     localNamesByFn.clear();
     let sessionReady = false;
+    let pumpVerified = false;
+    let rtaSupported = false;
     let startupTimer = null;
     let targetBreakpointList = [];
 
@@ -444,16 +446,16 @@ function openDebuggerPanel(context, port, venvPython) {
                 const msg = JSON.parse(line);
 
                 if (msg.evt === 'open' && !sessionReady) {
-                    // Connect-only must never touch the REPL port. The live
-                    // pump is verified on the debug CDC itself.
+                    // Connect-only never touches the REPL port. Verify the
+                    // exact pump and firmware capability over the debug CDC.
                     try {
-                        bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
-                        panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; verifying trace_pump' });
+                        bridge.stdin.write(JSON.stringify({ op: 'pump_info' }) + '\n');
+                        panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; checking trace_pump capability' });
                         startupTimer = setTimeout(() => {
                             if (!sessionReady && panel) {
                                 panel.webview.postMessage({
                                     evt: 'error',
-                                    msg: 'Debug CDC opened, but trace_pump did not answer. Reset the board or upload debugger files; Connect only does not use the REPL port.'
+                                    msg: `Debug CDC opened, but compatible trace_pump v${REQUIRED_PUMP_PROTOCOL} did not answer. Upload debugger files once, reset the board, then Connect only.`
                                 });
                             }
                         }, 2500);
@@ -464,7 +466,31 @@ function openDebuggerPanel(context, port, venvPython) {
 
                 // Capture slot numbers from reply text: "bp N @ mod.func:line ip=..."
                 if (msg.evt === 'reply' && typeof msg.text === 'string') {
-                    if (!sessionReady && msg.text.startsWith('cleared all bp slots')) {
+                    if (!pumpVerified && msg.text.startsWith('pump_info=')) {
+                        const raw = msg.text.slice('pump_info='.length);
+                        const parts = raw.split('|');
+                        const protocol = parseInt(parts[0], 10);
+                        const build = parts[1] || '';
+                        const rtaPart = parts.find(x => x.startsWith('rta='));
+                        const rta = rtaPart ? rtaPart.split('=')[1] === '1' : false;
+
+                        if (protocol !== REQUIRED_PUMP_PROTOCOL || build !== REQUIRED_PUMP_BUILD) {
+                            if (startupTimer) {
+                                clearTimeout(startupTimer);
+                                startupTimer = null;
+                            }
+                            panel.webview.postMessage({
+                                evt: 'error',
+                                msg: `Incompatible trace_pump: device v${protocol} ${build}; Studio requires v${REQUIRED_PUMP_PROTOCOL} ${REQUIRED_PUMP_BUILD}. Upload debugger files and reset.`
+                            });
+                        } else {
+                            pumpVerified = true;
+                            rtaSupported = rta;
+                            panel.webview.postMessage({ evt: 'pump_capability', protocol, build, rtaSupported });
+                            bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
+                        }
+                    }
+                    if (pumpVerified && !sessionReady && msg.text.startsWith('cleared all bp slots')) {
                         targetBreakpointList = [];
                         sessionReady = true;
                         if (startupTimer) {
@@ -472,7 +498,7 @@ function openDebuggerPanel(context, port, venvPython) {
                             startupTimer = null;
                         }
                         installCurrentBreakpoints();
-                        panel.webview.postMessage({ evt: 'pump_ready' });
+                        panel.webview.postMessage({ evt: 'pump_ready', rtaSupported });
                     }
                     const m = msg.text.match(/^bp (\d+) @ (.*)\.([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
                     if (m) {
