@@ -269,7 +269,7 @@ function openDebuggerPanel(context, port, venvPython) {
                             startupTimer = null;
                         }
                         installCurrentBreakpoints();
-                        panel.webview.postMessage({ evt: 'pump_ready', protocol: REQUIRED_PUMP_PROTOCOL, build: REQUIRED_PUMP_BUILD });
+                        panel.webview.postMessage({ evt: 'pump_ready' });
                     }
                     const m = msg.text.match(/^bp (\d+) @ (.*)\.([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
                     if (m) {
@@ -1784,6 +1784,9 @@ window.addEventListener('message', (e) => {
       : '';
     add('bp', 'BP_HIT' + funText + '  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
     lastIp = m.ip;
+  }
+  else if (m.evt === 'pump_ready') {
+    add('reply', 'DEBUG CDC READY · trace_pump command channel verified');
   }
   else if (m.evt === 'no_source') {
     add('err', '⚠ ' + m.msg);
