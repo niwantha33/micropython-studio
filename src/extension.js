@@ -127,7 +127,7 @@ async function _buildRunPortOptions() {
 
 
 function runPythonProcess(exe, args, onComplete) {
-    const channel = vscode.window.createOutputChannel('MicroPython Studio');
+    const channel = outputChannel;
     channel.show(true);
     channel.appendLine('─'.repeat(50));
 
@@ -216,7 +216,7 @@ function _extractDeviceError(output) {
  */
 function _spawnAsync(exe, args) {
     return new Promise(async (resolve) => {
-        const channel = vscode.window.createOutputChannel('MicroPython Studio');
+        const channel = outputChannel;
         channel.show(true);
         channel.appendLine('─'.repeat(50));
         
@@ -286,7 +286,7 @@ async function _runDownloadQueued(exe, baseArgs) {
     const { code, stdoutBuf } = await wsQueue.run(() => new Promise(async (resolve) => {
         await connectionManager.suspend();
         let buf = '';
-        const channel = vscode.window.createOutputChannel('MicroPython Studio');
+        const channel = outputChannel;
         channel.show(true);
         channel.appendLine('─'.repeat(50));
         const verbose = vscode.workspace.getConfiguration('micropython-studio').get('verboseLogging', false);
