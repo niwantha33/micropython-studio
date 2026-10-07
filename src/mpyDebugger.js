@@ -129,6 +129,16 @@ function openDebuggerPanel(context, port, venvPython) {
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
     bridge = spawn(pyCmd, [script, port, workspaceFolder], { stdio: ['pipe', 'pipe', 'pipe'] });
 
+    function requestTaskMap() {
+        const expr = 'g=globals();exec("import sys,machine\\nM=machine.mem32\\nq=sys.modules[\'asyncio\'].core._task_queue\\nt=[]\\nwhile q.peek():t.append(q.pop())\\n__t=\',\'.join(\'%d:%s\'%(M[id(x.coro)+8],x.coro) for x in t)\\nfor x in t:q.push(x,M[id(x)+20])",g) or g.get(\'__t\')';
+        try {
+            bridge.stdin.write(JSON.stringify({ op: 'poke_global', name: '__t', depth: 0, expr: expr }) + '\n');
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     // Send existing breakpoints
     for (const bp of vscode.debug.breakpoints) {
         if (!(bp instanceof vscode.SourceBreakpoint)) continue;
@@ -211,12 +221,15 @@ function openDebuggerPanel(context, port, venvPython) {
                                         const funBc = parseInt(addrStr, 10);
                                         if (!isNaN(funBc)) {
                                             const m1 = genStr.match(/object '([^']+)'/);
+                                            let taskName;
                                             if (m1) {
-                                                taskMap.set(funBc, m1[1]);
+                                                taskName = m1[1];
                                             } else {
                                                 const m2 = genStr.match(/object ([^\s]+)/);
-                                                taskMap.set(funBc, m2 ? m2[1] : "task");
+                                                taskName = m2 ? m2[1] : "task";
                                             }
+                                            taskMap.set(funBc, taskName);
+                                            panel.webview.postMessage({ evt: 'rta_name', fun: funBc, name: taskName, kind: 'task' });
                                         }
                                     }
                                 }
@@ -339,6 +352,8 @@ function openDebuggerPanel(context, port, venvPython) {
                             rtaDumpTimer = null;
                         }
                         rtaEvents = [];
+                        taskMap.clear();
+                        requestTaskMap();
                         if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: true });
                     } else if (msg.text === 'RTA trace disabled') {
                         if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: false });
@@ -435,9 +450,9 @@ function openDebuggerPanel(context, port, venvPython) {
             return;
         }
         if (msg.op === 'taskmap') {
-            const expr = 'g=globals();exec("import sys,machine\\nM=machine.mem32\\nq=sys.modules[\'asyncio\'].core._task_queue\\nt=[]\\nwhile q.peek():t.append(q.pop())\\n__t=\',\'.join(\'%d:%s\'%(M[id(x.coro)+8],x.coro) for x in t)\\nfor x in t:q.push(x,M[id(x)+20])",g) or g.get(\'__t\')';
-            bridge.stdin.write(JSON.stringify({ op: 'poke_global', name: '__t', depth: 0, expr: expr }) + '\n');
-            panel.webview.postMessage({ evt: 'sent', op: 'taskmap' });
+            if (requestTaskMap()) {
+                panel.webview.postMessage({ evt: 'sent', op: 'taskmap' });
+            }
             return;
         }
         bridge.stdin.write(JSON.stringify(msg) + '\n');
