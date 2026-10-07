@@ -44,9 +44,13 @@ suite('RTA on/off regression', () => {
         assert.ok(source.includes('cmd_buf[:] = cmd_buf[1:]'));
     });
 
-    test('Studio verifies the exact pump on flash and in RAM before connecting', () => {
+    test('Studio verifies uploaded pump on REPL but Connect only uses debug CDC exclusively', () => {
         const pump = fs.readFileSync(
             path.resolve(__dirname, '..', 'src', 'debugger_files', 'trace_pump.py'),
+            'utf8'
+        );
+        const boot = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'debugger_files', 'boot.py'),
             'utf8'
         );
         const host = fs.readFileSync(
@@ -56,16 +60,17 @@ suite('RTA on/off regression', () => {
 
         assert.ok(pump.includes('PUMP_PROTOCOL = 4'));
         assert.ok(pump.includes('PUMP_BUILD = "2026-10-07-bytearray-resync-v4"'));
-        assert.ok(pump.includes('trace_pump: started protocol=%d build=%s'));
-
-        assert.ok(host.includes('const REQUIRED_PUMP_PROTOCOL = 4'));
-        assert.ok(host.includes("const REQUIRED_PUMP_BUILD = '2026-10-07-bytearray-resync-v4'"));
         assert.ok(host.includes("'cat', '--port', replPort, '--path', '/trace_pump.py'"));
         assert.ok(host.includes("const hasOldPop = r.out.includes('cmd_buf.pop(0)')"));
-        assert.ok(host.includes('MPS_PUMP_PROTOCOL='));
-        assert.ok(host.includes('MPS_PUMP_BUILD='));
-        assert.ok(host.includes('Verify and start debugger pump'));
-        assert.ok(host.includes('Reset the board, then Start Debug again and choose Connect only.'));
+
+        assert.ok(!host.includes('async function prepareLivePump'));
+        assert.ok(host.includes("prompt: 'Debug CDC port (the SECOND COM port Windows shows for the board)'"));
+        assert.ok(host.includes("op: 'debug CDC open; verifying trace_pump'"));
+        assert.ok(host.includes("msg.text.startsWith('cleared all bp slots')"));
+        assert.ok(host.includes('installCurrentBreakpoints();'));
+
+        assert.ok(boot.includes('trace_pump.start()'));
+        assert.ok(boot.includes('[boot] trace_pump auto-start requested'));
     });
 
 });
