@@ -12,6 +12,7 @@ suite('RTA on/off regression', () => {
         assert.match(source, /chunks\s*=\s*0[\s\S]*while chunks < 8:[\s\S]*chunks \+= 1/);
         assert.ok(source.includes('elif cmd_type == 0x1B:'), 'RTA ON command handler is missing');
         assert.ok(source.includes('elif cmd_type == 0x1C:'), 'RTA OFF command handler is missing');
+        assert.ok(source.includes('RTA unsupported by firmware: flash an RTA-capable debug firmware'));
     });
 
     test('host waits for device confirmation before changing RTA state', () => {
