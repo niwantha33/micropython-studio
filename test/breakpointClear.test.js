@@ -8,6 +8,23 @@ suite('Breakpoint clear regression', () => {
         'utf8'
     );
 
+    test('new debugger session clears stale target slots before installing IDE breakpoints', () => {
+        const pump = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'debugger_files', 'trace_pump.py'),
+            'utf8'
+        );
+        const bridge = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'dbg_bridge.py'),
+            'utf8'
+        );
+        assert.ok(source.includes("op: 'clear_all_bp'"));
+        assert.ok(source.indexOf("op: 'clear_all_bp'") < source.indexOf('// Send existing breakpoints'));
+        assert.ok(bridge.includes('"clear_all_bp": 0x1D'));
+        assert.ok(pump.includes('active = dbg.list_bp()'));
+        assert.ok(pump.includes('dbg.clear_bp(slot)'));
+        assert.ok(pump.includes('cleared all bp slots'));
+    });
+
     test('removed breakpoint cancels a pending device registration', () => {
         assert.ok(
             source.includes('pending.cancelled = true'),
