@@ -1504,6 +1504,11 @@ body {
   border-color: rgba(34,197,94,0.35);
   background: rgba(34,197,94,0.08);
 }
+.rta-live-badge.unsupported {
+  color: #fca5a5;
+  border-color: rgba(244,63,94,0.35);
+  background: rgba(244,63,94,0.06);
+}
 .rta-live-badge.on::before {
   content: '';
   width: 6px;
@@ -1830,6 +1835,7 @@ let currentNames = [];
 const funNames = {};
 let lastIp = 0;
 let rtaEnabled = false;
+let rtaAvailable = null;
 const rtaProfiles = new Map();
 const rtaNames = new Map();
 const rtaStack = [];
@@ -2004,11 +2010,25 @@ function updateRtaControls(enabled) {
   const onBtn = document.querySelector('button[data-op="rta_on"]');
   const offBtn = document.querySelector('button[data-op="rta_off"]');
   const badge = document.getElementById('rta-live-badge');
-  if (onBtn) onBtn.disabled = rtaEnabled;
-  if (offBtn) offBtn.disabled = !rtaEnabled;
+  const available = rtaAvailable === true;
+  if (onBtn) {
+    onBtn.disabled = !available || rtaEnabled;
+    onBtn.title = available
+      ? 'Enable Real-time Analysis tracing (t)'
+      : 'RTA requires an RTA-capable debugger firmware';
+  }
+  if (offBtn) offBtn.disabled = !available || !rtaEnabled;
   if (badge) {
-    badge.textContent = rtaEnabled ? 'LIVE' : 'OFF';
-    badge.className = rtaEnabled ? 'rta-live-badge on' : 'rta-live-badge';
+    if (rtaAvailable === false) {
+      badge.textContent = 'FW REQUIRED';
+      badge.className = 'rta-live-badge unsupported';
+    } else if (rtaAvailable === null) {
+      badge.textContent = 'CHECKING';
+      badge.className = 'rta-live-badge';
+    } else {
+      badge.textContent = rtaEnabled ? 'LIVE' : 'OFF';
+      badge.className = rtaEnabled ? 'rta-live-badge on' : 'rta-live-badge';
+    }
   }
 }
 
@@ -2225,8 +2245,16 @@ window.addEventListener('message', (e) => {
     add('bp', 'BP_HIT' + funText + '  ip=0x' + m.ip.toString(16).padStart(4,'0') + '  <<< paused');
     lastIp = m.ip;
   }
+  else if (m.evt === 'pump_capability') {
+    rtaAvailable = !!m.rtaSupported;
+    updateRtaControls(false);
+    add('reply', 'DEBUG PUMP v' + m.protocol + ' · ' + m.build);
+    if (!rtaAvailable) {
+      add('err', 'RTA firmware support is not present in the currently flashed UF2. Breakpoints/stepping still work.');
+    }
+  }
   else if (m.evt === 'pump_ready') {
-    add('reply', 'DEBUG CDC READY · trace_pump command channel verified');
+    add('reply', 'DEBUG CDC READY · breakpoint table synchronized');
   }
   else if (m.evt === 'no_source') {
     add('err', '⚠ ' + m.msg);
