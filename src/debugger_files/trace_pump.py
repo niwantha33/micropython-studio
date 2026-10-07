@@ -17,8 +17,8 @@ import dbg
 # Increment whenever the host<->pump command contract or required pump
 # behaviour changes. Studio checks both the uploaded file and the live imported
 # module before opening a debug session, so stale RAM/file copies are rejected.
-PUMP_PROTOCOL = 4
-PUMP_BUILD = "2026-10-07-bytearray-resync-v4"
+PUMP_PROTOCOL = 5
+PUMP_BUILD = "2026-10-07-bp-manager-v5"
 
 _running = False
 bytes_in = 0
@@ -80,7 +80,7 @@ def _pump():
 
             # Robust frame validation for commands from host
             is_valid = True
-            if cmd_type in (0x10, 0x11, 0x13, 0x14, 0x17, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21) and cmd_len != 0:
+            if cmd_type in (0x10, 0x11, 0x13, 0x14, 0x17, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22) and cmd_len != 0:
                 is_valid = False
             elif cmd_type in (0x12, 0x1A) and cmd_len > 1:
                 is_valid = False
@@ -92,7 +92,7 @@ def _pump():
                 is_valid = False
             elif cmd_type == 0x15 and cmd_len < 4:
                 is_valid = False
-            elif cmd_type not in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21):
+            elif cmd_type not in (0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22):
                 is_valid = False
             elif cmd_len > 256:
                 is_valid = False
@@ -383,6 +383,20 @@ def _pump():
                             if not k.startswith("__"):
                                 user_globals[k] = repr(v)
                         text = "depth=%d globals=%r" % (depth, user_globals)
+                except Exception as e:
+                    text = "err: " + repr(e)
+                payload = text.encode()[:250]
+                frame = bytes([0xAA, 0x03, len(payload)]) + payload
+                try:
+                    cdc.write(frame)
+                except Exception:
+                    pass
+            elif cmd_type == 0x22:
+                # pump_info: debug-CDC capability handshake. This lets Studio
+                # verify the exact Python pump without touching the REPL port.
+                try:
+                    rta = 1 if hasattr(dbg, "rta_on") and hasattr(dbg, "rta_off") else 0
+                    text = "pump_info=%d|%s|rta=%d" % (PUMP_PROTOCOL, PUMP_BUILD, rta)
                 except Exception as e:
                     text = "err: " + repr(e)
                 payload = text.encode()[:250]
