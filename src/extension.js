@@ -1311,6 +1311,8 @@ function activate(context) {
             return {
                 RELEASE_BASE: cfg.release_base,
                 DEBUG_BOARDS: cfg.boards || [],
+                RTA_CERTIFIED: cfg.rta_certified === true,
+                RTA_CERTIFIED_SOURCE_COMMIT: cfg.rta_certified_source_commit || null,
             };
         } catch (e) {
             vscode.window.showErrorMessage('Failed to load debug_firmware.json: ' + e.message);
@@ -1319,8 +1321,23 @@ function activate(context) {
     }
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('micropython-ide.flashDebugFirmware', async () => {
-            const { RELEASE_BASE, DEBUG_BOARDS } = loadDebugFirmwareConfig();
+        vscode.commands.registerCommand('micropython-ide.flashDebugFirmware', async (options = {}) => {
+            const {
+                RELEASE_BASE,
+                DEBUG_BOARDS,
+                RTA_CERTIFIED,
+                RTA_CERTIFIED_SOURCE_COMMIT
+            } = loadDebugFirmwareConfig();
+
+            if (options.requireRta && !RTA_CERTIFIED) {
+                const msg = 'The stable debug-firmware channel is not yet certified for the current RTA implementation. No firmware was flashed. Use the hardware-test Pico 2 W UF2 from firmware PR #1; after hardware verification we can publish it and mark the stable channel RTA-certified.';
+                outputChannel.appendLine('[SAFETY] ' + msg);
+                vscode.window.showWarningMessage(msg);
+                return;
+            }
+            if (options.requireRta && RTA_CERTIFIED_SOURCE_COMMIT) {
+                outputChannel.appendLine('RTA-certified firmware source: ' + RTA_CERTIFIED_SOURCE_COMMIT);
+            }
             if (!RELEASE_BASE || DEBUG_BOARDS.length === 0) {
                 vscode.window.showErrorMessage('debug_firmware.json is missing or invalid.');
                 return;
