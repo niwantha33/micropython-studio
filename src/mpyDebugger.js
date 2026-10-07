@@ -1415,6 +1415,11 @@ body {
   color: #fca5a5;
   border-color: rgba(244,63,94,0.35);
 }
+.bp-state.target-only {
+  color: #fb7185;
+  border-color: rgba(251,113,133,0.5);
+  background: rgba(251,113,133,0.06);
+}
 .bp-remove {
   padding: 2px 7px;
   font-size: 10px;
@@ -1899,7 +1904,7 @@ function clearAllBreakpoints() {
 
 function toggleBreakpoint(index, enabled) {
   const bp = currentBreakpoints[index];
-  if (!bp) return;
+  if (!bp || bp.targetOnly) return;
   vscode.postMessage({
     op: 'bp_toggle',
     fsPath: bp.fsPath,
@@ -1911,12 +1916,17 @@ function toggleBreakpoint(index, enabled) {
 function removeBreakpoint(index) {
   const bp = currentBreakpoints[index];
   if (!bp) return;
+  if (bp.targetOnly) {
+    const slot = bp.slots && bp.slots.length ? bp.slots[0] : null;
+    vscode.postMessage({ op: 'bp_remove_target', slot: slot });
+    return;
+  }
   vscode.postMessage({ op: 'bp_remove', fsPath: bp.fsPath, line1: bp.line1 });
 }
 
 function gotoBreakpoint(index) {
   const bp = currentBreakpoints[index];
-  if (!bp) return;
+  if (!bp || bp.targetOnly) return;
   vscode.postMessage({ op: 'bp_goto', fsPath: bp.fsPath, line1: bp.line1 });
 }
 
@@ -1941,9 +1951,15 @@ function renderBreakpoints(items) {
     const slots = (bp.slots && bp.slots.length) ? bp.slots.map(x => 'S' + x).join(',') : '—';
     const ip = (bp.ip === null || bp.ip === undefined) ? '—' : ('0x' + Number(bp.ip).toString(16).padStart(4, '0'));
     const condition = bp.condition ? escapeHtml(bp.condition) : '—';
+    const onCell = bp.targetOnly
+      ? '<span style="color:#64748b">—</span>'
+      : '<input type="checkbox" ' + (bp.enabled ? 'checked' : '') + ' onchange="toggleBreakpoint(' + i + ',this.checked)" title="Enable / disable breakpoint">';
+    const locationCell = bp.targetOnly
+      ? '<span style="color:#fb7185">(target only)</span>'
+      : '<a class="bp-location" onclick="gotoBreakpoint(' + i + ');return false">' + escapeHtml(bp.file) + ':' + bp.line1 + '</a>';
     html += '<tr>' +
-      '<td><input type="checkbox" ' + (bp.enabled ? 'checked' : '') + ' onchange="toggleBreakpoint(' + i + ',this.checked)" title="Enable / disable breakpoint"></td>' +
-      '<td><a class="bp-location" onclick="gotoBreakpoint(' + i + ');return false">' + escapeHtml(bp.file) + ':' + bp.line1 + '</a></td>' +
+      '<td>' + onCell + '</td>' +
+      '<td>' + locationCell + '</td>' +
       '<td>' + escapeHtml(bp.func || '—') + '</td>' +
       '<td>' + slots + '</td>' +
       '<td>' + ip + '</td>' +
