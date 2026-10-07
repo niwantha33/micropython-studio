@@ -10,7 +10,7 @@ const wsQueue = require('./wsQueue');
 const { getBuildInfo } = require('./buildInfo');
 
 const REQUIRED_PUMP_PROTOCOL = 5;
-const REQUIRED_PUMP_BUILD = '2026-10-07-bp-manager-v5';
+const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
 
 let panel = null;
 let bridge = null;
@@ -399,9 +399,11 @@ function openDebuggerPanel(context, port, venvPython) {
     }
 
     let rtaSymRemaining = 0;
+    let rtaSymRefreshActive = false;
 
     function requestSymbolMap() {
         rtaSymRemaining = 0;
+        rtaSymRefreshActive = true;
         try {
             bridge.stdin.write(JSON.stringify({
                 op: 'poke_global',
@@ -613,6 +615,8 @@ function openDebuggerPanel(context, port, venvPython) {
                             rtaSymRemaining = Math.max(0, rtaSymRemaining - parsed);
                             if (rtaSymRemaining > 0 && mapText !== "None") {
                                 requestNextSymbolMapChunk();
+                            } else {
+                                rtaSymRefreshActive = false;
                             }
                         }
                     } else if (msg.text.startsWith("taskmap=")) {
@@ -795,7 +799,17 @@ function openDebuggerPanel(context, port, venvPython) {
                     });
                     if (rtaDumpTimer) scheduleRtaTraceDump();
                 }
-                if (panel) panel.webview.postMessage(msg);
+                const internalRtaSymbolReply =
+                    msg.evt === 'reply' &&
+                    typeof msg.text === 'string' &&
+                    msg.text.startsWith('poked global __rta_sym_');
+                const internalRtaSymbolSend =
+                    msg.evt === 'sent' &&
+                    msg.op === 'poke_global' &&
+                    rtaSymRefreshActive;
+                if (panel && !internalRtaSymbolReply && !internalRtaSymbolSend) {
+                    panel.webview.postMessage(msg);
+                }
             } catch (e) {
                 if (panel) panel.webview.postMessage({ evt: 'raw', text: line });
             }
@@ -1645,6 +1659,14 @@ body {
   border-color: rgba(6,182,212,0.3);
   color: #67e8f9;
 }
+.rta-kind.system {
+  border-color: rgba(245,158,11,0.3);
+  color: #fbbf24;
+}
+.rta-kind.unknown {
+  border-color: rgba(148,163,184,0.25);
+  color: #94a3b8;
+}
 .rta-name-cell {
   color: #e2e8f0;
   max-width: 280px;
@@ -1791,7 +1813,7 @@ td.v:focus, td.vg:focus {
           <th>Task / Function</th>
           <th>Type</th>
           <th>Activations</th>
-          <th>Runtime %</th>
+          <th>Observed VM %</th>
           <th>Total</th>
           <th>Average</th>
           <th>Max</th>
@@ -1803,7 +1825,7 @@ td.v:focus, td.vg:focus {
       </tbody>
     </table>
   </div>
-  <div class="rta-note">Firmware timestamps are microseconds. Runtime % is the share of observed exclusive RTA time; it is not claimed as exact scheduler CPU% until the firmware emits scheduler task-switch/idle events.</div>
+  <div class="rta-note">Firmware timestamps are microseconds. Observed VM % is the share of completed MicroPython execution segments captured by RTA. It is not scheduler CPU%, task READY/BLOCKED state, or MCU idle time; those require future scheduler task-switch/idle events.</div>
 </div>
 
 <div class="dashboard-grid">
@@ -2092,14 +2114,28 @@ function formatRtaTime(value) {
   return us.toFixed(2) + ' µs';
 }
 
+function classifyRtaKind(name, kind, existingKind) {
+  if (kind === 'task' || existingKind === 'task') return 'task';
+  const n = String(name || '');
+  if (
+    n.startsWith('trace_pump.') ||
+    n.startsWith('usb.device.') ||
+    n.startsWith('asyncio.') ||
+    n.startsWith('logging.') ||
+    n.startsWith('rp2.')
+  ) return 'system';
+  if (kind === 'function') return 'function';
+  if (existingKind && existingKind !== 'unknown') return existingKind;
+  return n.startsWith('0x') ? 'unknown' : 'function';
+}
+
 function setRtaName(fun, name, kind) {
   const key = String(fun);
   const existing = rtaNames.get(key);
+  const resolvedName = name || (existing && existing.name) || ('0x' + Number(fun).toString(16));
   const next = {
-    name: name || (existing && existing.name) || ('0x' + Number(fun).toString(16)),
-    kind: ((existing && existing.kind === 'task') || kind === 'task')
-      ? 'task'
-      : (kind || (existing && existing.kind) || 'function')
+    name: resolvedName,
+    kind: classifyRtaKind(resolvedName, kind, existing && existing.kind)
   };
   rtaNames.set(key, next);
   const profile = rtaProfiles.get(key);
@@ -2118,7 +2154,7 @@ function getRtaProfile(fun) {
     profile = {
       fun: Number(fun),
       name: named ? named.name : ('0x' + Number(fun).toString(16)),
-      kind: named ? named.kind : 'function',
+      kind: named ? named.kind : 'unknown',
       calls: 0,
       totalExclusive: 0,
       totalInclusive: 0,
@@ -2233,10 +2269,15 @@ function renderRtaProfiler() {
     const active = isRtaActive(p.fun);
     const pct = totalExclusive > 0 ? (p.totalExclusive * 100 / totalExclusive) : 0;
     const avg = p.calls > 0 ? (p.totalInclusive / p.calls) : 0;
+    const stateText = (rtaEnabled && active) ? 'RUNNING' : '—';
+    const stateClass = (rtaEnabled && active) ? 'active' : 'idle';
+    const kindLabel = p.kind === 'task'
+      ? 'TASK'
+      : (p.kind === 'system' ? 'SYSTEM' : (p.kind === 'unknown' ? 'UNKNOWN' : 'FUNC'));
     html += '<tr>' +
-      '<td><span class="rta-state"><span class="rta-state-dot ' + (active ? 'active' : 'idle') + '"></span>' + (active ? 'ACTIVE' : 'IDLE') + '</span></td>' +
+      '<td><span class="rta-state"><span class="rta-state-dot ' + stateClass + '"></span>' + stateText + '</span></td>' +
       '<td class="rta-name-cell" title="' + escapeHtml(p.name) + '">' + escapeHtml(p.name) + '</td>' +
-      '<td><span class="rta-kind ' + (p.kind === 'task' ? 'task' : '') + '">' + (p.kind === 'task' ? 'TASK' : 'FUNC') + '</span></td>' +
+      '<td><span class="rta-kind ' + p.kind + '">' + kindLabel + '</span></td>' +
       '<td>' + p.calls + '</td>' +
       '<td><div class="rta-load"><div class="rta-load-track"><div class="rta-load-fill" style="width:' + Math.min(100, pct).toFixed(1) + '%"></div></div><span class="rta-load-text">' + pct.toFixed(1) + '%</span></div></td>' +
       '<td>' + formatRtaTime(p.totalInclusive) + '</td>' +
