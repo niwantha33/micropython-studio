@@ -35,4 +35,13 @@ suite('RTA on/off regression', () => {
         assert.ok(!source.includes("msg.evt === 'sent' && msg.op === 'rta_off'"));
         assert.ok(!source.includes("msg.evt === 'sent' && msg.op === 'rta_on'"));
     });
+    test('trace pump resync avoids unsupported bytearray pop', () => {
+        const source = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'debugger_files', 'trace_pump.py'),
+            'utf8'
+        );
+        assert.ok(!source.includes('cmd_buf.pop(0)'));
+        assert.ok(source.includes('cmd_buf[:] = cmd_buf[1:]'));
+    });
+
 });
