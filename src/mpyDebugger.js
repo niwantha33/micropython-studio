@@ -840,7 +840,10 @@ function openDebuggerPanel(context, port, venvPython) {
             return;
         }
         if (msg.op === 'flash_firmware') {
-            vscode.commands.executeCommand('micropython-ide.flashDebugFirmware');
+            vscode.commands.executeCommand('micropython-ide.flashDebugFirmware', {
+                source: 'debugger',
+                requireRta: rtaSupported === false
+            });
             return;
         }
         if (msg.op === 'goto_frame') {
