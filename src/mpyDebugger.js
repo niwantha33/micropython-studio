@@ -14,8 +14,7 @@ let bridge = null;
 let bpDisposable = null;
 const bpSlotMap = new Map(); // key "module:func:line" -> Set<slot> (filled on reply)
 const pendingBpReplies = []; // queue of {key, fsPath, line1, cancelled}
-const ipToLoc = new Map();   // ip -> {fsPath, line1}
-const ipToCond = new Map();  // ip -> condition string (optional)
+const bpHitLocMap = new Map(); // "funPtr:ip" -> {fsPath,line1,fnKey,ip,fun,cond}
 let pendingCondEval = null;  // { ip, cond, names } while awaiting locals reply
 let hlDeco = null;            // TextEditorDecorationType for current line (yellow — breakpoint)
 let stepInDeco = null;        // TextEditorDecorationType for step-in line (cyan)
@@ -35,6 +34,20 @@ function scheduleRtaTraceDump() {
 }
 
 // Pop matching pending breakpoint reply by module, function, and relative line.
+function resolveBreakpointRecord(fun, ip) {
+    if (fun !== undefined && fun !== null) {
+        const exact = bpHitLocMap.get(`${Number(fun)}:${Number(ip)}`);
+        if (exact) return exact;
+    }
+    // Legacy firmware reports only ip. Use it only when exactly one active
+    // source breakpoint has that offset; otherwise the hit is ambiguous.
+    const matches = [];
+    for (const rec of bpHitLocMap.values()) {
+        if (rec.ip === Number(ip)) matches.push(rec);
+    }
+    return matches.length === 1 ? matches[0] : null;
+}
+
 function popPendingBp(module, func, relLine) {
     const fnKey = `${module}:${func}`;
     const idx = pendingBpReplies.findIndex(item => item.fnKey === fnKey && (item.line1 - item.defLine) === relLine);
@@ -136,8 +149,7 @@ function openDebuggerPanel(context, port, venvPython) {
     // breakpoints that currently exist in VS Code.
     bpSlotMap.clear();
     pendingBpReplies.length = 0;
-    ipToLoc.clear();
-    ipToCond.clear();
+    bpHitLocMap.clear();
     localNamesByFn.clear();
     bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
 
@@ -242,11 +254,20 @@ function openDebuggerPanel(context, port, venvPython) {
                                     bpSlotMap.set(info.key, slots);
                                 }
                                 slots.add(slot);
-                                ipToLoc.set(bpIp, { fsPath: info.fsPath, line1: info.line1, fnKey: info.fnKey });
-                                if (info.cond) ipToCond.set(bpIp, info.cond);
-                                if (m[6]) {
-                                    const funPtr = m[6];
-                                    funToName.set(parseInt(funPtr, 10), info.fnKey);
+                                const funPtr = m[6] ? parseInt(m[6], 10) : null;
+                                const hitKey = funPtr !== null
+                                    ? `${funPtr}:${bpIp}`
+                                    : `legacy:${info.key}:${bpIp}`;
+                                bpHitLocMap.set(hitKey, {
+                                    fsPath: info.fsPath,
+                                    line1: info.line1,
+                                    fnKey: info.fnKey,
+                                    ip: bpIp,
+                                    fun: funPtr,
+                                    cond: info.cond
+                                });
+                                if (funPtr !== null) {
+                                    funToName.set(funPtr, info.fnKey);
                                     panel.webview.postMessage({ evt: 'fun_name', fun: funPtr, name: info.fnKey, fsPath: info.fsPath, defLine: info.defLine });
                                 }
                             }
@@ -331,8 +352,8 @@ function openDebuggerPanel(context, port, venvPython) {
                     try { bridge.stdin.write(JSON.stringify({ op: 'globals' }) + '\n'); } catch (e) {}
                 }
                 if (msg.evt === 'bp_hit') {
-                    const loc = ipToLoc.get(msg.ip);
-                    const cond = ipToCond.get(msg.ip);
+                    const loc = resolveBreakpointRecord(msg.fun, msg.ip);
+                    const cond = loc ? loc.cond : null;
                     if (cond && loc) {
                         // Defer UI surface; ask for locals, evaluate, then decide.
                         pendingCondEval = { ip: msg.ip, cond, loc, names: localNamesByFn.get(loc.fnKey) || [] };
@@ -358,7 +379,7 @@ function openDebuggerPanel(context, port, venvPython) {
                 if (msg.evt === 'exception') {
                     panel.webview.postMessage({ evt: 'error', msg: `Exception: ${msg.msg} at ip=0x${msg.ip.toString(16)}`, ip: msg.ip });
                     panel.webview.postMessage({ evt: 'status', paused: true });
-                    const loc = ipToLoc.get(msg.ip);
+                    const loc = resolveBreakpointRecord(msg.fun, msg.ip);
                     if (loc) {
                         highlightLine(loc.fsPath, loc.line1, false);
                         panel.webview.postMessage({ evt: 'names', names: localNamesByFn.get(loc.fnKey) || [] });
@@ -591,9 +612,9 @@ function openDebuggerPanel(context, port, venvPython) {
             if (!fsPath.endsWith('.py')) continue;
             const line1 = bp.location.range.start.line + 1;
             const cond = (typeof bp.condition === 'string' && bp.condition.trim()) ? bp.condition.trim() : null;
-            for (const [ip, l] of ipToLoc.entries()) {
+            for (const l of bpHitLocMap.values()) {
                 if (l.fsPath === fsPath && l.line1 === line1) {
-                    if (cond) ipToCond.set(ip, cond); else ipToCond.delete(ip);
+                    l.cond = cond;
                     panel.webview.postMessage({ evt: 'sent', op: `cond ${path.basename(fsPath)}:${line1} = ${cond || '(none)'}` });
                 }
             }
@@ -636,12 +657,11 @@ function openDebuggerPanel(context, port, venvPython) {
                 }
             }
 
-            // Drop host-side source/condition mappings even when the set reply
-            // is still pending. This keeps the IDE state authoritative.
-            for (const [ip, l] of ipToLoc.entries()) {
+            // Drop host-side exact hit mappings even when the set reply is
+            // still pending. This keeps the IDE state authoritative.
+            for (const [hitKey, l] of bpHitLocMap.entries()) {
                 if (l.fsPath === fsPath && l.line1 === line1) {
-                    ipToCond.delete(ip);
-                    ipToLoc.delete(ip);
+                    bpHitLocMap.delete(hitKey);
                 }
             }
         }
