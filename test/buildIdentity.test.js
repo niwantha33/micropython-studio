@@ -13,9 +13,15 @@ suite('Debugger console and build identity', () => {
     ));
 
     test('locals and globals panel replies are not duplicated in the debug console', () => {
+        const filterLine = debuggerSource
+            .split('\n')
+            .find(line => line.includes('const isPanelDataReply'));
+        assert.ok(filterLine, 'structured locals/globals reply filter must exist');
+        assert.ok(filterLine.includes('state='), 'locals state reply must be filtered');
+        assert.ok(filterLine.includes('globals='), 'globals reply must be filtered');
         assert.ok(
-            debuggerSource.includes('/^depth=\\d+\\s+(?:state=\\[|globals=\\{)/'),
-            'structured locals/globals replies must be identified'
+            (filterLine.match(/\\\\/g) || []).length >= 4,
+            'generated-webview regex escapes must be preserved in the outer template'
         );
         assert.match(
             debuggerSource,
