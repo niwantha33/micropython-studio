@@ -229,6 +229,15 @@ def main():
                 continue
             op = msg.get("op")
             if op == "quit":
+                # Best-effort safety shutdown: do not leave target RTA running
+                # after a normal debugger-panel close. Older firmware will
+                # simply reply that RTA is unsupported.
+                try:
+                    ser.write(bytes([0xAA, 0x1C, 0x00]))
+                    ser.flush()
+                    time.sleep(0.05)
+                except Exception:
+                    pass
                 break
             code = CMDS.get(op)
             if code is None and op not in ("set_bp", "clear_bp", "poke_local", "poke_global"):
