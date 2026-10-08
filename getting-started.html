@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Get started with MicroPython Studio | Install, connect, run</title>
+  <meta name="description" content="Install the MicroPython Studio VS Code extension, connect a Pico or ESP32 over USB, open a MicroPython shell, run your first script and find the right debugger firmware.">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://niwantha33.github.io/micropython-studio/getting-started.html">
+  <meta property="og:title" content="Get started with MicroPython Studio">
+  <meta property="og:description" content="A practical five-minute path from VS Code installation to running Python on a microcontroller.">
+  <meta property="og:url" content="https://niwantha33.github.io/micropython-studio/getting-started.html">
+  <link rel="stylesheet" href="./site-docs.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="header"><div class="container nav">
+    <a class="brand" href="./"><span class="brand-mark" aria-hidden="true">µP</span><span>MicroPython Studio</span></a>
+    <nav class="navlinks" aria-label="Main navigation">
+      <a href="./">Home</a><a href="./getting-started.html" aria-current="page">Get started</a>
+      <a href="./board-support.html">Boards &amp; firmware</a><a href="./troubleshooting.html">Troubleshooting</a>
+      <a href="./micropython-live-debugger.html">Live debugger</a><a href="https://github.com/niwantha33/micropython-studio">GitHub</a>
+    </nav>
+  </div></header>
+  <main id="main">
+    <section class="hero"><div class="container">
+      <div class="eyebrow">Start here / MicroPython Studio v2.6.0</div>
+      <h1>From USB cable to running Python.</h1>
+      <p class="lead">Install the VS Code extension, connect a supported MicroPython board, open its REPL and run a small script. Debugging is an optional next step and needs board-specific firmware.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio">Install from Marketplace ↗</a>
+        <a class="btn btn-secondary" href="https://github.com/niwantha33/micropython-studio/releases/download/v2.6.0/micropython-studio-2.6.0.vsix">Download stable v2.6.0 VSIX ↗</a>
+      </div>
+      <p class="note" style="margin-top:14px">For Windows, macOS and Linux with VS Code. The VSIX is the public approved release; commits merged to <code>main</code> do not automatically appear in the Marketplace.</p>
+    </div></section>
+    <section class="content"><div class="container">
+      <h2>Your first working REPL</h2>
+      <p class="section-lead">Start with the normal USB serial connection. It is independent of optional Wi-Fi/WebREPL and of the frozen debugger.</p>
+      <div class="step"><div class="number">01</div><div>
+        <h3>Install the extension</h3>
+        <p>Install <strong>MicroPython Studio</strong> in VS Code from the Marketplace. Alternatively, open the Command Palette and choose <strong>Extensions: Install from VSIX…</strong> after downloading the verified stable file above.</p>
+      </div></div>
+      <div class="step"><div class="number">02</div><div>
+        <h3>Connect your board over USB</h3>
+        <p>Use a USB data cable, not a charging-only lead. Check that the serial device appears in your operating system. Start with the board's own supported MicroPython firmware; do not flash a debugger image until you have confirmed the exact model.</p>
+      </div></div>
+      <div class="step"><div class="number">03</div><div>
+        <h3>Prepare the workspace</h3>
+        <p>In VS Code, press <span class="kbd">Ctrl</span> + <span class="kbd">Shift</span> + <span class="kbd">P</span> (or the Command Palette shortcut on your OS) and run <strong>MicroPython: Setup Development Environment</strong>. Then choose <strong>MicroPython: Create New Project</strong> or open an existing project.</p>
+      </div></div>
+      <div class="step"><div class="number">04</div><div>
+        <h3>Open the shell and verify the interpreter</h3>
+        <p>Choose the board's USB REPL serial port and run <strong>MicroPython: Open Device Shell</strong>. You should see a <code>&gt;&gt;&gt;</code> prompt. Try this:</p>
+        <pre><code>import sys
+print(sys.platform)
+print("MicroPython Studio connected")</code></pre>
+      </div></div>
+      <div class="step"><div class="number">05</div><div>
+        <h3>Run a script</h3>
+        <p>Save a file such as <code>hello.py</code> and use <strong>MicroPython: Run Script on Device</strong>. When that works, try <strong>MicroPython: Refresh Device Files</strong> to browse the board.</p>
+        <pre><code>from machine import Pin
+import time
+
+print("Hello from MicroPython Studio")
+for count in range(3):
+    print("Loop", count)
+    time.sleep(0.5)</code></pre>
+      </div></div>
+      <div class="callout good"><strong>Milestone:</strong> If the REPL responds and the script prints three loop messages, your normal USB workflow is ready. You do not need special debugger firmware for this first test.</div>
+    </div></section>
+    <section class="content"><div class="container">
+      <h2>Ready for real-device debugging?</h2>
+      <p class="section-lead">Source breakpoints, stepping, locals, call stacks and runtime tracing need a compatible board-specific debugger image and a separate debugger transport. Do not select the same serial COM port for both REPL and debugger.</p>
+      <div class="grid">
+        <article class="card"><span class="number">01</span><h3>Confirm your board</h3><p>Check the exact label: Pico W, Pico 2 W, ESP32-S3 and ESP32-C3 are not interchangeable.</p></article>
+        <article class="card"><span class="number">02</span><h3>Read firmware status</h3><p>Choose a hardware-tested release only for its matching board. Preview firmware requires an explicit test plan.</p></article>
+        <article class="card"><span class="number">03</span><h3>Connect both ports</h3><p>Use the board-specific REPL and debugger ports. Start with a basic breakpoint before testing RTA.</p></article>
+      </div>
+      <div class="cta-row"><a class="btn btn-secondary" href="./board-support.html">Check board and firmware compatibility →</a><a class="btn btn-secondary" href="./micropython-live-debugger.html">Read debugger guide →</a></div>
+    </div></section>
+    <section class="content"><div class="container">
+      <h2>Help and next steps</h2>
+      <div class="link-grid">
+        <a class="link-card" href="./troubleshooting.html"><strong>USB, WebREPL or debugger not connecting?</strong><span>Symptoms, safe diagnostic commands and recovery advice.</span></a>
+        <a class="link-card" href="https://github.com/niwantha33/micropython-studio/issues"><strong>Report a reproducible problem ↗</strong><span>Include your board model, firmware, OS and relevant non-secret logs.</span></a>
+        <a class="link-card" href="https://www.youtube.com/watch?v=or_aG-Rhnb8"><strong>Watch the Pico 2 W hardware demonstration ↗</strong><span>See breakpoints and runtime inspection on a real target.</span></a>
+        <a class="link-card" href="https://github.com/niwantha33/micropython-studio/blob/main/README.md"><strong>Read the full extension reference ↗</strong><span>Commands, local AI, simulator and detailed supported workflows.</span></a>
+      </div>
+    </div></section>
+  </main>
+  <footer class="footer"><div class="container footgrid"><span>MicroPython Studio · Independent open-source VS Code extension</span><div class="footlinks"><a href="./">Home</a><a href="./board-support.html">Hardware status</a><a href="https://github.com/niwantha33/micropython-studio">Source</a><a href="https://github.com/niwantha33/micropython-studio/issues">Support</a></div></div></footer>
+</body>
+</html>
