@@ -149,7 +149,7 @@ class AiAssistanceProvider {
                             buffer = buffer.slice(index + 1);
                             parse(line);
                         }
-                    } catch (err) { req.destroy(err); }
+                    } catch (err) { done(err); req.destroy(); }
                 });
                 res.on('end', () => {
                     try {
