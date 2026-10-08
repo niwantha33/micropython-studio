@@ -84,31 +84,62 @@ function runPythonProcess(exe, args, onComplete) {
     channel.show(true);
     channel.appendLine('─'.repeat(50));
 
-    // Suspend daemon so mps_backend can use the COM port
-    connectionManager.suspend().then(() => {
+    // Do not start another process on the COM port until the daemon has
+    // acknowledged releasing it. Always report the real process exit.
+    (async () => {
+        let suspended = false;
         let fullOutput = '';
-        const verbose = vscode.workspace.getConfiguration('micropython-studio').get('verboseLogging', false);
-        const finalArgs = [...args];
-        if (verbose && finalArgs[0] && finalArgs[0].includes('mps_backend.py')) {
-            finalArgs.splice(1, 0, '--verbose');
-        }
-        const proc = spawn(exe, finalArgs);
-        proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
-        proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
-        proc.on('close', async code => {
-            await connectionManager.resume();
-            _notifyAiOnError(fullOutput, args);
-            if (code === 0) {
-                channel.appendLine("[SUCCESS] Task complete.");
-            } else {
-                channel.appendLine(`[ERROR] Task failed with exit code ${code}.`);
+        let code = null;
+        try {
+            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+                await connectionManager.suspend();
+                suspended = true;
             }
-            if (onComplete) onComplete(code);
-        });
-        proc.on('error', async err => {
-            await connectionManager.resume();
-            channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
-        });
+            const verbose = vscode.workspace.getConfiguration('micropython-studio').get('verboseLogging', false);
+            const finalArgs = [...args];
+            if (verbose && finalArgs[0] && finalArgs[0].includes('mps_backend.py')) {
+                finalArgs.splice(1, 0, '--verbose');
+            }
+            code = await new Promise(resolve => {
+                let child;
+                try { child = spawn(exe, finalArgs); }
+                catch (err) {
+                    channel.appendLine(`[ERROR] Failed to start: ${err.message}`);
+                    resolve(null);
+                    return;
+                }
+                let finished = false;
+                const finish = result => {
+                    if (finished) return;
+                    finished = true;
+                    resolve(result);
+                };
+                child.stdout?.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+                child.stderr?.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+                child.on('close', finish);
+                child.on('error', err => {
+                    channel.appendLine(`[ERROR] Process failed: ${err.message}`);
+                    finish(null);
+                });
+            });
+        } catch (err) {
+            channel.appendLine(`[ERROR] Cannot claim serial port: ${err.message}`);
+        } finally {
+            if (suspended) {
+                try { await connectionManager.resume(); }
+                catch (err) {
+                    code = null;
+                    channel.appendLine(`[ERROR] REPL reconnect failed: ${err.message}`);
+                }
+            }
+        }
+        _notifyAiOnError(fullOutput, args);
+        channel.appendLine(code === 0 ? '[SUCCESS] Task complete.' :
+            `[ERROR] Task failed${code === null ? ' (connection or process error)' : ' with exit code ' + code}.`);
+        if (onComplete) onComplete(code);
+    })().catch(err => {
+        channel.appendLine(`[ERROR] Task failed unexpectedly: ${err.message}`);
+        if (onComplete) onComplete(null);
     });
 }
 
@@ -171,42 +202,55 @@ function _extractDeviceError(output) {
  * @param {string[]} args
  * @returns {Promise<number|null>}
  */
-function _spawnAsync(exe, args) {
-    return new Promise(async (resolve) => {
-        const channel = outputChannel;
-        channel.show(true);
-        channel.appendLine('─'.repeat(50));
-        
-        const shouldResume = connectionManager.isConnected && !connectionManager.isSuspended;
-        if (shouldResume) {
-            await connectionManager.suspend();
-            await new Promise(resolve => setTimeout(resolve, 500));
-        }
-        
-        let fullOutput = '';
+async function _spawnAsync(exe, args) {
+    const channel = outputChannel;
+    channel.show(true);
+    channel.appendLine('─'.repeat(50));
+    const shouldResume = connectionManager.isConnected && !connectionManager.isSuspended;
+    let fullOutput = '';
+    let code = null;
+    try {
+        if (shouldResume) await connectionManager.suspend();
         const verbose = vscode.workspace.getConfiguration('micropython-studio').get('verboseLogging', false);
         const finalArgs = [...args];
         if (verbose && finalArgs[0] && finalArgs[0].includes('mps_backend.py')) {
             finalArgs.splice(1, 0, '--verbose');
         }
-        const proc = spawn(exe, finalArgs);
-        proc.stdout.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
-        proc.stderr.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
-        proc.on('close', async code => { 
-            if (shouldResume) {
-                await connectionManager.resume();
+        code = await new Promise(resolve => {
+            let child;
+            try { child = spawn(exe, finalArgs); }
+            catch (err) {
+                channel.appendLine(`[ERROR] Cannot spawn backend: ${err.message}`);
+                resolve(null);
+                return;
             }
-            _notifyAiOnError(fullOutput, args); 
-            resolve(code); 
+            let finished = false;
+            const finish = result => {
+                if (finished) return;
+                finished = true;
+                resolve(result);
+            };
+            child.stdout?.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+            child.stderr?.on('data', d => { fullOutput += d.toString(); channel.append(d.toString()); });
+            child.on('close', finish);
+            child.on('error', err => {
+                channel.appendLine(`[ERROR] Backend failed: ${err.message}`);
+                finish(null);
+            });
         });
-        proc.on('error', async err => {
-            if (shouldResume) {
-                await connectionManager.resume();
+        _notifyAiOnError(fullOutput, args);
+    } catch (err) {
+        channel.appendLine(`[ERROR] Cannot start device operation: ${err.message}`);
+    } finally {
+        if (shouldResume) {
+            try { await connectionManager.resume(); }
+            catch (err) {
+                code = null;
+                channel.appendLine(`[ERROR] Device port did not resume: ${err.message}`);
             }
-            channel.appendLine(`[ERROR] Failed to start process: ${err.message}`);
-            resolve(null);
-        });
-    });
+        }
+    }
+    return code;
 }
 
 /**
