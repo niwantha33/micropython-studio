@@ -15,12 +15,12 @@ suite('Debug firmware release safety', () => {
     });
     test('S3 points to test builds, not April 2026 legacy firmware', () => {
         assert.ok(!JSON.stringify(cfg).includes('ESP32S3/firmware.bin'));
-        assert.ok(cfg.boards.find(b => b.id === 'esp32-s3').download_page.includes('weekly-candidate-builds.yml'));
+        assert.ok(cfg.boards.find(b => b.id === 'esp32-s3').download_url.includes('/TestBuilds/ESP32S3/'));
     });
     test('download guide does not silently flash unvalidated firmware', () => {
         assert.ok(ext.includes('vscode.env.openExternal(uri)'));
-        assert.ok(ext.includes("artifact_name"));
-        assert.ok(ext.includes('UNVALIDATED TEST BUILD'));
+        assert.ok(ext.includes("board.download_url"));
+        assert.ok(ext.includes('experimental test firmware'));
         assert.ok(!dbg.includes('uploadDebuggerFiles'));
     });
 });
