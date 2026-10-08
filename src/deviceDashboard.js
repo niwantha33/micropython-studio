@@ -4,6 +4,7 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { runMpremote } = require("./runCommand");
 const wsQueue = require("./wsQueue");
+const { buildWifiScanScript, parseWifiScanOutput } = require("./wifiScan");
 const { scanWorkspacePins } = require("./pinScanner");
 const {
   updateCfgComponent,
@@ -2072,49 +2073,55 @@ async function runDeviceScript(
   devicePort,
   outputChannel,
 ) {
-  const tempPath = path.join(workspaceRoot, tempName);
-  try {
-    fs.writeFileSync(tempPath, scriptContent, "utf8");
+  const connectionManager = require("./connectionManager");
+  // Serialize all dashboard operations with file transfers and metrics.
+  return wsQueue.run(async () => {
+    // Existing REPL daemon owns the COM port. Reuse it rather than starting a
+    // second mps_backend.py process (which reports fake empty scan results).
+    if (connectionManager.isConnected && connectionManager.portName === devicePort) {
+      if (connectionManager.isSuspended) {
+        throw new Error("Device port is busy with a transfer. Wait and retry.");
+      }
+      const result = await connectionManager.runCodeSilently(scriptContent);
+      if (result.stderr && result.stderr.trim()) {
+        throw new Error("Device script failed: " + result.stderr.trim().slice(0, 400));
+      }
+      return result.stdout || "";
+    }
 
-    // Use mps_backend.py for both stability and WebSocket support
-    if (devicePort) {
+    const tempPath = path.join(workspaceRoot, tempName);
+    try {
+      fs.writeFileSync(tempPath, scriptContent, "utf8");
+      if (!devicePort) {
+        return await runMpremote(outputChannel, ["run", `"${tempPath}"`]);
+      }
       const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
       const subpro = path.join(__dirname, "mps_backend.py");
-      return await new Promise((resolve) => {
+      return await new Promise((resolve, reject) => {
         execFile(
           venvPython,
           [
-            subpro,
-            "--python",
-            venvPython,
-            "run_mcu",
-            "--port",
-            devicePort,
-            "--file",
-            tempPath,
-            "--no-reset",
+            subpro, "--python", venvPython, "run_mcu", "--port",
+            devicePort, "--file", tempPath, "--no-reset",
           ],
           { timeout: 60000 },
           (err, stdout, stderr) => {
-            if (err || stderr) {
-              outputChannel.appendLine(`[Dashboard Error] ${err || stderr}`);
+            if (err) {
+              const reason = (stderr || err.message || String(err)).trim().slice(0, 450);
+              reject(new Error("Device command failed: " + reason));
+            } else {
+              if (stderr && stderr.trim()) {
+                outputChannel.appendLine("[Dashboard] Device command warning: " + stderr.trim().slice(0, 450));
+              }
+              resolve(stdout || "");
             }
-            if (stdout) {
-               // Log first 100 chars of stdout for debugging
-               outputChannel.appendLine(`[Dashboard Debug] raw output: ${stdout.substring(0, 100).replace(/\n/g, "\\n")}...`);
-            }
-            resolve(stdout || "");
           },
         );
       });
+    } finally {
+      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     }
-
-    // Fallback logic (no port)
-    const args = ["run", `"${tempPath}"`];
-    return await runMpremote(outputChannel, args);
-  } finally {
-    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-  }
+  }, "Dashboard " + tempName, true);
 }
 
 /**
@@ -2200,54 +2207,20 @@ async function openDeviceDashboard(
 
       // ── Wi-Fi Scan ──────────────────────────────────────────────────────
       if (message.command === "scanWifi") {
-        const script = `try:
-    import network
-    sta = network.WLAN(network.STA_IF)
-    sta.active(True)
-    nets = sta.scan()
-    for n in nets:
-        try:
-            ssid = n[0].decode('utf-8','ignore').strip()
-            rssi = n[3]
-            if ssid:
-                print(ssid + '|' + str(rssi))
-        except:
-            pass
-except ImportError:
-    import wifi
-    for n in wifi.radio.start_scanning_networks():
-        try:
-            if n.ssid:
-                print(str(n.ssid) + '|' + str(n.rssi))
-        except:
-            pass
-    wifi.radio.stop_scanning_networks()
-except Exception as e:
-    print('ERROR|' + str(e))
-`;
         try {
           const raw = await runDeviceScript(
-            script,
+            buildWifiScanScript(),
             "_wifi_scan.py",
             workspaceRoot,
             activePort,
             outputChannel,
           );
-          const networks = raw
-            .split("\n")
-            .map((l) => l.trim())
-            .filter((l) => l && !l.startsWith("ERROR"))
-            .map((l) => {
-              const [ssid, rssi] = l.split("|");
-              return { ssid: ssid || l, rssi: parseInt(rssi) || 0 };
-            })
-            .sort((a, b) => b.rssi - a.rssi); // strongest first
+          const networks = parseWifiScanOutput(raw);
           panel.webview.postMessage({ command: "wifiResults", networks });
         } catch (err) {
-          panel.webview.postMessage({
-            command: "wifiConnectError",
-            message: `Scan failed: ${err.message}`,
-          });
+          const detail = err instanceof Error ? err.message : String(err);
+          outputChannel.appendLine("[Wi-Fi Scan] " + detail);
+          panel.webview.postMessage({ command: "wifiScanError", message: detail });
         }
         return;
       }
