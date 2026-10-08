@@ -72,6 +72,17 @@ suite('WebREPL session-only dashboard startup', () => {
         assert.ok(dash.includes('].join("\\n");'));
         assert.ok(!dash.includes("with open('boot.py', 'w')"));
     });
+    test('Dashboard tells users WebREPL is optional without touching USB debugging', () => {
+        const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'deviceDashboard.js'), 'utf8');
+        const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'webrepl_bridge.py'), 'utf8');
+        assert.ok(dash.includes('Optional · PC must reach this board on TCP 8266.'));
+        assert.ok(dash.includes('USB REPL/debugger work without it.'));
+        assert.ok(dash.includes('Checking WebREPL…'));
+        assert.ok(!dash.includes('Starting WebREPL daemon…'));
+        assert.ok(bridge.includes('WebREPL is optional.'));
+        assert.ok(bridge.includes('this PC can reach its IP on TCP 8266'));
+        assert.ok(bridge.includes('USB REPL/debugging do not need WebREPL.'));
+    });
     test('does not print passwords in configuration logs', () => {
         const cfg = fs.readFileSync(path.join(__dirname,'..','src','commonFxn.js'),'utf8');
         assert.ok(cfg.includes('[REDACTED]'));
