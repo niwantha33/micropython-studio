@@ -1,0 +1,106 @@
+name: Publish Studio v2.6.0 once
+
+# User-authorised first firmware-first release, after real Pico W validation.
+# A GITHUB_TOKEN-created tag does NOT trigger push-tag workflows; explicitly
+# dispatch ci.yml at the verified tag to publish Marketplace/OpenVSX.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-v260-once.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  publish:
+    name: Validate, tag and release v2.6.0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate exact version, clean release source and non-duplicate tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          test "$(node -p "require('./package.json').version")" = '2.6.0'
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          if git ls-remote --exit-code --tags origin 'refs/tags/v2.6.0' >/dev/null 2>&1; then
+            echo 'v2.6.0 tag already exists. Refusing to move or replace it.' >&2
+            exit 1
+          fi
+          if gh release view v2.6.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'v2.6.0 release already exists. Refusing to overwrite it.' >&2
+            exit 1
+          fi
+
+      - name: Setup Node and Python
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test integrated Studio before tagging
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run lint --if-present
+          xvfb-run -a npm test --if-present
+          python -m py_compile src/mpy_daemon.py
+
+      - name: Package v2.6.0 VSIX
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g @vscode/vsce
+          vsce package --no-yarn --out ./micropython-studio-2.6.0.vsix
+          test -s ./micropython-studio-2.6.0.vsix
+          sha256sum ./micropython-studio-2.6.0.vsix > ./micropython-studio-2.6.0.sha256
+
+      - name: Create annotated release tag v2.6.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          git config user.name "micropython-studio-release"
+          git config user.email "release-bot@users.noreply.github.com"
+          git tag -a v2.6.0 -m "MicroPython Studio v2.6.0 — frozen Pico W debugger"
+          git push origin refs/tags/v2.6.0
+
+      - name: Publish official GitHub Release with VSIX
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create v2.6.0 \
+            ./micropython-studio-2.6.0.vsix \
+            ./micropython-studio-2.6.0.sha256 \
+            --verify-tag --latest --repo "$GITHUB_REPOSITORY" \
+            --title "MicroPython Studio v2.6.0 — Frozen Debugger & Reliable REPL" \
+            --notes-file docs/RELEASE_v2.6.0.md
+          echo "### [Studio v2.6.0 release](https://github.com/$GITHUB_REPOSITORY/releases/tag/v2.6.0)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trigger existing tagged Marketplace and Open VSX publisher
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Without this call, GITHUB_TOKEN tag pushes intentionally do not
+          # trigger on.push.tags workflows.
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref v2.6.0
+          echo 'Dispatched CI at v2.6.0 for Marketplace and Open VSX publishing. Check its final result.' >> "$GITHUB_STEP_SUMMARY"
