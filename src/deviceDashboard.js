@@ -4,7 +4,7 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { runMpremote } = require("./runCommand");
 const wsQueue = require("./wsQueue");
-const { buildSessionWebReplScript, parseSessionWebReplResult } = require("./webreplSession");
+const { buildSessionWebReplScript, parseSessionWebReplResult, buildWebReplStatusScript, parseWebReplStatus, resolveUsbReplPort } = require("./webreplSession");
 const { scanWorkspacePins } = require("./pinScanner");
 const {
   updateCfgComponent,
@@ -1606,7 +1606,7 @@ function getWebviewContent(metrics) {
                 <div style="flex:1">
                     <div class="webrepl-ip-label">WebREPL · Session status</div>
                     <div class="webrepl-ip-val">${metrics.bootLog.ip}</div>
-                    <div style="font-size:11px;color:#94a3b8;margin-top:4px">Auto-starts on every boot</div>
+                    <div style="font-size:11px;color:#94a3b8;margin-top:4px">Existing boot configuration unchanged</div>
                 </div>
                 <div style="display:flex;flex-direction:column;gap:6px">
                     <button class="btn btn-warning" id="switchWirelessBtnStatic">⚡ Switch to Wireless</button>
@@ -1977,9 +1977,9 @@ function getWebviewContent(metrics) {
                 box.innerHTML = \`
                     <div class="webrepl-ip-box">
                         <div style="flex:1">
-                            <div class="webrepl-ip-label">WebREPL · Session active</div>
+                            <div class="webrepl-ip-label">WebREPL · Listening</div>
                             <div class="webrepl-ip-val">\${msg.ip}</div>
-                            <div style="font-size:11px;color:#10b981;margin-top:4px">Session only — boot.py unchanged</div>
+                            <div style="font-size:11px;color:#10b981;margin-top:4px">Listener active — boot.py unchanged</div>
                         </div>
                         <div style="display:flex;flex-direction:column;gap:6px">
                             <button class="btn btn-warning" id="switchWirelessBtn">⚡ Switch to Wireless</button>
@@ -2484,19 +2484,38 @@ print('OK')
       }
 
       if (message.command === "enableWebrepl") {
-        // This operation is deliberately SESSION ONLY. Do not overwrite boot.py:
-        // the frozen debugger depends on firmware-controlled USB startup.
+        // The board can already have WebREPL running from an existing boot.py.
+        // NEVER call webrepl.start() again just because Dashboard selected ws:.
         const cfgPath = path.join(workspaceRoot, "device.cfg");
         try {
           const fwType = await getConfigValue(cfgPath, "device", "device_firmware");
           if (fwType === "CircuitPython") {
             throw new Error("CircuitPython uses Web Workflow, not MicroPython WebREPL.");
           }
-          if (!activePort || activePort.startsWith("ws:")) {
-            throw new Error("Select the USB REPL COM port before starting WebREPL.");
+          const manager = require("./connectionManager");
+          const serialPort = resolveUsbReplPort(activePort, manager);
+          if (!serialPort) {
+            throw new Error("No connected USB REPL available to check WebREPL. Select the board's USB COM port in Studio; the existing wireless listener is not changed.");
           }
+          const status = parseWebReplStatus(
+            await runWebReplSessionCode(buildWebReplStatusScript(), serialPort)
+          );
+          const wirelessMatch = /^ws:([^,]+)/.exec(activePort || "");
+          if (wirelessMatch && wirelessMatch[1] !== status.ip) {
+            throw new Error("The wireless IP differs from the board on " + serialPort + ". Select the correct device before continuing.");
+          }
+          if (status.state === "UNKNOWN") {
+            throw new Error("This firmware cannot report WebREPL listener status safely. Use the existing WebREPL console or check its port; no board changes were made.");
+          }
+
+          const running = status.state === "RUNNING";
+          const savedSecret = running
+            ? await getConfigValue(cfgPath, "remote", "webrepl_password") : null;
           const secret = await vscode.window.showInputBox({
-            prompt: "Choose the WebREPL password for this session (different from your Wi-Fi password)",
+            prompt: running
+              ? "WebREPL is already running. Enter its EXISTING password (no restart)."
+              : "Start WebREPL for this session: choose a password different from your Wi-Fi password",
+            value: savedSecret || "",
             password: true,
             placeHolder: "4–64 characters",
             ignoreFocusOut: true,
@@ -2507,21 +2526,29 @@ print('OK')
             panel.webview.postMessage({ command: "webReplCancelled" });
             return;
           }
-          const code = buildSessionWebReplScript(secret);
-          const raw = await runWebReplSessionCode(code, activePort);
-          const ip = parseSessionWebReplResult(raw);
 
-          // Only persist the connection settings AFTER the board acknowledges
-          // webrepl.start(). This does not alter any file on the device.
+          let ip = status.ip;
+          if (!running) {
+            const raw = await runWebReplSessionCode(
+              buildSessionWebReplScript(secret), serialPort
+            );
+            ip = parseSessionWebReplResult(raw);
+          }
+
+          // Record the board's IP and user-supplied password only after it
+          // reports RUNNING or confirms startup. Login is then verified by
+          // the WebREPL Console (a listening port alone isn't authentication).
           await updateCfgComponent(cfgPath, "remote", "webrepl_enabled", "true");
           await updateCfgComponent(cfgPath, "remote", "webrepl_ip", ip);
           await updateCfgComponent(cfgPath, "remote", "webrepl_password", secret);
-          panel.webview.postMessage({ command: "webReplEnabled", ip });
-          outputChannel.appendLine("[WebREPL] Runtime server started on " + ip + ":8266 (boot.py unchanged).");
+          panel.webview.postMessage({ command: "webReplEnabled", ip, alreadyRunning: running });
+          outputChannel.appendLine("[WebREPL] " +
+            (running ? "Existing listener detected at " : "Listener started at ") +
+            ip + ":8266; boot.py not modified.");
         } catch (err) {
-          const messageText = err instanceof Error ? err.message : String(err);
-          outputChannel.appendLine("[WebREPL] Startup failed: " + messageText);
-          panel.webview.postMessage({ command: "webReplError", message: messageText });
+          const detail = err instanceof Error ? err.message : String(err);
+          outputChannel.appendLine("[WebREPL] Setup failed: " + detail);
+          panel.webview.postMessage({ command: "webReplError", message: detail });
         }
         return;
       }
@@ -2530,10 +2557,18 @@ print('OK')
         // Stop only this session's listener, never replace boot.py or delete
         // a user's existing WebREPL configuration or debugger files.
         try {
-          const raw = await runWebReplSessionCode(
-            "try:\\n    import webrepl\\n    webrepl.stop()\\n    print('MPS_WEBREPL_STOP_OK')\\nexcept Exception as e:\\n    print('MPS_WEBREPL_STOP_ERROR|' + str(e))",
-            activePort,
-          );
+          const mgr = require("./connectionManager");
+          const usbPort = resolveUsbReplPort(activePort, mgr);
+          if (!usbPort) throw new Error("Connect the USB REPL to stop WebREPL safely.");
+          const stopScript = [
+            "try:",
+            "    import webrepl",
+            "    webrepl.stop()",
+            "    print('MPS_WEBREPL_STOP_OK')",
+            "except Exception as e:",
+            "    print('MPS_WEBREPL_STOP_ERROR|' + str(e))",
+          ].join("\\n");
+          const raw = await runWebReplSessionCode(stopScript, usbPort);
           if (!raw.includes("MPS_WEBREPL_STOP_OK")) {
             const error = raw.match(/MPS_WEBREPL_STOP_ERROR\\|([^\\r\\n]+)/);
             throw new Error(error ? error[1] : "Device did not confirm WebREPL stop.");
