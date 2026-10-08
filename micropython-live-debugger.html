@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MicroPython Live Debugger for Raspberry Pi Pico 2 W | MicroPython Studio</title>
+  <meta name="description" content="Debug MicroPython on a real Raspberry Pi Pico 2 W in VS Code: breakpoints, stepping, locals, global variables, call stacks and runtime tracing. Watch the hardware demo.">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://niwantha33.github.io/micropython-studio/micropython-live-debugger.html">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Live MicroPython debugger: breakpoints, stepping, variables, runtime traces">
+  <meta property="og:description" content="Watch a real Pico 2 W debugging session in VS Code with MicroPython Studio. Board-specific debugger-enabled firmware required.">
+  <meta property="og:url" content="https://niwantha33.github.io/micropython-studio/micropython-live-debugger.html">
+  <meta name="twitter:card" content="summary">
+  <script type="application/ld+json">
+  {
+    "@context":"https://schema.org",
+    "@type":"SoftwareApplication",
+    "name":"MicroPython Studio",
+    "applicationCategory":"DeveloperApplication",
+    "applicationSubCategory":"Embedded software debugging",
+    "operatingSystem":"Windows, macOS, Linux",
+    "description":"VS Code extension for MicroPython, featuring on-device breakpoints, stepping, variables, call stack and runtime trace inspection on supported debugger-enabled firmware.",
+    "url":"https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio",
+    "downloadUrl":"https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio",
+    "codeRepository":"https://github.com/niwantha33/micropython-studio",
+    "video":"https://www.youtube.com/watch?v=or_aG-Rhnb8",
+    "offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}
+  }
+  </script>
+  <style>
+    :root{color-scheme:dark; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    body{background:#0b1020;color:#e7eef9;margin:0;line-height:1.65}
+    main,header,footer{max-width:880px;margin:auto;padding:26px}
+    nav a, a{color:#77bcff}
+    h1{font-size:clamp(2rem,5vw,3.15rem);line-height:1.16;letter-spacing:-.035em}
+    h2{margin-top:2.4rem} p,li{max-width:75ch}
+    .lead{font-size:1.2rem;color:#d6e6f8}
+    .buttons{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0 28px}
+    .buttons a{padding:12px 18px;text-decoration:none;border:1px solid #61799a;border-radius:9px}
+    .buttons a:first-child{background:#2283d9;border-color:#2283d9;color:white;font-weight:bold}
+    .note{padding:16px;border-left:3px solid #e9b462;background:#212a3a}
+    .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(235px,1fr));gap:14px}
+    .features article{border:1px solid #394960;border-radius:10px;padding:12px 16px}
+    .features h3{font-size:1rem;margin:0}.features p{font-size:.95rem;margin:5px 0}
+    footer{border-top:1px solid #394960;font-size:.9rem;color:#a7b8ca}
+  </style>
+</head>
+<body>
+  <header><nav aria-label="Main navigation"><a href="./">MicroPython Studio home</a> · <a href="https://github.com/niwantha33/micropython-studio">Source code</a> · <a href="https://github.com/niwantha33/micropython-studio/issues">Support</a></nav></header>
+  <main>
+    <h1>Debug MicroPython on real hardware, inside VS Code</h1>
+    <p class="lead">Set a breakpoint on a Raspberry Pi Pico 2 W, pause execution, inspect Python variables and call stacks, step through code, and explore recorded function runtime traces.</p>
+    <div class="buttons">
+      <a href="https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio">Install MicroPython Studio</a>
+      <a href="https://www.youtube.com/watch?v=or_aG-Rhnb8">Watch the hardware debugger demo</a>
+    </div>
+    <p>This is an <strong>on-device MicroPython debugger</strong> that works with compatible debugger-enabled firmware. No external JTAG hardware is needed for the supported software-debugging workflow. Normal project work also includes Serial REPL, file upload/download and firmware tools.</p>
+    <section aria-labelledby="features"><h2 id="features">Live debugger features</h2>
+      <div class="features">
+        <article><h3>Source breakpoints</h3><p>Pause a MicroPython script at a selected source location.</p></article>
+        <article><h3>Step and continue</h3><p>Control script execution while tracing a bug.</p></article>
+        <article><h3>Variables and stack</h3><p>Inspect locals, globals and active call frames.</p></article>
+        <article><h3>Runtime trace analysis</h3><p>See function events and observed elapsed-time shares. This is not a CPU utilisation measurement.</p></article>
+      </div>
+    </section>
+    <section><h2>Which boards are supported?</h2>
+      <p><strong>Pico 2 W:</strong> a working debugger workflow has been demonstrated on actual hardware. <strong>Pico/Pico W/Pico 2:</strong> new frozen debugger candidates have passed CI but require board-specific physical acceptance. <strong>ESP32-S3:</strong> physical Serial REPL plus separate native USB debugger has passed breakpoint and short-RTA tests; full stability checks are pending. <strong>ESP32-C3:</strong> transport feasibility stage; no debugger image published.</p>
+      <div class="note"><strong>Check the firmware before flashing.</strong> The debugger requires a board-matched image. Some existing published Pico firmware uses a legacy setup path; the newer frozen-image workflow is still undergoing acceptance. Download test candidates only with a recovery plan, and never flash an ESP32-S3 image onto an ESP32-C3.</div>
+      <p><a href="https://github.com/niwantha33/micropython_live_dbg_firmware">Board-specific firmware release status and downloads</a></p>
+    </section>
+    <section><h2>Getting started</h2>
+      <ol>
+        <li>Install MicroPython Studio from the VS Code Marketplace.</li>
+        <li>Connect a supported board and verify its MicroPython REPL and normal file upload.</li>
+        <li>Follow the instructions for your board's exact debugger-enabled firmware.</li>
+        <li>Open your script and start debugging on the separate debugger transport, where the firmware supports one.</li>
+        <li>Set a breakpoint, inspect the stack and variables, and try runtime tracing.</li>
+      </ol>
+    </section>
+    <section><h2>Frequently asked questions</h2>
+      <h3>Does MicroPython have breakpoints in VS Code?</h3>
+      <p>MicroPython Studio provides source breakpoints and stepping with the matching debugger-enabled firmware on hardware-validated targets such as Pico 2 W. An ordinary stock MicroPython image does not automatically include these features.</p>
+      <h3>Does it need a JTAG probe?</h3>
+      <p>For the supported software-level debugger features, no separate JTAG probe is needed. Target-specific USB transport and firmware requirements still apply.</p>
+      <h3>Does RTA show CPU load?</h3>
+      <p>No. Observed VM time percentages describe shares of recorded execution-segment elapsed time. Sleeping and waiting can affect those measurements.</p>
+    </section>
+  </main>
+  <footer>MicroPython Studio is an independent open-source project. See the <a href="https://github.com/niwantha33/micropython-studio">source repository</a>, <a href="https://github.com/niwantha33/micropython-studio/issues">issues</a> and <a href="https://www.youtube.com/watch?v=or_aG-Rhnb8">working debugger demonstration</a>.</footer>
+</body>
+</html>

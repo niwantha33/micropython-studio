@@ -43,6 +43,34 @@ jobs:
           python -m pip install -r requirements.txt --dry-run
           python -m py_compile src/*.py scripts/*.py || true
 
+  verify-release:
+    name: Verify approved release tag
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require matching package version and approved main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Release tag does not point to a commit on main; refusing publication." >&2
+            exit 1
+          fi
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$tag_version" != "$package_version" ]; then
+            echo "Release tag v$tag_version does not match package.json $package_version." >&2
+            exit 1
+          fi
+          echo "Approved release: v$package_version (source is on main)."
+
   build-vsix:
     name: Build VSIX
     needs: lint-and-test
@@ -74,7 +102,7 @@ jobs:
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build-vsix
+    needs: [build-vsix, verify-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -95,7 +123,7 @@ jobs:
   publish-marketplace:
     name: Publish to VS Code Marketplace & OpenVSX
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build-vsix
+    needs: [build-vsix, verify-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
