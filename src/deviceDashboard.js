@@ -1868,17 +1868,14 @@ function getWebviewContent(metrics) {
             if (msg.command === 'wifiResults') {
                 const area = document.getElementById('wifiScanArea');
                 if (!msg.networks || msg.networks.length === 0) {
-                    area.innerHTML = '<div style="color:#94a3b8">No networks found. Try again.</div>';
+                    area.textContent = 'Scan completed: no visible networks. Check the access point and try again.';
                     if (scanBtn) scanBtn.disabled = false;
                     return;
                 }
-                // Build SSID dropdown + password + connect button
-                const opts = msg.networks
-                    .map(n => \`<option value="\${n.ssid}">\${n.ssid}  (\${n.rssi} dBm)</option>\`)
-                    .join('');
+                // Build options with DOM APIs: SSIDs are untrusted radio data.
                 area.innerHTML = \`
                     <label class="wifi-input-label">Select Network</label>
-                    <select class="network-list" id="ssidSelect">\${opts}</select>
+                    <select class="network-list" id="ssidSelect"></select>
                     <label class="wifi-input-label">Password</label>
                     <input class="wifi-input" type="password" id="wifiPassword" placeholder="Enter Wi-Fi password">
                     <div class="wifi-actions" style="margin-top:12px">
@@ -1887,6 +1884,13 @@ function getWebviewContent(metrics) {
                     </div>
                     <div id="connectStatus" style="margin-top:10px"></div>
                 \`;
+                const ssidSelect = document.getElementById('ssidSelect');
+                for (const network of msg.networks) {
+                    const item = document.createElement('option');
+                    item.value = network.ssid;
+                    item.textContent = network.ssid + ' (' + network.rssi + ' dBm)';
+                    ssidSelect.appendChild(item);
+                }
                 if (scanBtn) scanBtn.disabled = false;
 
                 document.getElementById('cancelScanBtn').addEventListener('click', () => {
@@ -1904,6 +1908,19 @@ function getWebviewContent(metrics) {
                     document.getElementById('connectBtn').disabled = true;
                     vscode.postMessage({ command: 'connectWifi', ssid, password });
                 });
+            }
+
+            if (msg.command === 'wifiScanError') {
+                const area = document.getElementById('wifiScanArea');
+                if (area) {
+                    area.replaceChildren();
+                    const error = document.createElement('div');
+                    error.style.color = '#ef4444';
+                    error.textContent = 'Scan failed: ' + (msg.message || 'Unknown error');
+                    area.appendChild(error);
+                }
+                if (scanBtn) scanBtn.disabled = false;
+                return;
             }
 
             if (msg.command === 'wifiConnectDone') {
