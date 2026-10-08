@@ -24,7 +24,13 @@ suite('Discoverability without unsupported debugger claims', () => {
     assert.ok(readme.includes('Experimental debugger firmware — for debugging and testing your own code ONLY. NOT FOR PRODUCTION USE.'));
     assert.ok(readme.includes('not to an approved, board-specific stable release'));
     assert.ok(readme.includes('does **not** automatically flash the board or overwrite `boot.py`'));
-    assert.ok(readme.includes('**Test-build use policy:**'));
+    assert.ok(readme.includes('### Debugger USB connections'));
+    assert.ok(readme.includes('| Pico / Pico W / Pico 2 / Pico 2 W (frozen UF2 candidate) | CDC0 COM | CDC1 COM | One |'));
+    assert.ok(readme.includes('| ESP32-S3 test candidate | Physical Serial/JTAG COM | Physical native-USB debugger COM | Two |'));
+    assert.ok(!readme.includes('## Frozen debugger firmware — Pico and ESP32-S3 (development branches)'));
+    assert.ok(!readme.includes('## Next phase — reliable REPL and device connection cleanup'));
+    assert.ok(!readme.includes('feature/esp32-c3-feasibility-v1'));
+    assert.ok(!readme.includes("the user's photographed"));
   });
   test('automatic public release requires tag from main with matching version', () => {
     const workflow = fs.readFileSync(path.join(repo,'.github','workflows','ci.yml'),'utf8');
