@@ -34,7 +34,9 @@ suite('Simple board-specific firmware downloads', () => {
         assert.ok(source.includes("answer === 'Download' ? board.download_url : board.download_page"));
         assert.ok(!source.includes('Open the latest workflow run and download only'));
         assert.ok(!source.includes("description: board.ready_for_release"));
-        assert.ok(source.includes('experimental test firmware'));
+        assert.ok(source.includes('Experimental debugger firmware for debugging and testing your own code ONLY. NOT FOR PRODUCTION USE.'));
+        assert.ok(source.includes('Download only opens the firmware file; Studio does not flash it.'));
+        assert.ok(source.includes('Back up your device files before flashing.'));
     });
 
     test('Start Debug menu only offers Connect and Download firmware', () => {
