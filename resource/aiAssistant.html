@@ -903,8 +903,10 @@
             modelSelect.disabled = models.length === 0;
             if (status.selectedModel && models.includes(status.selectedModel)) {
                 modelSelect.value = status.selectedModel;
-            } else if (models.includes(currentFirmware === 'CircuitPython' ? 'micro_ai-cpy' : 'micro_ai-mpy')) {
-                modelSelect.value = currentFirmware === 'CircuitPython' ? 'micro_ai-cpy' : 'micro_ai-mpy';
+            } else {
+                const preferred = currentFirmware === 'CircuitPython' ? 'micro_ai-cpy' : 'micro_ai-mpy';
+                const defaultModel = models.find(name => name === preferred || name.startsWith(preferred + ':'));
+                if (defaultModel) modelSelect.value = defaultModel;
             }
             const errorEl = document.getElementById('error-msg');
             if (status.connected) errorEl.style.display = 'none';
