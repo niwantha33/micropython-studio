@@ -618,26 +618,8 @@ function activate(context) {
         })
     );
 
-    // Auto-update AI models when Modelfiles in resource dir are edited
-    const resourceDirDir = vscode.Uri.file(path.join(context.extensionUri.fsPath, 'resource'));
-    const modelfileWatcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(resourceDirDir, 'Modelfile-*')
-    );
-    context.subscriptions.push(modelfileWatcher);
-
-    const onModelfileChanged = async (uri) => {
-        const fileName = path.basename(uri.fsPath);
-        if (fileName === 'Modelfile-mpy' || fileName === 'Modelfile-cpy') {
-            if (aiAssistanceProvider) {
-                vscode.window.showInformationMessage(`[OK] AI Modelfile updated (${fileName}). Reinstalling models...`);
-                // Bump the version dynamically or just let it reinstall
-                await aiAssistanceProvider._installModel(true);
-            }
-        }
-    };
-
-    context.subscriptions.push(modelfileWatcher.onDidChange(onModelfileChanged));
-    context.subscriptions.push(modelfileWatcher.onDidCreate(onModelfileChanged));
+    // Never silently rebuild a user's Ollama models on extension startup
+    // or filesystem changes. Model creation is always an explicit AI action.
 
     // ── Create Status Bar ────────────────────────────────────────────────
 
