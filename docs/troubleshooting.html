@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting USB, debugger and WebREPL | MicroPython Studio</title>
+<meta name="description" content="Fix common MicroPython Studio connection problems safely: missing or busy USB REPL, separate debugger COM, frozen firmware, WebREPL port 8266 and network reachability.">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://niwantha33.github.io/micropython-studio/troubleshooting.html">
+<meta property="og:title" content="MicroPython Studio connection troubleshooting">
+<meta property="og:description" content="Practical USB REPL, live debugger and optional WebREPL diagnostics without overwriting boot.py.">
+<link rel="stylesheet" href="./site-docs.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="header"><div class="container nav">
+<a class="brand" href="./"><span class="brand-mark" aria-hidden="true">µP</span><span>MicroPython Studio</span></a>
+<nav class="navlinks" aria-label="Main navigation"><a href="./">Home</a><a href="./getting-started.html">Get started</a><a href="./board-support.html">Boards &amp; firmware</a><a href="./troubleshooting.html" aria-current="page">Troubleshooting</a><a href="./micropython-live-debugger.html">Live debugger</a><a href="https://github.com/niwantha33/micropython-studio">GitHub</a></nav>
+</div></header>
+<main id="main">
+<section class="hero"><div class="container">
+<div class="eyebrow">Connection diagnostics / No board files changed</div>
+<h1>Get connected. Keep the working setup.</h1>
+<p class="lead">Separate the three paths—USB serial REPL, the dedicated debugger transport and optional wireless WebREPL—before changing firmware or boot scripts. They fail for different reasons.</p>
+<div class="cta-row"><a class="btn btn-primary" href="#diagnose">Choose a symptom ↓</a><a class="btn btn-secondary" href="./getting-started.html">USB first-run guide →</a></div>
+</div></section>
+<section class="content" id="diagnose"><div class="container">
+<h2>Start with the connection you need</h2>
+<div class="grid">
+<article class="card"><span class="number">01</span><h3>USB serial REPL</h3><p>Python shell, upload/download and normal script execution. No Wi-Fi or debugger firmware required for compatible boards.</p></article>
+<article class="card"><span class="number">02</span><h3>Debugger transport</h3><p>Breakpoints and RTA require a <a href="./board-support.html">board-matched debugger image</a> and separate port/transport.</p></article>
+<article class="card"><span class="number">03</span><h3>WebREPL over Wi-Fi</h3><p>Optional TCP/WebSocket service on port 8266. Its availability does not determine whether USB REPL and debugging work.</p></article>
+</div>
+</div></section>
+<section class="content"><div class="container">
+<h2>USB shell not opening</h2>
+<div class="step"><div class="number">01</div><div><h3>Check the cable and COM port</h3><p>Use a data-capable USB cable. Confirm your board appears in Windows Device Manager or as a serial device on macOS/Linux, then choose the board's REPL port in Studio. Different CDC interfaces may appear as separate ports.</p></div></div>
+<div class="step"><div class="number">02</div><div><h3>Avoid two programs owning one port</h3><p>Close another serial terminal or flasher using the same COM port. If a tool has locked USB, close that tool before retrying. Do not delete <code>boot.py</code> or the debugger to solve a routine port-busy error.</p></div></div>
+<div class="step"><div class="number">03</div><div><h3>Prove the REPL works before debugging</h3><p>Open <strong>MicroPython: Open Device Shell</strong>. At the <code>&gt;&gt;&gt;</code> prompt run <code>print(1 + 1)</code>; expected result is <code>2</code>. Only then test upload or debugging.</p></div></div>
+<div class="callout"><strong>Separate USB ports:</strong> On stable Pico W debugger firmware, CDC0 carries REPL/files and CDC1 carries the debugger. On ESP32-S3 preview hardware the physical connectors/transport differ. Always follow the matching <a href="./board-support.html">firmware instructions</a>.</div>
+</div></section>
+<section class="content"><div class="container">
+<h2>WebREPL: can Studio reach the board?</h2>
+<p class="section-lead">A printed “WebREPL server started” message proves startup was attempted, not that this PC can reach it now. WebREPL is optional and need not start on every boot.</p>
+<div class="step"><div class="number">01</div><div><h3>Check current board Wi-Fi and IP in USB REPL</h3><p>These commands read status and do not write to the board's filesystem:</p>
+<pre><code>import network
+sta = network.WLAN(network.STA_IF)
+print("Connected:", sta.isconnected())
+print("IP:", sta.ifconfig()[0])</code></pre>
+<p>If Wi-Fi is disconnected, follow your board's own Wi-Fi setup; don't assume an old IP address is still valid.</p></div></div>
+<div class="step"><div class="number">02</div><div><h3>Confirm WebREPL is enabled on the board</h3><p>Use Studio's Wi-Fi Manager or the board's existing configuration. In firmware that supports it, <code>import webrepl</code> makes the module available; it <strong>does not by itself</strong> start the server. An appropriate <code>webrepl.start(...)</code> call may be needed if no listener is running. Avoid restarting a healthy listener or overwriting user <code>boot.py</code>.</p></div></div>
+<div class="step"><div class="number">03</div><div><h3>Test the TCP port from the computer</h3><p>On Windows PowerShell, replace the example with the IP printed by the board:</p>
+<pre><code>Test-NetConnection &lt;BOARD_IP&gt; -Port 8266</code></pre>
+<p>On Linux/macOS with netcat installed:</p>
+<pre><code>nc -vz &lt;BOARD_IP&gt; 8266</code></pre>
+<p><strong>Successful TCP connection:</strong> the service is reachable, but a correct WebREPL password is still needed. <strong>Failed TCP connection:</strong> investigate stale IP, board Wi-Fi state, routed network connectivity, access-point client isolation or whether a listener is running.</p></div></div>
+<div class="step"><div class="number">04</div><div><h3>Check the PC and board networks</h3><p>Compare the PC's current IP with the board's. Being on different subnets does not automatically prevent access—routing may exist—but they need a working network path. Joining the same reachable local network can simplify the first test. A failed ping alone does not prove WebREPL is stopped; TCP port 8266 is the relevant test.</p></div></div>
+<div class="callout warning"><strong>Preserve custom boot recovery logic.</strong> Some <code>boot.py</code> setups intentionally skip Wi-Fi/WebREPL if USB activity is detected at startup, keeping serial recovery available. Do not remove that safeguard simply to force wireless access. Test in the live USB REPL first and keep a backup before any later boot change.</div>
+</div></section>
+<section class="content"><div class="container">
+<h2>Debugger connects, but breakpoints or RTA don't behave as expected</h2>
+<div class="step"><div class="number">01</div><div><h3>Verify firmware identity</h3><p>Stock MicroPython firmware does not include MicroPython Studio's live debugger transport. Check the exact board, firmware image and <a href="./board-support.html">hardware acceptance status</a>. A GitHub Actions green build is not proof of a working binary on your board.</p></div></div>
+<div class="step"><div class="number">02</div><div><h3>Keep debugger and REPL channels separate</h3><p>Connect Studio's normal device port to the REPL and use the additional transport required for the debugger. On Pico W's stable dual-CDC image they are different COM ports. On ESP32-S3 preview you may need two cables.</p></div></div>
+<div class="step"><div class="number">03</div><div><h3>Run one small breakpoint test</h3><p>Use a simple script with a known source line, then test Start Debug → Connect, pause, variables, Continue and disconnect. Only after this passes test RTA On/Off and long-running asynchronous programs.</p></div></div>
+<div class="callout"><strong>RTA is not CPU utilisation.</strong> Reported observed VM percentages describe measured runtime-segment time share, which can include waiting/sleeping effects. Unresolved code addresses are not automatically a CPU fault.</div>
+</div></section>
+<section class="content"><div class="container">
+<h2>Frequently asked questions</h2>
+<details><summary>Do I need WebREPL to use MicroPython Studio?</summary><p>No. USB serial REPL, file tools and the supported debugger use their own connections. WebREPL is optional wireless access.</p></details>
+<details><summary>Should I delete or overwrite boot.py if WebREPL fails?</summary><p>No. Existing boot recovery routines may be the reason the USB shell still works. Confirm the board's IP and network route first, then inspect WebREPL configuration without touching flash.</p></details>
+<details><summary>Why do I see two COM ports on my Pico?</summary><p>Stable Pico W frozen-debugger firmware provides separate USB CDC interfaces for REPL/files and debugging. Select the correct one for each purpose.</p></details>
+<details><summary>Can I flash a Pico W UF2 onto a Pico 2 W?</summary><p>No. RP2040 and RP2350 targets require their own compatible firmware. Consult the board-specific release matrix.</p></details>
+<details><summary>Is a preview firmware the same as a stable release?</summary><p>No. Automated test binaries and previews can be useful for hardware experiments but are not substitutes for approved hardware-tested releases.</p></details>
+<div class="cta-row"><a class="btn btn-secondary" href="https://github.com/niwantha33/micropython-studio/issues/new">Open an issue on GitHub ↗</a><a class="btn btn-secondary" href="./getting-started.html">Return to quick start →</a></div>
+<p class="note" style="margin-top:16px">For bug reports, include your board model, MicroPython/firmware version, OS, port names, Studio version and non-secret logs. Never post Wi-Fi or WebREPL passwords, tokens or private project files.</p>
+</div></section>
+</main>
+<footer class="footer"><div class="container footgrid"><span>MicroPython Studio · Safe first: troubleshoot without changing working board files.</span><div class="footlinks"><a href="./">Home</a><a href="./board-support.html">Compatibility</a><a href="https://github.com/niwantha33/micropython-studio/issues">Support</a></div></div></footer>
+</body></html>
