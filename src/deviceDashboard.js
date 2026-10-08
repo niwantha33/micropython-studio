@@ -1592,7 +1592,7 @@ function getWebviewContent(metrics) {
                     </label>
                     <div>
                         <div class="toggle-label">Enable Wireless Access (WebREPL)</div>
-                        <div class="toggle-sub">Lets you upload code &amp; use REPL over Wi-Fi — no USB cable needed</div>
+                        <div class="toggle-sub">Optional · PC must reach this board on TCP 8266. USB REPL/debugger work without it.</div>
                     </div>
                 </div>
                 <div id="webReplInfoBox" style="display:none"></div>
@@ -1665,7 +1665,7 @@ function getWebviewContent(metrics) {
                 if (webReplToggle.checked) {
                     webReplToggle.disabled = true;
                     document.getElementById('webReplInfoBox').innerHTML =
-                        '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Starting WebREPL daemon…</div>';
+                        '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Checking WebREPL…</div>';
                     document.getElementById('webReplInfoBox').style.display = 'block';
                     vscode.postMessage({ command: 'enableWebrepl', ssid: window._mpsLastSsid || '', password: window._mpsLastPassword || '' });
                 } else {
@@ -1896,7 +1896,7 @@ function getWebviewContent(metrics) {
                 document.getElementById('connectBtn').addEventListener('click', () => {
                     const ssid = document.getElementById('ssidSelect').value;
                     const password = document.getElementById('wifiPassword').value;
-                    // Store credentials so the WebREPL enable handler can embed them in boot.py
+                    // Wi-Fi credentials remain in memory for existing Wi-Fi connect flow. Do not embed them in boot.py.
                     window._mpsLastSsid = ssid;
                     window._mpsLastPassword = password;
                     document.getElementById('connectStatus').innerHTML =
@@ -1940,7 +1940,7 @@ function getWebviewContent(metrics) {
                             if (this.checked) {
                                 this.disabled = true;
                                 document.getElementById('webReplInfoBox').innerHTML =
-                                    '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Starting WebREPL daemon…</div>';
+                                    '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Checking WebREPL…</div>';
                                 document.getElementById('webReplInfoBox').style.display = 'block';
                                 vscode.postMessage({ command: 'enableWebrepl', ssid: window._mpsLastSsid || '', password: window._mpsLastPassword || '' });
                             } else {
