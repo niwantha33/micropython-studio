@@ -1,7 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { buildSessionWebReplScript, parseSessionWebReplResult } = require('../src/webreplSession');
+const { buildSessionWebReplScript, parseSessionWebReplResult, buildWebReplStatusScript, parseWebReplStatus, resolveUsbReplPort } = require('../src/webreplSession');
 
 suite('WebREPL session-only dashboard startup', () => {
     test('start script reuses connected WLAN without writing device files', () => {
@@ -34,9 +34,43 @@ suite('WebREPL session-only dashboard startup', () => {
         assert.ok(dash.includes('parseSessionWebReplResult(raw)'));
         assert.ok(dash.includes('command: "webReplError"'));
         assert.ok(dash.includes("if (msg.command === 'webReplError')"));
-        assert.ok(dash.includes('Session only — boot.py unchanged'));
+        assert.ok(dash.includes('Listener active — boot.py unchanged'));
+        assert.ok(dash.includes('if (!running) {'));
+        assert.ok(dash.includes('buildWebReplStatusScript()'));
         assert.ok(!dash.includes("with open('boot.py', 'w')"));
         assert.ok(!dash.includes('micro123'));
+    });
+    test('detects pre-existing WebREPL from a read-only board query', () => {
+        const script = buildWebReplStatusScript();
+        assert.ok(script.includes('webrepl.listen_s'));
+        assert.ok(script.includes('MPS_WEBREPL_STATUS|RUNNING'));
+        assert.ok(!script.includes('webrepl.start('));
+        assert.ok(!script.includes('webrepl.stop('));
+        assert.ok(!script.includes('open('));
+        assert.ok(script.includes("\\n"));
+    });
+    test('parse status when listener already running on Pico 2 W', () => {
+        const raw = '>>>\\r\\nMPS_WEBREPL_STATUS|RUNNING|10.20.100.198\\r\\n';
+        assert.deepStrictEqual(parseWebReplStatus(raw), {state:'RUNNING',ip:'10.20.100.198'});
+        assert.deepStrictEqual(parseWebReplStatus('MPS_WEBREPL_STATUS|STOPPED|192.168.0.35'), {state:'STOPPED',ip:'192.168.0.35'});
+        assert.throws(() => parseWebReplStatus('MPS_WEBREPL_STATUS|RUNNING|999.1.1.1'), /Invalid/);
+        assert.throws(() => parseWebReplStatus(''), /did not report/);
+    });
+    test('uses COM8 shared daemon even when dashboard was switched to ws: URL', () => {
+        const manager = {isConnected:true,isSuspended:false,portName:'COM8'};
+        assert.strictEqual(resolveUsbReplPort('ws:10.20.100.198,examplepass',manager),'COM8');
+        assert.strictEqual(resolveUsbReplPort('COM8',manager),'COM8');
+        assert.strictEqual(resolveUsbReplPort('ws:10.20.100.198,examplepass',
+            {...manager,isSuspended:true}),null);
+        assert.strictEqual(resolveUsbReplPort('ws:10.20.100.198,examplepass',
+            {...manager,isConnected:false}),null);
+    });
+    test('stopping WebREPL sends actual newlines without changing boot.py', () => {
+        const dash = fs.readFileSync(path.join(__dirname,'..','src','deviceDashboard.js'),'utf8');
+        assert.ok(dash.includes('const stopScript = ['));
+        assert.ok(dash.includes('MPS_WEBREPL_STOP_OK'));
+        assert.ok(dash.includes('].join("\\n");'));
+        assert.ok(!dash.includes("with open('boot.py', 'w')"));
     });
     test('does not print passwords in configuration logs', () => {
         const cfg = fs.readFileSync(path.join(__dirname,'..','src','commonFxn.js'),'utf8');
