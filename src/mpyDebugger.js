@@ -1045,17 +1045,9 @@ function openDebuggerPanel(context, port, venvPython) {
 async function startDebugger(context, gRemoteDevicePort, venvPython) {
     const replPort = gRemoteDevicePort && gRemoteDevicePort !== '-' ? String(gRemoteDevicePort).trim() : '';
     const pick = await vscode.window.showQuickPick([
-        {
-            label: '$(plug) Connect to debugger',
-            description: 'Requires debugger-enabled firmware; does not upload files',
-            id: 'connect',
-        },
-        {
-            label: '$(cloud-download) Get debugger-enabled firmware',
-            description: 'Open board-specific builds, requirements and installation guidance',
-            id: 'firmware',
-        },
-    ], { placeHolder: `REPL/upload: ${replPort} | Debugger: separate port` });
+        { label: '$(plug) Connect', id: 'connect' },
+        { label: '$(cloud-download) Download firmware', id: 'firmware' },
+    ], { placeHolder: `REPL: ${replPort || 'not connected'}` });
     if (!pick) return;
     if (pick.id === 'firmware') {
         await vscode.commands.executeCommand('micropython-ide.flashDebugFirmware', { source: 'debugger' });
@@ -1067,8 +1059,8 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
     }
 
     const portInput = await vscode.window.showInputBox({
-        prompt: 'Dedicated debugger COM port (not the REPL/upload port); firmware must already include the debugger',
-        placeHolder: 'e.g. COM13 (ESP32-S3 native USB), or Pico CDC1',
+        prompt: 'Debugger COM port (not REPL port)',
+        placeHolder: 'e.g. COM13',
         validateInput: value => {
             const candidate = String(value || '').trim();
             if (!candidate) return 'Enter the dedicated debugger COM port.';
