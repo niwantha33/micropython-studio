@@ -94,6 +94,11 @@ def _release_lock(port: str):
         sys.stderr.write(f"[LOCK] PID {pid}: Releasing lock for port {port}\n")
     try:
         if os.path.exists(lock_path):
+            with open(lock_path, 'r') as f:
+                owner = f.read().strip()
+            # Never remove another daemon's or the parent extension's lock.
+            if owner != f"{pid}:daemon":
+                return
             os.remove(lock_path)
             log_to_file("Lock released successfully")
             if g_verbose:
@@ -149,11 +154,9 @@ class MpyDaemon:
                     ])
                     if is_transient and self.running:
                         if self._try_reconnect():
-                            try:
-                                time.sleep(0.1)
-                                self.serial.write(b'\r\x03')
-                            except:
-                                pass
+                            # Reconnection is transport recovery, NOT permission
+                            # to interrupt whatever script is now running.
+                            self.send_event("connected", {"port": self.port})
                             continue
                     time.sleep(0.1)
 
@@ -221,7 +224,9 @@ class MpyDaemon:
     def connect(self):
         self._read_buf = b""
         self._rx_queue = bytearray()
-        _acquire_lock(self.port)
+        if not _acquire_lock(self.port):
+            self.send_event("error", {"message": f"Port {self.port} is in use by another owner. Close its serial connection first."})
+            sys.exit(1)
         try:
             # We explicitly disable DTR/RTS on connect to avoid unwanted reset
             self.serial = serial.Serial()
@@ -557,6 +562,9 @@ class MpyDaemon:
                         except Exception as e:
                             if g_verbose:
                                 sys.stderr.write(f"[DAEMON] Failed to set DTR/RTS on resume: {e}\n")
+                if not self.running:
+                    # Do not falsely acknowledge a failed resume.
+                    return
                 self.suspended = False
                 self.send_event("resumed", {})
                 self._flush_terminal_input()
