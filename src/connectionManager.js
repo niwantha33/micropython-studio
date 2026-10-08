@@ -93,12 +93,31 @@ class ConnectionManager extends EventEmitter {
         this._nextReqId = 1;
         
         // Promises for suspend/resume
-        this._suspendResolve = null;
-        this._resumeResolve = null;
+        this._suspendPending = null;
+        this._resumePending = null;
         this._autoResumeTimer = null;
+        this._connectPromise = null;
+        this._connectingPort = null;
     }
 
     async connect(portName, baudRate = 115200) {
+        if (this._connectPromise) {
+            if (this._connectingPort === portName) return this._connectPromise;
+            try { await this._connectPromise; } catch (_) { /* retry the requested port */ }
+        }
+        this._connectingPort = portName;
+        const task = this._connectInternal(portName, baudRate);
+        this._connectPromise = task;
+        try { return await task; }
+        finally {
+            if (this._connectPromise === task) {
+                this._connectPromise = null;
+                this._connectingPort = null;
+            }
+        }
+    }
+
+    async _connectInternal(portName, baudRate) {
         logMsg(`[ConnectionManager] Connecting to port ${portName}...`);
         if (this.isConnected && this.portName === portName) {
             logMsg(`[ConnectionManager] Already connected to ${portName}`);
@@ -112,30 +131,21 @@ class ConnectionManager extends EventEmitter {
 
         this.portName = portName;
 
-        // Clean up stale daemon holding this port before spawning a new one
+        // Never kill a live PID from a lock file. It may belong to another
+        // Studio window or a legitimate serial owner.
         const lockPath = getLockFilePath(portName);
         if (lockPath && fs.existsSync(lockPath)) {
             try {
-                const content = fs.readFileSync(lockPath, 'utf8').trim();
-                const parts = content.split(':');
-                const pid = parseInt(parts[0], 10);
-                const type = parts[1];
-                if (!isNaN(pid) && isPidRunning(pid)) {
-                    if (type === 'daemon') {
-                        logMsg(`[ConnectionManager] Killing stale daemon process ${pid} holding port ${portName}`);
-                        try {
-                            process.kill(pid, 'SIGKILL');
-                        } catch (e) {
-                            try { process.kill(pid); } catch (err) {}
-                        }
-                        // wait a brief moment for port release
-                        await new Promise(resolve => setTimeout(resolve, 500));
-                        // remove the lock file
-                        try { fs.unlinkSync(lockPath); } catch (e) {}
-                    }
+                const [pidText, type] = fs.readFileSync(lockPath, 'utf8').trim().split(':');
+                const pid = Number.parseInt(pidText, 10);
+                if (Number.isInteger(pid) && isPidRunning(pid)) {
+                    throw new Error(`Port ${portName} is already owned by PID ${pid} (${type || 'unknown'}). Close the other connection first.`);
                 }
+                // A dead owner's lock is stale and safe to remove.
+                if (Number.isInteger(pid) && pid > 0 && !isPidRunning(pid)) fs.unlinkSync(lockPath);
             } catch (err) {
-                console.error('[ConnectionManager] Error cleaning up stale daemon lock:', err);
+                if (err.message.startsWith('Port ')) throw err;
+                logMsg(`[ConnectionManager] Could not inspect lock: ${err.message}`);
             }
         }
 
@@ -149,6 +159,17 @@ class ConnectionManager extends EventEmitter {
 
             let stdoutBuffer = '';
             let connected = false;
+            let settled = false;
+            const settle = err => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(startTimeout);
+                if (err) reject(err); else resolve();
+            };
+            const startTimeout = setTimeout(() => {
+                settle(new Error(`Timed out connecting to ${portName}. Check COM selection and close other serial tools.`));
+                try { this.daemonProcess?.kill(); } catch (_) {}
+            }, 10000);
 
             this.daemonProcess.stdout.on('data', (data) => {
                 stdoutBuffer += data.toString();
@@ -160,7 +181,7 @@ class ConnectionManager extends EventEmitter {
                     
                     try {
                         const msg = JSON.parse(line);
-                        this._handleDaemonMessage(msg, resolve, reject, connected);
+                        this._handleDaemonMessage(msg, () => settle(), err => settle(err), connected);
                         if (msg.type === 'connected') connected = true;
                     } catch (e) {
                         console.error('Invalid JSON from daemon:', line, e);
@@ -170,7 +191,7 @@ class ConnectionManager extends EventEmitter {
 
             this.daemonProcess.on('error', (err) => {
                 logMsg(`[ConnectionManager] Daemon spawn error: ${err.message}`);
-                reject(err);
+                settle(err);
             });
 
             this.daemonProcess.stderr.on('data', (data) => {
@@ -179,7 +200,9 @@ class ConnectionManager extends EventEmitter {
 
             this.daemonProcess.on('close', (code) => {
                 logMsg(`[ConnectionManager] Daemon closed with code: ${code}`);
-                this.isConnected = false;
+                const error = new Error(`Serial daemon stopped (exit code ${code}).`);
+                if (!connected) settle(error);
+                this._daemonGone(error);
                 this.daemonProcess = null;
                 this.emit('disconnected');
             });
@@ -205,7 +228,11 @@ class ConnectionManager extends EventEmitter {
             case 'error':
                 logMsg(`[ConnectionManager] Received 'error' from daemon: ${msg.message}`);
                 if (!connected) reject(new Error(msg.message));
-                else this.emit('error', new Error(msg.message));
+                else {
+                    const error = new Error(msg.message);
+                    this._rejectPendingTransitions(error);
+                    if (this.listenerCount('error')) this.emit('error', error);
+                }
                 break;
             case 'terminal_data':
                 if (msg.data) {
@@ -230,122 +257,157 @@ class ConnectionManager extends EventEmitter {
                 }
                 break;
             case 'suspended':
-                logMsg(`[ConnectionManager] Daemon suspended successfully`);
+                logMsg('[ConnectionManager] Daemon acknowledged suspension');
                 this.isSuspended = true;
-                
-                // Write a temporary lock file to prevent auto-resume from claiming the port 
-                // before the child process (terminal or spawn) can write its own lock
+                // Do not claim the port on behalf of another active process.
                 if (this.portName) {
                     try {
-                        const lockPath = getLockFilePath(this.portName);
-                        fs.writeFileSync(lockPath, `${process.pid}:suspended_lock`);
+                        fs.writeFileSync(getLockFilePath(this.portName), `${process.pid}:suspended_lock`, { flag: 'wx' });
                     } catch (err) {
-                        console.error('[ConnectionManager] Failed to write suspended lock:', err);
+                        // Another process may have legitimately acquired its lock.
+                        if (err.code !== 'EEXIST') logMsg(`[ConnectionManager] Suspension lock: ${err.message}`);
                     }
                 }
-
-                if (this._suspendResolve) {
-                    this._suspendResolve();
-                    this._suspendResolve = null;
-                }
+                this._resolveTransition('suspend');
                 break;
             case 'resumed':
-                logMsg(`[ConnectionManager] Daemon resumed successfully`);
+                logMsg('[ConnectionManager] Daemon acknowledged resume');
                 this.isSuspended = false;
-                if (this._resumeResolve) {
-                    this._resumeResolve();
-                    this._resumeResolve = null;
-                }
+                this._resolveTransition('resume');
                 break;
         }
+    }
+
+    _transitionField(action) {
+        return action === 'suspend' ? '_suspendPending' : '_resumePending';
+    }
+
+    _resolveTransition(action) {
+        const key = this._transitionField(action);
+        const pending = this[key];
+        if (!pending) return;
+        this[key] = null;
+        clearTimeout(pending.timer);
+        pending.resolve();
+    }
+
+    _rejectPendingTransitions(error) {
+        for (const key of ['_suspendPending', '_resumePending']) {
+            const pending = this[key];
+            if (!pending) continue;
+            this[key] = null;
+            clearTimeout(pending.timer);
+            pending.reject(error);
+        }
+    }
+
+    _requestTransition(action) {
+        if (!this.daemonProcess || !this.isConnected)
+            return Promise.reject(new Error('Cannot change REPL state: daemon is disconnected.'));
+        const key = this._transitionField(action);
+        if (this[key]) return this[key].promise;
+        let resolvePending, rejectPending;
+        const promise = new Promise((resolve, reject) => {
+            resolvePending = resolve;
+            rejectPending = reject;
+        });
+        const pending = {
+            promise,
+            resolve: resolvePending,
+            reject: rejectPending,
+            timer: null,
+        };
+        this[key] = pending;
+        pending.timer = setTimeout(() => {
+            if (this[key] !== pending) return;
+            this[key] = null;
+            rejectPending(new Error(`REPL ${action} timed out waiting for the serial daemon; no success acknowledged.`));
+        }, 7000);
+        try {
+            this.daemonProcess.stdin.write(JSON.stringify({ action }) + '\n', err => {
+                if (err && this[key] === pending) {
+                    this[key] = null;
+                    clearTimeout(pending.timer);
+                    rejectPending(err);
+                }
+            });
+        } catch (err) {
+            if (this[key] === pending) {
+                this[key] = null;
+                clearTimeout(pending.timer);
+                rejectPending(err);
+            }
+        }
+        return promise;
     }
 
     async suspend() {
-        if (!this.isConnected || !this.daemonProcess) return;
-        logMsg(`[ConnectionManager] Suspending connection...`);
-        return new Promise((resolve) => {
-            this._suspendResolve = () => {
-                this.startAutoResumeCheck();
-                resolve();
-            };
-            this.daemonProcess.stdin.write(JSON.stringify({ action: 'suspend' }) + '\n');
-        });
+        if (!this.isConnected) return;
+        if (this.isSuspended) return;
+        await this._requestTransition('suspend');
+        // No background auto-resume. The owner of the transfer must
+        // explicitly resume after its process has closed.
+    }
+
+    _removeOurSuspendedLock() {
+        if (!this.portName) return;
+        const lock = getLockFilePath(this.portName);
+        try {
+            const value = fs.readFileSync(lock, 'utf8').trim();
+            if (value === `${process.pid}:suspended_lock`) fs.unlinkSync(lock);
+        } catch (err) {
+            if (err.code !== 'ENOENT') logMsg(`[ConnectionManager] Lock cleanup: ${err.message}`);
+        }
     }
 
     async resume() {
-        if (!this.isConnected || !this.daemonProcess) return;
-        this.stopAutoResumeCheck();
-        logMsg(`[ConnectionManager] Resuming connection...`);
-        
-        if (this.portName) {
-            const lockPath = getLockFilePath(this.portName);
-            if (lockPath && fs.existsSync(lockPath)) {
-                try {
-                    const content = fs.readFileSync(lockPath, 'utf8').trim();
-                    const parts = content.split(':');
-                    const owner = parts[1] || 'unknown';
-                    if (owner === 'suspended_lock') {
-                        fs.unlinkSync(lockPath);
-                        logMsg(`[ConnectionManager] Removed suspended lock at ${lockPath}`);
-                    }
-                } catch (err) {
-                    console.error('[ConnectionManager] Failed to remove suspended lock on resume:', err);
-                }
-            }
-        }
+        if (!this.isConnected) return;
+        if (!this.isSuspended) return;
+        this._removeOurSuspendedLock();
+        await this._requestTransition('resume');
+    }
 
-        return new Promise((resolve) => {
-            this._resumeResolve = resolve;
-            this.daemonProcess.stdin.write(JSON.stringify({ action: 'resume' }) + '\n');
-        });
+    _daemonGone(error) {
+        this.stopAutoResumeCheck();
+        this.isConnected = false;
+        this.isSuspended = false;
+        this._rejectPendingTransitions(error);
+        this._removeOurSuspendedLock();
+        for (const [id, pending] of this._runCodeRequests) {
+            this._runCodeRequests.delete(id);
+            pending.reject(error);
+        }
     }
 
     async disconnect() {
         this.stopAutoResumeCheck();
-        if (!this.isConnected || !this.daemonProcess) return;
-        
-        return new Promise((resolve) => {
-            this.daemonProcess.on('close', () => resolve());
-            this.daemonProcess.kill();
+        if (!this.daemonProcess) return;
+        const daemon = this.daemonProcess;
+        if (daemon.exitCode !== null || daemon.killed) return;
+        await new Promise(resolve => {
+            const deadline = setTimeout(() => {
+                try { daemon.kill('SIGKILL'); } catch (_) {}
+                resolve();
+            }, 2500);
+            daemon.once('close', () => {
+                clearTimeout(deadline);
+                resolve();
+            });
+            try { daemon.kill(); } catch (_) {
+                clearTimeout(deadline);
+                resolve();
+            }
         });
     }
 
-    startAutoResumeCheck() {
-        if (this._autoResumeTimer) return;
-        
-        logMsg(`[ConnectionManager] Starting auto-resume check helper...`);
-        // Delay the first check to allow the terminal process to spawn and acquire the lock
-        setTimeout(() => {
-            if (!this.isConnected || !this.isSuspended) {
-                this.stopAutoResumeCheck();
-                return;
-            }
-            
-            this._autoResumeTimer = setInterval(async () => {
-                if (!this.isConnected || !this.isSuspended) {
-                    this.stopAutoResumeCheck();
-                    return;
-                }
-                
-                const port = this.portName;
-                const daemonPid = this.daemonProcess ? this.daemonProcess.pid : null;
-                
-                const locked = isPortLocked(port, daemonPid);
-                logMsg(`[ConnectionManager] Auto-resume check: Port ${port} isLocked = ${locked}`);
-                
-                if (!locked) {
-                    logMsg(`[ConnectionManager] Auto-resume: Port ${port} is no longer locked by another process. Resuming daemon connection automatically!`);
-                    this.stopAutoResumeCheck();
-                    await this.resume();
-                }
-            }, 1000);
-        }, 1500);
-    }
+    // Never auto-reconnect a suspended REPL behind the active upload owner.
+    // This method remains for compatibility with legacy call sites.
+    startAutoResumeCheck() {}
 
     stopAutoResumeCheck() {
         if (this._autoResumeTimer) {
-            logMsg(`[ConnectionManager] Stopping auto-resume check helper...`);
             clearInterval(this._autoResumeTimer);
+            clearTimeout(this._autoResumeTimer);
             this._autoResumeTimer = null;
         }
     }
