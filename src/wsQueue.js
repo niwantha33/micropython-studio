@@ -63,18 +63,8 @@ function isPortLocked(port, daemonPid) {
       return false;
     }
     
-    // If it's a temporary suspended lock written by the extension,
-    // we check the age of the file. If it is older than 8 seconds,
-    // we assume the spawned process failed to claim it or start,
-    // so we treat it as stale/unlocked.
-    if (owner === 'suspended_lock') {
-      const stats = fs.statSync(lockPath);
-      const ageMs = Date.now() - stats.mtimeMs;
-      if (ageMs > 8000) {
-        return false;
-      }
-    }
-    
+    // Never declare a live owner's lock stale merely because a transfer
+    // takes longer than eight seconds. That can reopen the COM mid-upload.
     return isPidRunning(pid);
   } catch (err) {
     return false;
@@ -153,7 +143,11 @@ class DeviceOperationQueue {
       // If the port is locked by another process (e.g. terminal run session), wait for it to release
       if (!useDirect && port) {
         let lockChecked = false;
+        const waitStart = Date.now();
         while (isPortLocked(port, daemonPid)) {
+          if (Date.now() - waitStart > 12000) {
+            throw new Error(`Serial port ${port} is still owned by another operation after 12 seconds. Close the other terminal or retry when upload completes.`);
+          }
           const lockPath = getLockFilePath(port);
           let lockerInfo = 'unknown process';
           if (lockPath && fs.existsSync(lockPath)) {
