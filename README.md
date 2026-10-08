@@ -212,7 +212,7 @@ XBee MicroPython type hints and libraries are sourced from [Digi International's
 
 ## Frozen debugger firmware — Pico and ESP32-S3 (development branches)
 
-**One firmware flash, then Start Debug → Connect only** is the intended workflow
+**One firmware flash, then Start Debug → Connect** is the intended workflow
 when using a debugger-enabled image that includes frozen Python helpers.
 There is **no separate upload of** `boot.py`, `dbgref.py`, or
 `trace_pump.py` for a newly flashed frozen-debugger image.
@@ -231,9 +231,7 @@ There is **no separate upload of** `boot.py`, `dbgref.py`, or
 **Firmware-first policy:** Studio no longer uploads debugger Python files.
 An older published Pico UF2 may **not** contain the frozen debugger transport,
 so upgrade to a board-specific frozen-debugger image **after that exact image
-passes hardware validation**. The `Get debugger-enabled firmware` menu opens
-the [weekly test-build workflow](https://github.com/niwantha33/micropython_live_dbg_firmware/actions/workflows/weekly-candidate-builds.yml)
-and names the correct **UNVALIDATED** artifact; it does not flash the board.
+passes hardware validation**. The **Download Debug Firmware** menu lists available board names and opens the [latest GitHub TestBuilds files](https://github.com/niwantha33/micropython_live_dbg_firmware/tree/main/TestBuilds) directly. No Actions ZIP hunt, no automatic flashing, and no debugger-file upload. The images are still **experimental**, not approved stable firmware.
 Do not interpret an unvalidated CI candidate as the latest approved public
 release. Nothing overwrites an existing `boot.py`, `main.py` or the file system.
 
