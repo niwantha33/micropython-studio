@@ -40,7 +40,7 @@ async function openWebReplTerminal(context, devicePort) {
     const creds = await resolveWebReplCredentials(devicePort);
     if (!creds) {
         vscode.window.showErrorMessage(
-            'WebREPL not configured. Enable it from Device Dashboard → Wi-Fi Manager.'
+            'WebREPL is optional. To use it, start WebREPL on the board through Wi-Fi Manager, then make sure this PC can reach the board on TCP port 8266. USB REPL and debugging work without WebREPL.'
         );
         return;
     }
@@ -422,7 +422,11 @@ window.addEventListener('message', function(event) {
         } else {
             dot.className = '';
             txt.textContent = 'DISCONNECTED';
-            term.write('\\x1b[38;5;203m✘ WebREPL: ' + (msg.reason || 'Server closed') + '\\x1b[m\\r\\n');
+            const reason = msg.reason || 'Server closed';
+            term.write('\\x1b[38;5;203m✘ WebREPL: ' + reason + '\\x1b[m\\r\\n');
+            if (/timed out|refused|unreach|cannot reach|handshake|server closed|connect/i.test(reason)) {
+                term.write('Check that WebREPL is running on the board and this PC can reach its IP on TCP 8266. USB REPL/debugging do not need WebREPL.\\r\\n');
+            }
         }
     } else if (msg.type === 'fileStatus') {
         document.getElementById('file-status').innerHTML = msg.html;
