@@ -1301,41 +1301,26 @@ function activate(context) {
         vscode.commands.registerCommand('micropython-ide.flashDebugFirmware', async () => {
             const boards = loadDebugFirmwareConfig();
             if (!boards.length) return;
-            const pick = await vscode.window.showQuickPick(boards.map(board => ({
-                label: board.label,
-                description: board.ready_for_release
-                    ? 'Hardware-approved build'
-                    : (board.artifact_name ? 'UNVALIDATED TEST BUILD' : 'NOT AVAILABLE'),
-                detail: board.status,
-                board,
-            })), { placeHolder: 'Choose your exact board — install debugger-enabled firmware once; no Python file uploads' });
+            const available = boards.filter(board => typeof board.download_url === 'string' && board.download_url);
+            const pick = await vscode.window.showQuickPick(
+                available.map(board => ({ label: board.label, board })),
+                { placeHolder: 'Select your board' }
+            );
             if (!pick) return;
             const board = pick.board;
-            if (!board.artifact_name) {
-                const choice = await vscode.window.showInformationMessage(
-                    `${board.label}: no debugger-enabled firmware available yet. Never flash another board's image.`,
-                    'View firmware status'
-                );
-                if (choice === 'View firmware status') {
-                    await vscode.env.openExternal(vscode.Uri.parse(
-                        'https://github.com/niwantha33/micropython_live_dbg_firmware'
-                    ));
-                }
-                return;
-            }
-            const action = await vscode.window.showWarningMessage(
-                `${board.label}: ${board.status}. These firmware artifacts are for hardware testing, NOT approved automatic flashing. ` +
-                `Open the latest workflow run and download only '${board.artifact_name}'. ` +
-                'After a careful board-specific flash, reconnect the REPL/upload port and select Start Debug → Connect to debugger. ' +
-                'No boot.py, dbgref.py or trace_pump.py upload is necessary with the new frozen firmware.',
-                { modal: true },
-                'Open test firmware builds'
+            const extra = board.id === 'esp32-s3'
+                ? 'ESP32-S3 requires the matching flash files and instructions.'
+                : 'Choose only the UF2 for your board.';
+            const answer = await vscode.window.showWarningMessage(
+                `${board.label}: experimental test firmware, not hardware-approved. ${extra}`,
+                { modal: true }, 'Download', 'View files'
             );
-            if (action !== 'Open test firmware builds') return;
-            const uri = vscode.Uri.parse(board.download_page);
+            if (!answer) return;
+            const url = answer === 'Download' ? board.download_url : board.download_page;
+            const uri = vscode.Uri.parse(url);
             if (uri.scheme !== 'https' || uri.authority !== 'github.com' ||
                 !uri.path.startsWith('/niwantha33/micropython_live_dbg_firmware/')) {
-                vscode.window.showErrorMessage('Firmware download link is not an approved repository URL.');
+                vscode.window.showErrorMessage('Invalid firmware download URL.');
                 return;
             }
             await vscode.env.openExternal(uri);
