@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://niwantha33.github.io/micropython-studio/sitemap.xml
