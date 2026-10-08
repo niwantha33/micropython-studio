@@ -50,3 +50,6 @@ original_dashboard.js.tmp
 output.bin
 output.txt
 tmp/**
+
+# Frozen debugger firmware contains these Python sources; never bundle/upload them
+src/debugger_files/**

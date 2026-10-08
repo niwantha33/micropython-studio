@@ -1,65 +1,72 @@
 {
-  "_comment": "Edit this file to change firmware download sources. No JS edit needed; reload VS Code window after changes.",
-  "release_base": "https://raw.githubusercontent.com/niwantha33/micropython_live_dbg_firmware/main",
+  "_comment": "Debugger download DISCOVERY ONLY. No automatic flashing or debugger-file upload. All frozen candidate builds are unvalidated until real-board acceptance.",
+  "release_base": "https://github.com/niwantha33/micropython_live_dbg_firmware",
   "boards": [
     {
       "id": "pico2w",
       "label": "Raspberry Pi Pico 2 W",
-      "detail": "RP2350 — UF2 drag-and-drop via BOOTSEL",
-      "asset": "Pico2w/firmware_pico2_w.uf2",
-      "method": "uf2",
-      "available": true
+      "status": "Frozen-debugger candidate — CI built; hardware acceptance pending",
+      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/actions/workflows/weekly-candidate-builds.yml",
+      "artifact_name": "weekly-candidate-pico2w-frozen-UNVALIDATED",
+      "ready_for_release": false,
+      "notes": "Choose UF2 matching the exact Pico model. One USB cable, CDC0 REPL and CDC1 debugger. New frozen firmware only; legacy published UF2 may still require files."
     },
     {
       "id": "pico2",
       "label": "Raspberry Pi Pico 2",
-      "detail": "RP2350 — UF2 drag-and-drop via BOOTSEL",
-      "asset": "Pico2/firmware_pico2.uf2",
-      "method": "uf2",
-      "available": true
+      "status": "Frozen-debugger candidate — CI built; hardware acceptance pending",
+      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/actions/workflows/weekly-candidate-builds.yml",
+      "artifact_name": "weekly-candidate-pico2-frozen-UNVALIDATED",
+      "ready_for_release": false,
+      "notes": "Choose UF2 matching the exact Pico model. One USB cable, CDC0 REPL and CDC1 debugger. New frozen firmware only; legacy published UF2 may still require files."
     },
     {
       "id": "picow",
       "label": "Raspberry Pi Pico W",
-      "detail": "RP2040 — UF2 drag-and-drop via BOOTSEL",
-      "asset": "Picow/firmware_pico_w.uf2",
-      "method": "uf2",
-      "available": true
+      "status": "Frozen-debugger candidate — CI built; hardware acceptance pending",
+      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/actions/workflows/weekly-candidate-builds.yml",
+      "artifact_name": "weekly-candidate-picow-frozen-UNVALIDATED",
+      "ready_for_release": false,
+      "notes": "Choose UF2 matching the exact Pico model. One USB cable, CDC0 REPL and CDC1 debugger. New frozen firmware only; legacy published UF2 may still require files."
     },
     {
       "id": "pico",
       "label": "Raspberry Pi Pico",
-      "detail": "RP2040 — UF2 drag-and-drop via BOOTSEL",
-      "asset": "Pico/firmware_pico.uf2",
-      "method": "uf2",
-      "available": true
+      "status": "Frozen-debugger candidate — CI built; hardware acceptance pending",
+      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/actions/workflows/weekly-candidate-builds.yml",
+      "artifact_name": "weekly-candidate-pico-frozen-UNVALIDATED",
+      "ready_for_release": false,
+      "notes": "Choose UF2 matching the exact Pico model. One USB cable, CDC0 REPL and CDC1 debugger. New frozen firmware only; legacy published UF2 may still require files."
     },
     {
       "id": "esp32-s3",
       "label": "ESP32-S3",
-      "detail": "esptool.py flash",
-      "asset": "ESP32S3/firmware.bin",
-      "method": "esptool",
-      "available": true
+      "status": "ESP32-S3 candidate — breakpoint and short RTA tested; long stability pending",
+      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/actions/workflows/weekly-candidate-builds.yml",
+      "artifact_name": "weekly-candidate-esp32s3-UNVALIDATED",
+      "ready_for_release": false,
+      "notes": "Physical Serial/JTAG port is REPL/upload; separate native USB port is debugger. Never flash the older ESP32S3 stable-folder binary expecting this transport."
     },
     {
       "id": "esp32-s2",
       "label": "ESP32-S2",
-      "detail": "esptool.py flash",
-      "asset": "ESP32S2/firmware.bin",
-      "method": "esptool",
-      "available": false
+      "status": "Debugger firmware not available / not hardware validated",
+      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware",
+      "artifact_name": null,
+      "ready_for_release": false,
+      "notes": "No validated standalone debugger image. Do not flash an image for another board."
     },
     {
       "id": "esp32-c3",
       "label": "ESP32-C3",
-      "detail": "esptool.py flash — later",
-      "asset": "ESP32C3/firmware.bin",
-      "method": "esptool",
-      "available": false
+      "status": "Debugger firmware not available / not hardware validated",
+      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware",
+      "artifact_name": null,
+      "ready_for_release": false,
+      "notes": "No validated standalone debugger image. Do not flash an image for another board."
     }
   ],
   "rta_certified": false,
   "rta_certified_source_commit": null,
-  "_rta_comment": "Set rta_certified=true only after hardware verification and publication of the matching RTA firmware build."
+  "_rta_comment": "Hardware acceptance is per exact board/image; never advertise an unverified download as production RTA-certified."
 }

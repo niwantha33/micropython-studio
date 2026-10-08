@@ -28,55 +28,8 @@ const { startDebugger } = require('./mpyDebugger');
 const { openWebReplTerminal } = require('./webrepl_bridge.py');
 const { startSimulator, stopSimulator } = require('./simulator');
 
-// Download a URL to a local path, following redirects.
-function downloadFile(url, dest, redirects = 5) {
-    const https = require('https');
-    const fs = require('fs');
-    return new Promise((resolve, reject) => {
-        const req = https.get(url, (res) => {
-            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
-                res.resume();
-                return resolve(downloadFile(res.headers.location, dest, redirects - 1));
-            }
-            if (res.statusCode !== 200) {
-                res.resume();
-                return reject(new Error('HTTP ' + res.statusCode));
-            }
-            const file = fs.createWriteStream(dest);
-            res.pipe(file);
-            file.on('finish', () => file.close(() => resolve(dest)));
-            file.on('error', reject);
-        });
-        req.on('error', reject);
-        req.setTimeout(30000, () => req.destroy(new Error('timeout')));
-    });
-}
-
-// Detect a Pico in BOOTSEL mode by looking for a drive containing INFO_UF2.TXT
-// with a Raspberry Pi RP2350 / RP2040 board ID. Returns the mount path or null.
-async function findPicoBootselDrive() {
-    const fs = require('fs');
-    const path = require('path');
-    const candidates = [];
-    if (process.platform === 'win32') {
-        for (let c = 67; c <= 90; c++) candidates.push(String.fromCharCode(c) + ':\\');
-    } else if (process.platform === 'darwin') {
-        candidates.push('/Volumes/RPI-RP2', '/Volumes/RP2350');
-    } else {
-        const u = process.env.USER || 'user';
-        candidates.push(`/media/${u}/RPI-RP2`, `/media/${u}/RP2350`, `/run/media/${u}/RPI-RP2`, `/run/media/${u}/RP2350`);
-    }
-    for (const d of candidates) {
-        try {
-            const info = path.join(d, 'INFO_UF2.TXT');
-            if (fs.existsSync(info)) {
-                const txt = fs.readFileSync(info, 'utf8');
-                if (/RP2350|RP2040|Raspberry Pi/i.test(txt)) return d;
-            }
-        } catch (_) { /* skip */ }
-    }
-    return null;
-}
+// Firmware downloads are now deliberate browser actions to board-specific CI artifacts.
+// Never automatically flash an unvalidated debugger firmware or overwrite device files.
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
@@ -618,26 +571,8 @@ function activate(context) {
         })
     );
 
-    // Auto-update AI models when Modelfiles in resource dir are edited
-    const resourceDirDir = vscode.Uri.file(path.join(context.extensionUri.fsPath, 'resource'));
-    const modelfileWatcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(resourceDirDir, 'Modelfile-*')
-    );
-    context.subscriptions.push(modelfileWatcher);
-
-    const onModelfileChanged = async (uri) => {
-        const fileName = path.basename(uri.fsPath);
-        if (fileName === 'Modelfile-mpy' || fileName === 'Modelfile-cpy') {
-            if (aiAssistanceProvider) {
-                vscode.window.showInformationMessage(`[OK] AI Modelfile updated (${fileName}). Reinstalling models...`);
-                // Bump the version dynamically or just let it reinstall
-                await aiAssistanceProvider._installModel(true);
-            }
-        }
-    };
-
-    context.subscriptions.push(modelfileWatcher.onDidChange(onModelfileChanged));
-    context.subscriptions.push(modelfileWatcher.onDidCreate(onModelfileChanged));
+    // Never silently rebuild a user's Ollama models on extension startup
+    // or filesystem changes. Model creation is always an explicit AI action.
 
     // ── Create Status Bar ────────────────────────────────────────────────
 
@@ -1304,109 +1239,62 @@ function activate(context) {
         })
     );
 
-    // Flash Debug Firmware — board list and download URL come from
-    // src/debug_firmware.json so users can edit without touching code.
+    // Debug firmware download GUIDE: never flash unqualified firmware
+    // automatically, and never upload debugger Python helpers to the device.
+    // Match the exact board before opening a hardware-test build.
     function loadDebugFirmwareConfig() {
-        const fs = require('fs');
         const cfgPath = path.join(context.extensionPath, 'src', 'debug_firmware.json');
         try {
-            const raw = fs.readFileSync(cfgPath, 'utf8');
-            const cfg = JSON.parse(raw);
-            return {
-                RELEASE_BASE: cfg.release_base,
-                DEBUG_BOARDS: cfg.boards || [],
-                RTA_CERTIFIED: cfg.rta_certified === true,
-                RTA_CERTIFIED_SOURCE_COMMIT: cfg.rta_certified_source_commit || null,
-            };
+            const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+            return Array.isArray(cfg.boards) ? cfg.boards : [];
         } catch (e) {
-            vscode.window.showErrorMessage('Failed to load debug_firmware.json: ' + e.message);
-            return { RELEASE_BASE: '', DEBUG_BOARDS: [] };
+            vscode.window.showErrorMessage('Cannot load debug firmware catalog: ' + e.message);
+            return [];
         }
     }
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('micropython-ide.flashDebugFirmware', async (options = {}) => {
-            const {
-                RELEASE_BASE,
-                DEBUG_BOARDS,
-                RTA_CERTIFIED,
-                RTA_CERTIFIED_SOURCE_COMMIT
-            } = loadDebugFirmwareConfig();
-
-            if (options.requireRta && !RTA_CERTIFIED) {
-                const msg = 'The stable debug-firmware channel is not yet certified for the current RTA implementation. No firmware was flashed. Use the hardware-test Pico 2 W UF2 from firmware PR #1; after hardware verification we can publish it and mark the stable channel RTA-certified.';
-                outputChannel.appendLine('[SAFETY] ' + msg);
-                vscode.window.showWarningMessage(msg);
-                return;
-            }
-            if (options.requireRta && RTA_CERTIFIED_SOURCE_COMMIT) {
-                outputChannel.appendLine('RTA-certified firmware source: ' + RTA_CERTIFIED_SOURCE_COMMIT);
-            }
-            if (!RELEASE_BASE || DEBUG_BOARDS.length === 0) {
-                vscode.window.showErrorMessage('debug_firmware.json is missing or invalid.');
-                return;
-            }
-            const pick = await vscode.window.showQuickPick(
-                DEBUG_BOARDS.map(b => ({
-                    label: (b.available ? '$(check) ' : '$(circle-slash) ') + b.label,
-                    description: b.available ? '' : '(not available yet)',
-                    detail: b.detail,
-                    board: b,
-                })),
-                { placeHolder: 'Select target board for debug firmware' }
-            );
+        vscode.commands.registerCommand('micropython-ide.flashDebugFirmware', async () => {
+            const boards = loadDebugFirmwareConfig();
+            if (!boards.length) return;
+            const pick = await vscode.window.showQuickPick(boards.map(board => ({
+                label: board.label,
+                description: board.ready_for_release
+                    ? 'Hardware-approved build'
+                    : (board.artifact_name ? 'UNVALIDATED TEST BUILD' : 'NOT AVAILABLE'),
+                detail: board.status,
+                board,
+            })), { placeHolder: 'Choose your exact board — install debugger-enabled firmware once; no Python file uploads' });
             if (!pick) return;
             const board = pick.board;
-            if (!board.available) {
-                vscode.window.showInformationMessage(`${board.label} is not supported yet. Pico 2 W is the only board for v0.1.`);
-                return;
-            }
-            if (board.method !== 'uf2') {
-                vscode.window.showWarningMessage(`Flash method "${board.method}" not implemented yet.`);
-                return;
-            }
-            const url = `${RELEASE_BASE}/${board.asset}`;
-            const out = vscode.window.createOutputChannel('Flash Debug Firmware');
-            out.show(true);
-            out.appendLine(`Target: ${board.label}`);
-            out.appendLine('Downloading firmware from:');
-            out.appendLine('  ' + url);
-            const tmp = path.join(require('os').tmpdir(), `mpy-debugger-${board.id}.uf2`);
-            try {
-                await downloadFile(url, tmp);
-                out.appendLine('Downloaded to ' + tmp);
-            } catch (e) {
-                out.appendLine('ERROR: ' + e.message);
-                vscode.window.showErrorMessage('Download failed: ' + e.message);
-                return;
-            }
-
-            // Find a BOOTSEL drive
-            const drive = await findPicoBootselDrive();
-            if (!drive) {
-                const pick = await vscode.window.showInformationMessage(
-                    'Firmware downloaded. Hold BOOTSEL on your Pico, plug USB in, then click Retry.',
-                    'Retry', 'Open folder', 'Cancel'
+            if (!board.artifact_name) {
+                const choice = await vscode.window.showInformationMessage(
+                    `${board.label}: no debugger-enabled firmware available yet. Never flash another board's image.`,
+                    'View firmware status'
                 );
-                if (pick === 'Open folder') {
-                    vscode.env.openExternal(vscode.Uri.file(path.dirname(tmp)));
-                    return;
-                }
-                if (pick === 'Retry') {
-                    return vscode.commands.executeCommand('micropython-ide.flashDebugFirmware');
+                if (choice === 'View firmware status') {
+                    await vscode.env.openExternal(vscode.Uri.parse(
+                        'https://github.com/niwantha33/micropython_live_dbg_firmware'
+                    ));
                 }
                 return;
             }
-            try {
-                const target = path.join(drive, 'firmware.uf2');
-                require('fs').copyFileSync(tmp, target);
-                out.appendLine('Copied to ' + target);
-                out.appendLine('Pico will reboot now.');
-                vscode.window.showInformationMessage('Firmware flashed. Pico is rebooting.');
-            } catch (e) {
-                out.appendLine('Copy failed: ' + e.message);
-                vscode.window.showErrorMessage('Copy to Pico failed: ' + e.message);
+            const action = await vscode.window.showWarningMessage(
+                `${board.label}: ${board.status}. These firmware artifacts are for hardware testing, NOT approved automatic flashing. ` +
+                `Open the latest workflow run and download only '${board.artifact_name}'. ` +
+                'After a careful board-specific flash, reconnect the REPL/upload port and select Start Debug → Connect to debugger. ' +
+                'No boot.py, dbgref.py or trace_pump.py upload is necessary with the new frozen firmware.',
+                { modal: true },
+                'Open test firmware builds'
+            );
+            if (action !== 'Open test firmware builds') return;
+            const uri = vscode.Uri.parse(board.download_page);
+            if (uri.scheme !== 'https' || uri.authority !== 'github.com' ||
+                !uri.path.startsWith('/niwantha33/micropython_live_dbg_firmware/')) {
+                vscode.window.showErrorMessage('Firmware download link is not an approved repository URL.');
+                return;
             }
+            await vscode.env.openExternal(uri);
         })
     );
 

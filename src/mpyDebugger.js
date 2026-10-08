@@ -6,7 +6,6 @@
 const vscode = require('vscode');
 const path = require('path');
 const { spawn } = require('child_process');
-const wsQueue = require('./wsQueue');
 const { getBuildInfo } = require('./buildInfo');
 
 const REQUIRED_PUMP_PROTOCOL = 5;
@@ -15,14 +14,6 @@ const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
 let panel = null;
 let bridge = null;
 let bpDisposable = null;
-let debugSetupOutputChannel = null;
-
-function getDebugSetupOutputChannel() {
-    if (!debugSetupOutputChannel) {
-        debugSetupOutputChannel = vscode.window.createOutputChannel('MPy Debugger Setup');
-    }
-    return debugSetupOutputChannel;
-}
 const bpSlotMap = new Map(); // key "module:func:line" -> Set<slot> (filled on reply)
 const pendingBpReplies = []; // queue of {key, fsPath, line1, cancelled}
 const bpHitLocMap = new Map(); // "funPtr:ip" -> {fsPath,line1,fnKey,ip,fun,cond}
@@ -488,7 +479,7 @@ function openDebuggerPanel(context, port, venvPython) {
                             if (!sessionReady && panel) {
                                 panel.webview.postMessage({
                                     evt: 'error',
-                                    msg: 'Debug CDC opened, but clear_all_bp received no reply. The debug CDC transport or trace_pump is not responding.'
+                                    msg: 'Debugger port opened but firmware did not answer. Check you selected the dedicated debug COM, that the board runs debugger-enabled firmware, and that its frozen trace pump is ready. Use Get debugger-enabled firmware for board-specific builds.'
                                 });
                             }
                         }, 3500);
@@ -1048,119 +1039,47 @@ function openDebuggerPanel(context, port, venvPython) {
     });
 }
 
-function runBackend(venvPython, backendScript, args) {
-    return new Promise((resolve) => {
-        const full = [backendScript, '--python', venvPython, ...args];
-        const p = spawn(venvPython, full);
-        let out = '', err = '';
-        let settled = false;
-        const finish = (code) => {
-            if (settled) return;
-            settled = true;
-            resolve({ code, out, err });
-        };
-        p.stdout.on('data', d => out += d.toString());
-        p.stderr.on('data', d => err += d.toString());
-        p.on('error', e => {
-            err += e.message;
-            finish(null);
-        });
-        p.on('close', finish);
-    });
-}
-
-async function verifyUploadedPumpFile(context, replPort, venvPython, out) {
-    const backend = path.join(context.extensionPath, 'src', 'mps_backend.py');
-    const r = await wsQueue.run(() => runBackend(venvPython, backend, [
-        'cat', '--port', replPort, '--path', '/trace_pump.py'
-    ]), 'Verify uploaded trace_pump.py');
-
-    if (r.err) out.appendLine(r.err.trim());
-    if (r.code !== 0) {
-        out.appendLine('VERIFY FAILED: could not read /trace_pump.py back from the device.');
-        return false;
-    }
-
-    const protocolMarker = `PUMP_PROTOCOL = ${REQUIRED_PUMP_PROTOCOL}`;
-    const buildMarker = `PUMP_BUILD = "${REQUIRED_PUMP_BUILD}"`;
-    const hasProtocol = r.out.includes(protocolMarker);
-    const hasBuild = r.out.includes(buildMarker);
-    const hasOldPop = r.out.includes('cmd_buf.pop(0)');
-
-    out.appendLine(`  verify trace_pump: protocol=${hasProtocol ? 'OK' : 'MISSING'} build=${hasBuild ? 'OK' : 'MISSING'} bytearray.pop=${hasOldPop ? 'BAD' : 'ABSENT'}`);
-
-    if (!hasProtocol || !hasBuild || hasOldPop) {
-        out.appendLine('VERIFY FAILED: device trace_pump.py is not the Studio-required build.');
-        return false;
-    }
-    return true;
-}
-
-async function uploadDebuggerFiles(context, replPort, venvPython) {
-    const dir = path.join(context.extensionPath, 'src', 'debugger_files');
-    const backend = path.join(context.extensionPath, 'src', 'mps_backend.py');
-    const files = ['dbgref.py', 'trace_pump.py', 'boot.py'];
-    const out = getDebugSetupOutputChannel();
-    out.clear();
-    out.show(true);
-    out.appendLine(`Uploading debugger files to ${replPort} via mps_backend...`);
-    for (const f of files) {
-        out.appendLine(`  upload ${f}`);
-        const src = path.join(dir, f);
-        const r = await wsQueue.run(() => runBackend(venvPython, backend, [
-            'upload', '--port', replPort,
-            '--source', src,
-            '--dest', '/', '--overwrite'
-        ]), `Upload debugger file ${f}`);
-        if (r.out) out.appendLine(r.out.trim());
-        if (r.err) out.appendLine(r.err.trim());
-        if (r.code !== 0) {
-            vscode.window.showErrorMessage(`Failed to upload ${f}. See "MPy Debugger Setup" output.`);
-            return false;
-        }
-    }
-    out.appendLine('Verifying trace_pump.py by reading it back from the device...');
-    const verified = await verifyUploadedPumpFile(context, replPort, venvPython, out);
-    if (!verified) {
-        vscode.window.showErrorMessage('Debugger upload verification failed. The Pico does not contain the required trace_pump.py.');
-        return false;
-    }
-
-    out.appendLine('Debugger files uploaded and VERIFIED.');
-    out.appendLine('Reset the board now so boot.py reloads the verified files and auto-starts trace_pump.');
-    out.appendLine('After reset, Start Debug again and choose Connect only. Connect only talks directly to the SECOND COM/debug CDC.');
-    return true;
-}
-
+// Debugging never uploads boot.py, dbgref.py, trace_pump.py, or changes
+// a user's MicroPython filesystem. Those helpers must be frozen in the
+// matching board firmware. A legacy UF2 requires a firmware upgrade.
 async function startDebugger(context, gRemoteDevicePort, venvPython) {
-    const replPort = gRemoteDevicePort && gRemoteDevicePort !== '-' ? gRemoteDevicePort : '';
-    if (!replPort) {
-        vscode.window.showWarningMessage('Connect a device first (Refresh Device Files).');
+    const replPort = gRemoteDevicePort && gRemoteDevicePort !== '-' ? String(gRemoteDevicePort).trim() : '';
+    const pick = await vscode.window.showQuickPick([
+        {
+            label: '$(plug) Connect to debugger',
+            description: 'Requires debugger-enabled firmware; does not upload files',
+            id: 'connect',
+        },
+        {
+            label: '$(cloud-download) Get debugger-enabled firmware',
+            description: 'Open board-specific builds, requirements and installation guidance',
+            id: 'firmware',
+        },
+    ], { placeHolder: `REPL/upload: ${replPort} | Debugger: separate port` });
+    if (!pick) return;
+    if (pick.id === 'firmware') {
+        await vscode.commands.executeCommand('micropython-ide.flashDebugFirmware', { source: 'debugger' });
         return;
     }
-    const pick = await vscode.window.showQuickPick(
-        [
-            { label: '$(cloud-upload) Upload debugger files', description: 'Copy boot.py, dbgref.py, trace_pump.py to device', id: 'upload' },
-            { label: '$(plug) Connect only', description: 'Skip upload — device already set up', id: 'connect' },
-        ],
-        { placeHolder: `REPL port: ${replPort}` }
-    );
-    if (!pick) return;
-    if (pick.id === 'upload') {
-        const ok = await uploadDebuggerFiles(context, replPort, venvPython);
-        if (!ok) return;
-        vscode.window.showInformationMessage(
-            'Debugger files verified on the Pico. Reset the board, then Start Debug again and choose Connect only.'
-        );
+    if (!replPort) {
+        vscode.window.showWarningMessage('Connect the MicroPython REPL/upload port first (Refresh Device Files).');
         return;
     }
 
-    const port = await vscode.window.showInputBox({
-        prompt: 'Debug CDC port (the SECOND COM port Windows shows for the board)',
-        placeHolder: 'e.g. COM3',
+    const portInput = await vscode.window.showInputBox({
+        prompt: 'Dedicated debugger COM port (not the REPL/upload port); firmware must already include the debugger',
+        placeHolder: 'e.g. COM13 (ESP32-S3 native USB), or Pico CDC1',
+        validateInput: value => {
+            const candidate = String(value || '').trim();
+            if (!candidate) return 'Enter the dedicated debugger COM port.';
+            if (candidate.toUpperCase() === replPort.toUpperCase()) {
+                return 'This is the project REPL/upload port. The debugger requires the OTHER COM port.';
+            }
+            return null;
+        }
     });
-    if (!port) return;
-    openDebuggerPanel(context, port, venvPython);
+    if (!portInput) return;
+    openDebuggerPanel(context, portInput.trim(), venvPython);
 }
 
 function getHtml(buildInfo) {
@@ -1937,7 +1856,7 @@ const COMMANDS = [
   { op: 'rta_off', label: 'RTA Off', key: 'y', icon: 'rta-off', category: 'action', desc: 'Disable Real-time Analysis tracing' },
   { op: 'set_bp_here', label: 'Set BP', icon: 'bp', category: 'action', desc: 'Add breakpoint at editor cursor' },
   { op: 'bp_refresh', label: 'Breakpoints', icon: 'bp', category: 'query', desc: 'Show and refresh active breakpoints' },
-  { op: 'flash_firmware', label: 'Download Firmware', icon: 'flash', category: 'system', desc: 'Flash board debugger binary' }
+  { op: 'flash_firmware', label: 'Get Firmware', icon: 'flash', category: 'system', desc: 'Open board-specific firmware artifacts; does not automatically flash' }
 ];
 
 // SVG Icons mapping
@@ -2361,7 +2280,7 @@ window.addEventListener('message', (e) => {
       add('reply', 'DEBUG PUMP v' + m.protocol + ' · ' + m.build);
     }
     if (rtaAvailable === false) {
-      add('err', 'RTA firmware support is not present in the currently flashed UF2. Breakpoints/stepping still work.');
+      add('err', 'RTA is unavailable in this firmware image. Check the correct board-specific debugger-enabled firmware and its test/approval status.');
     }
   }
   else if (m.evt === 'pump_ready') {

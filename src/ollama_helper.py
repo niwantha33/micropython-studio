@@ -4,19 +4,12 @@ import subprocess
 import os
 import shlex
 
-# -------------------------------
-# AUTO-INSTALL REQUESTS
-# -------------------------------
+# Dependencies are installed through Studio's explicit environment setup.
+# A status check or model install must NEVER silently run pip.
 try:
     import requests
 except ImportError:
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "requests"])
-        import requests
-    except Exception as e:
-        print(json.dumps({"error": f"Failed to install requests: {str(e)}"}))
-        sys.exit(1)
+    requests = None
 
 
 class OllamaHelper:
@@ -27,6 +20,8 @@ class OllamaHelper:
     # CONNECTION CHECK
     # -------------------------------
     def check_connection(self):
+        if requests is None:
+            return False
         urls = [self.base_url]
 
         if "localhost" in self.base_url:
@@ -271,24 +266,20 @@ if __name__ == "__main__":
     # -------------------------------
     elif cmd == "setup":
         base = "gemma4:e2b"
-
         modelfile_arg = sys.argv[2] if len(sys.argv) > 2 else None
-        if modelfile_arg:
-            resource_dir = os.path.dirname(modelfile_arg)
-            mpy_modelfile = os.path.join(resource_dir, "Modelfile-mpy")
-            cpy_modelfile = os.path.join(resource_dir, "Modelfile-cpy")
-        else:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            resource_dir = os.path.join(script_dir, "..", "resource")
-            mpy_modelfile = os.path.join(resource_dir, "Modelfile-mpy")
-            cpy_modelfile = os.path.join(resource_dir, "Modelfile-cpy")
+        resource_dir = os.path.dirname(modelfile_arg) if modelfile_arg else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "resource"))
+        mpy_file = os.path.join(resource_dir, "Modelfile-mpy")
+        cpy_file = os.path.join(resource_dir, "Modelfile-cpy")
 
-        helper.pull_model(base)
-
-        helper.create_model("micro_ai-mpy", mpy_modelfile)
-        helper.create_model("micro_ai-cpy", cpy_modelfile)
-
-        print(json.dumps({"success": True}))
+        if not helper.pull_model(base):
+            print(json.dumps({"success": False, "error": "Could not pull the Ollama base model"}), flush=True)
+            sys.exit(1)
+        ok_mpy = helper.create_model("micro_ai-mpy", mpy_file)
+        ok_cpy = helper.create_model("micro_ai-cpy", cpy_file)
+        if not (ok_mpy and ok_cpy):
+            print(json.dumps({"success": False, "error": "One or more model builds failed"}), flush=True)
+            sys.exit(1)
+        print(json.dumps({"success": True}), flush=True)
 
     # -------------------------------
     # DELETE
@@ -301,33 +292,18 @@ if __name__ == "__main__":
     # REINSTALL (delete + recreate both models)
     # -------------------------------
     elif cmd == "reinstall":
+        # Model recreate is non-destructive: Ollama replaces the named model
+        # only if creation succeeds. Do not delete other models or legacy names.
         modelfile_arg = sys.argv[2] if len(sys.argv) > 2 else None
-        if modelfile_arg:
-            resource_dir = os.path.dirname(modelfile_arg)
-        else:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            resource_dir = os.path.join(script_dir, "..", "resource")
-
-        mpy_modelfile = os.path.join(resource_dir, "Modelfile-mpy")
-        cpy_modelfile = os.path.join(resource_dir, "Modelfile-cpy")
-
-        # Clean up legacy mycoder models if they exist
-        helper.delete_model("mycoder-mpy")
-        helper.delete_model("mycoder-cpy")
-
-        # Delete existing micro_ai models (ignore errors if not found)
-        print(json.dumps({"status": "Removing old micro_ai-mpy..."}), flush=True)
-        helper.delete_model("micro_ai-mpy")
-        print(json.dumps({"status": "Removing old micro_ai-cpy..."}), flush=True)
-        helper.delete_model("micro_ai-cpy")
-
-        # Recreate from updated Modelfiles
-        print(json.dumps({"status": "Creating micro_ai-mpy..."}), flush=True)
-        helper.create_model("micro_ai-mpy", mpy_modelfile)
-        print(json.dumps({"status": "Creating micro_ai-cpy..."}), flush=True)
-        helper.create_model("micro_ai-cpy", cpy_modelfile)
-
-        print(json.dumps({"success": True}))
+        resource_dir = os.path.dirname(modelfile_arg) if modelfile_arg else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "resource"))
+        mpy_file = os.path.join(resource_dir, "Modelfile-mpy")
+        cpy_file = os.path.join(resource_dir, "Modelfile-cpy")
+        ok_mpy = helper.create_model("micro_ai-mpy", mpy_file)
+        ok_cpy = helper.create_model("micro_ai-cpy", cpy_file)
+        if not (ok_mpy and ok_cpy):
+            print(json.dumps({"success": False, "error": "Rebuild failed; existing models were not deliberately deleted"}), flush=True)
+            sys.exit(1)
+        print(json.dumps({"success": True}), flush=True)
 
     # -------------------------------
     # CHAT
