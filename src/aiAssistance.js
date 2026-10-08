@@ -323,9 +323,10 @@ class AiAssistanceProvider {
         const firmware = this._firmwareOverride || contextData.firmware;
         const isCircuitPython = typeof firmware === 'string' && firmware.toLowerCase().includes('circuitpython');
         const preferred = isCircuitPython ? 'micro_ai-cpy' : 'micro_ai-mpy';
+        const preferredInstalled = this._models.find(m => m === preferred || m.startsWith(preferred + ':'));
         const modelName = this._models.includes(this._selectedModel) && this._selectedModel
             ? this._selectedModel
-            : (this._models.includes(preferred) ? preferred : this._models[0]);
+            : (preferredInstalled || this._models[0]);
         if (!modelName) throw new Error('No Ollama model installed. Open Local AI setup first.');
         // const aiFooter = isCircuitPython ? '[CircuitPython Studio AI]' : '[MicroPython Studio AI]';
 
