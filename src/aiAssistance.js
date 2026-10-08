@@ -17,6 +17,10 @@ class AiAssistanceProvider {
         // Load history from state if available
         this._history = this._context.workspaceState.get('aiChatHistory', []);
         this._firmwareOverride = null;
+        this._selectedModel = this._context.workspaceState.get('aiSelectedModel', '');
+        this._models = [];
+        this._chatBusy = false;
+        this._installationBusy = false;
     }
 
     resolveWebviewView(webviewView) {
@@ -54,6 +58,17 @@ class AiAssistanceProvider {
                 case 'setFirmware':
                     this._firmwareOverride = data.value;
                     break;
+                case 'setModel':
+                    if (typeof data.value === 'string' && this._models.includes(data.value)) {
+                        this._selectedModel = data.value;
+                        await this._context.workspaceState.update('aiSelectedModel', data.value);
+                    }
+                    break;
+                case 'openLink':
+                    if (data.value === 'https://ollama.com') {
+                        await vscode.env.openExternal(vscode.Uri.parse(data.value));
+                    }
+                    break;
             }
         });
 
@@ -61,112 +76,119 @@ class AiAssistanceProvider {
         this._checkOllamaStatus();
     }
 
-    // ─── Ollama HTTP Helper (used only for chat streaming) ─────
-
-    /**
-     * Make a streaming HTTP request to the Ollama API.
-     * Parses NDJSON and calls onChunk(parsedJson) for each line.
-     */
-    _ollamaStream(apiPath, body, onChunk) {
+    // Ollama is local to the user's machine; no Python process or pip
+    // installation is needed for discovery or streamed chat.
+    _ollamaStatus() {
         return new Promise((resolve, reject) => {
-            const options = {
-                hostname: OLLAMA_HOST,
-                port: OLLAMA_PORT,
-                path: apiPath,
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            };
-
-            const req = http.request(options, (res) => {
+            const req = http.get({
+                hostname: OLLAMA_HOST, port: OLLAMA_PORT, path: '/api/tags'
+            }, res => {
+                let data = '';
                 if (res.statusCode !== 200) {
-                    let errData = '';
-                    res.on('data', chunk => errData += chunk);
-                    res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${errData}`)));
+                    res.resume();
+                    reject(new Error(`Ollama model discovery returned HTTP ${res.statusCode}`));
                     return;
                 }
-
-                let buffer = '';
                 res.on('data', chunk => {
-                    buffer += chunk.toString();
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // keep incomplete line in buffer
-                    for (const line of lines) {
-                        if (!line.trim()) continue;
-                        try {
-                            onChunk(JSON.parse(line));
-                        } catch { /* skip malformed JSON */ }
-                    }
+                    data += chunk.toString('utf8');
+                    if (data.length > 1024 * 1024) req.destroy(new Error('Ollama model list too large'));
                 });
                 res.on('end', () => {
-                    // Process any remaining data in buffer
-                    if (buffer.trim()) {
-                        try { onChunk(JSON.parse(buffer)); } catch { /* ignore */ }
-                    }
-                    resolve();
+                    try {
+                        const names = JSON.parse(data).models || [];
+                        resolve(names.map(m => m.name).filter(n => typeof n === 'string'));
+                    } catch (e) { reject(e); }
                 });
+                res.on('error', reject);
             });
-
+            req.setTimeout(5000, () => req.destroy(new Error('Ollama status timed out')));
             req.on('error', reject);
-            req.write(JSON.stringify(body));
-            req.end();
         });
     }
 
-    // ─── Status Check (via Python — reliable across firewalls) ──
+    _ollamaStream(apiPath, body, onChunk) {
+        return new Promise((resolve, reject) => {
+            let finished = false;
+            const done = (err) => {
+                if (finished) return;
+                finished = true;
+                if (err) reject(err); else resolve();
+            };
+            const req = http.request({
+                hostname: OLLAMA_HOST, port: OLLAMA_PORT, path: apiPath,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            }, res => {
+                if (res.statusCode !== 200) {
+                    let reason = '';
+                    res.on('data', c => { reason += c.toString(); if (reason.length > 4096) reason = reason.slice(0, 4096); });
+                    res.on('end', () => done(new Error(`Ollama HTTP ${res.statusCode}: ${reason}`)));
+                    res.on('error', done);
+                    return;
+                }
+                let buffer = '';
+                let complete = false;
+                const parse = (line) => {
+                    if (!line.trim() || finished) return;
+                    const chunk = JSON.parse(line);
+                    if (chunk.error) throw new Error(String(chunk.error));
+                    onChunk(chunk);
+                    if (chunk.done === true) complete = true;
+                };
+                res.on('data', chunk => {
+                    if (finished) return;
+                    buffer += chunk.toString('utf8');
+                    if (buffer.length > 1024 * 1024) {
+                        req.destroy(new Error('Ollama response line too large'));
+                        return;
+                    }
+                    let index;
+                    try {
+                        while ((index = buffer.indexOf('\n')) !== -1) {
+                            const line = buffer.slice(0, index);
+                            buffer = buffer.slice(index + 1);
+                            parse(line);
+                        }
+                    } catch (err) { done(err); req.destroy(); }
+                });
+                res.on('end', () => {
+                    try {
+                        if (buffer.trim()) parse(buffer);
+                        done(complete ? null : new Error('Ollama ended before completing the response'));
+                    } catch (err) { done(err); }
+                });
+                res.on('aborted', () => done(new Error('Ollama closed the connection')));
+                res.on('error', done);
+            });
+            req.setTimeout(120000, () => req.destroy(new Error('Ollama stopped responding for 120 seconds')));
+            req.on('error', done);
+            req.end(JSON.stringify(body));
+        });
+    }
 
     async _checkOllamaStatus() {
-        const pythonPath = this._getPythonPath();
-        const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
-
-        const proc = spawn(pythonPath, [scriptPath, 'check']);
-
-        let result = '';
-        let errorOutput = '';
-
-        proc.stdout.on('data', (d) => result += d.toString());
-        proc.stderr.on('data', (d) => errorOutput += d.toString());
-
-        const timeout = setTimeout(() => {
-            proc.kill();
-            if (this._view) {
-                this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
+        try {
+            const models = await this._ollamaStatus();
+            this._models = models;
+            if (this._selectedModel && !models.includes(this._selectedModel)) {
+                this._selectedModel = '';
+                await this._context.workspaceState.update('aiSelectedModel', '');
             }
-        }, 8000);
-
-        proc.on('close', (code) => {
-            clearTimeout(timeout);
-            try {
-                if (code !== 0 || !result.trim()) {
-                    throw new Error(errorOutput || 'No output from check script');
-                }
-                const status = JSON.parse(result.trim());
-                if (this._view) {
-                    this._view.webview.postMessage({ type: 'status', value: status });
-                }
-
-                // ── Auto-reinstall if models are outdated ──────────
-                if (status.connected && status.installed) {
-                    const savedVersion = this._context.globalState.get('aiModelVersion', '0.0.0');
-                    if (savedVersion < AiAssistanceProvider.MODEL_VERSION) {
-                        console.log(`[AI] Models outdated (${savedVersion} < ${AiAssistanceProvider.MODEL_VERSION}), auto-reinstalling...`);
-                        this._installModel(true); // force reinstall
-                    }
-                }
-            } catch (e) {
-                console.error(`Ollama check failed: ${e.message}`);
-                if (this._view) {
-                    this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
-                }
-            }
-        });
-
-        proc.on('error', (err) => {
-            clearTimeout(timeout);
-            console.error(`Spawn error: ${err.message}`);
-            if (this._view) {
-                this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
-            }
-        });
+            const status = {
+                connected: true,
+                installed: models.length > 0,
+                mpy: models.some(m => m === 'micro_ai-mpy' || m.startsWith('micro_ai-mpy:')),
+                cpy: models.some(m => m === 'micro_ai-cpy' || m.startsWith('micro_ai-cpy:')),
+                models,
+                selectedModel: this._selectedModel
+            };
+            this._view?.webview.postMessage({ type: 'status', value: status });
+        } catch (err) {
+            this._models = [];
+            this._view?.webview.postMessage({
+                type: 'status', value: { connected: false, installed: false, models: [], error: err.message }
+            });
+        }
     }
 
     // ─── Model Installation (via Python — terminal speed) ───────
@@ -175,6 +197,8 @@ class AiAssistanceProvider {
     static MODEL_VERSION = '0.8.4';
 
     async _installModel(forceReinstall = false) {
+        if (this._installationBusy) return;
+        this._installationBusy = true;
         const pythonPath = this._getPythonPath();
         const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
         const modelfilePath = path.join(this._extensionUri.fsPath, 'resource', 'Modelfile-mpy');
@@ -194,9 +218,24 @@ class AiAssistanceProvider {
             args = [scriptPath, command, modelfilePath];
         }
 
-        const proc = spawn(pythonPath, args);
-
+        let proc;
+        try { proc = spawn(pythonPath, args); }
+        catch (err) {
+            this._installationBusy = false;
+            this._view?.webview.postMessage({ type: 'error', value: err.message });
+            return;
+        }
         let buffer = '';
+        let installFailed = false;
+        let finished = false;
+        const fail = message => {
+            if (finished) return;
+            finished = true;
+            this._installationBusy = false;
+            this._view?.webview.postMessage({ type: 'error', value: message });
+        };
+        proc.on('error', err => fail('Cannot run local model installer: ' + err.message));
+        const timer = setTimeout(() => { proc.kill(); fail('Model installation timed out (15 minutes)'); }, 15 * 60 * 1000);
         proc.stdout.on('data', (d) => {
             buffer += d.toString();
             const lines = buffer.split('\n');
@@ -205,6 +244,10 @@ class AiAssistanceProvider {
             for (const line of lines) {
                 try {
                     const status = JSON.parse(line.trim());
+                    if (status.error || status.success === false) {
+                        installFailed = true;
+                        this._view?.webview.postMessage({ type: 'installProgress', value: status.error || 'Model creation failed' });
+                    }
                     if (status.status) {
                         let msg = status.status;
                         if (status.total && status.completed) {
@@ -222,7 +265,11 @@ class AiAssistanceProvider {
         });
 
         proc.on('close', (code) => {
-            if (code === 0) {
+            clearTimeout(timer);
+            if (finished) return;
+            finished = true;
+            this._installationBusy = false;
+            if (code === 0 && !installFailed) {
                 // Save the model version so we don't reinstall again
                 this._context.globalState.update('aiModelVersion', AiAssistanceProvider.MODEL_VERSION);
                 if (this._view) {
@@ -240,6 +287,21 @@ class AiAssistanceProvider {
     // ─── Chat (direct HTTP streaming — no Python, no CLI) ───────
 
     async _handleChat(message) {
+        if (this._chatBusy) return;
+        const initialHistory = this._history.slice();
+        this._chatBusy = true;
+        try {
+            await this._runChat(message);
+        } catch (err) {
+            this._history = initialHistory;
+            this._view?.webview.postMessage({ type: 'chatResponse', value: '\n❌ AI Error: ' + err.message });
+            this._view?.webview.postMessage({ type: 'chatDone' });
+        } finally {
+            this._chatBusy = false;
+        }
+    }
+
+    async _runChat(message) {
         // -------------------------------
         // 1. FILE CONTEXT (current editor)
         // -------------------------------
@@ -260,7 +322,12 @@ class AiAssistanceProvider {
         const contextData = await this._getContext();
         const firmware = this._firmwareOverride || contextData.firmware;
         const isCircuitPython = typeof firmware === 'string' && firmware.toLowerCase().includes('circuitpython');
-        const modelName = isCircuitPython ? 'micro_ai-cpy' : 'micro_ai-mpy';
+        const preferred = isCircuitPython ? 'micro_ai-cpy' : 'micro_ai-mpy';
+        const preferredInstalled = this._models.find(m => m === preferred || m.startsWith(preferred + ':'));
+        const modelName = this._models.includes(this._selectedModel) && this._selectedModel
+            ? this._selectedModel
+            : (preferredInstalled || this._models[0]);
+        if (!modelName) throw new Error('No Ollama model installed. Open Local AI setup first.');
         // const aiFooter = isCircuitPython ? '[CircuitPython Studio AI]' : '[MicroPython Studio AI]';
 
         // -------------------------------
@@ -298,9 +365,8 @@ device_firmware = ${firmware}
         // -------------------------------
         // 6. FINAL PROMPT (ephemeral — not saved to history)
         // -------------------------------
-        const latestPrompt = deviceOutput
-            ? `${message}\n\n<device_output>\n${deviceOutput}\n</device_output>`
-            : message + systemContext;
+        const latestPrompt = `${message}\n\n${systemContext}` +
+            (deviceOutput ? `\n\n<device_output>\n${deviceOutput.slice(0, 4000)}\n</device_output>` : '');
 
         // Replace last history entry with context-rich prompt for the API call
         const messagesToSend = [...this._history];
@@ -335,15 +401,7 @@ device_firmware = ${firmware}
                 }
             }, (chunk) => {
                 // Handle Ollama-level error inside stream
-                if (chunk.error) {
-                    this._view.webview.postMessage({
-                        type: 'chatResponse',
-                        value: `\n❌ ${chunk.error}`
-                    });
-                    return;
-                }
-
-                if (chunk.message && chunk.message.content) {
+                 if (chunk.message && chunk.message.content) {
                     rawAccumulated += chunk.message.content;
 
                     // Strip completed <think>...</think> blocks from full accumulated text
@@ -388,14 +446,8 @@ device_firmware = ${firmware}
                 this._context.workspaceState.update('aiChatHistory', this._history);
             }
             this._view.webview.postMessage({ type: 'chatDone' });
-
         } catch (err) {
-            console.error('❌ Chat failed:', err);
-            this._view.webview.postMessage({
-                type: 'chatResponse',
-                value: `\n❌ AI Error: ${err.message}`
-            });
-            this._view.webview.postMessage({ type: 'chatDone' });
+            throw err;
         }
     }
 
@@ -424,10 +476,18 @@ device_firmware = ${firmware}
                 });
                 await vscode.window.showTextDocument(doc);
                 break;
-            case 'run':
-                // Send to extension command to handle execution on device
-                vscode.commands.executeCommand('micropython-ide.runCodeSnippet', code);
+            case 'run': {
+                // Model-generated code is untrusted and may reset/change hardware.
+                const approval = await vscode.window.showWarningMessage(
+                    'Run AI-generated code on the connected device? Review pin assignments, peripheral access and file operations first.',
+                    { modal: true },
+                    'Run on device'
+                );
+                if (approval === 'Run on device') {
+                    await vscode.commands.executeCommand('micropython-ide.runCodeSnippet', code);
+                }
                 break;
+            }
         }
     }
 
