@@ -475,10 +475,18 @@ device_firmware = ${firmware}
                 });
                 await vscode.window.showTextDocument(doc);
                 break;
-            case 'run':
-                // Send to extension command to handle execution on device
-                vscode.commands.executeCommand('micropython-ide.runCodeSnippet', code);
+            case 'run': {
+                // Model-generated code is untrusted and may reset/change hardware.
+                const approval = await vscode.window.showWarningMessage(
+                    'Run AI-generated code on the connected device? Review pin assignments, peripheral access and file operations first.',
+                    { modal: true },
+                    'Run on device'
+                );
+                if (approval === 'Run on device') {
+                    await vscode.commands.executeCommand('micropython-ide.runCodeSnippet', code);
+                }
                 break;
+            }
         }
     }
 
