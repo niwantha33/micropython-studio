@@ -50,26 +50,37 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      release_eligible: ${{ steps.guard.outputs.release_eligible }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Require matching package version and approved main history
+      - name: Require a strict stable version tag on approved main history
+        id: guard
         shell: bash
         run: |
           set -euo pipefail
+          # Suffix tags such as v2.6.0_r are development/test markers,
+          # not approved versions. They may build a VSIX but must NEVER publish.
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release_eligible=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Non-release tag::Tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH. Build/tests may run, but GitHub Release and both registries are skipped."
+            exit 0
+          fi
           git fetch origin main
           if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo "Release tag does not point to a commit on main; refusing publication." >&2
+            echo "::error::Release tag does not point to a commit on main; refusing publication."
             exit 1
           fi
           package_version="$(node -p "require('./package.json').version")"
           tag_version="${GITHUB_REF_NAME#v}"
           if [ "$tag_version" != "$package_version" ]; then
-            echo "Release tag v$tag_version does not match package.json $package_version." >&2
+            echo "::error::Release tag $GITHUB_REF_NAME does not match package.json $package_version. Bump and approve a new version before tagging."
             exit 1
           fi
+          echo "release_eligible=true" >> "$GITHUB_OUTPUT"
           echo "Approved release: v$package_version (source is on main)."
 
   build-vsix:
@@ -102,7 +113,7 @@ jobs:
 
   release:
     name: GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && needs.verify-release.outputs.release_eligible == 'true'
     needs: [build-vsix, verify-release]
     runs-on: ubuntu-latest
     permissions:
@@ -123,7 +134,7 @@ jobs:
 
   publish-marketplace:
     name: Publish to VS Code Marketplace & OpenVSX
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && needs.verify-release.outputs.release_eligible == 'true'
     needs: [build-vsix, verify-release]
     runs-on: ubuntu-latest
     steps:
