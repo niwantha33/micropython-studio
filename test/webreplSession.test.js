@@ -25,8 +25,8 @@ suite('WebREPL session-only dashboard startup', () => {
         assert.throws(() => parseSessionWebReplResult('MPS_WEBREPL_OK|999.1.1.1'), /invalid IPv4/);
     });
     test('checks password length before executing code', () => {
-        assert.throws(() => buildSessionWebReplScript('abc'), /4–64/);
-        assert.throws(() => buildSessionWebReplScript('x'.repeat(65)), /4–64/);
+        assert.throws(() => buildSessionWebReplScript('abc'), /4–9/);
+        assert.throws(() => buildSessionWebReplScript('x'.repeat(10)), /4–9/);
     });
     test('uses active REPL daemon and no boot.py overwrite in dashboard', () => {
         const dash = fs.readFileSync(path.join(__dirname,'..','src','deviceDashboard.js'),'utf8');
