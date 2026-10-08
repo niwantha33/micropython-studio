@@ -14,6 +14,8 @@ On compatible **debugger-enabled firmware**, MicroPython Studio provides source 
 
 **Hardware-support status matters.** The existing Pico 2 W debugger workflow has been exercised on real hardware. The new Pico-family frozen-firmware builds and ESP32-S3 debugger improvements are under separate hardware qualification; an ESP32-C3 debugger has **not** been released. Do not interpret a successful CI build as evidence that your board is supported. Read the [board-specific firmware and test status](https://github.com/niwantha33/micropython_live_dbg_firmware#new-self-contained-firmware--test-only-not-in-this-repository) before flashing anything.
 
+> **Experimental debugger firmware — for debugging and testing your own code ONLY. NOT FOR PRODUCTION USE.** This warning applies to unvalidated firmware in the [TestBuilds download directory](https://github.com/niwantha33/micropython_live_dbg_firmware/tree/main/TestBuilds), not to an approved, board-specific stable release. A successful CI build does not mean the image is hardware-approved. Verify the exact board model, back up your files and follow the matching firmware instructions before flashing. **Download Debug Firmware** opens the file or download page; Studio does **not** automatically flash the board or overwrite `boot.py`.
+
 ## Why Use It?
 
 | Need | MicroPython Studio Helps With |
@@ -241,6 +243,8 @@ and the ESP32-S3 firmware remains isolated on
 [`feature/esp32-s3-debugger-v1`](https://github.com/niwantha33/micropython_live_debugger/tree/feature/esp32-s3-debugger-v1).
 The Pico frozen candidate has **not** passed hardware acceptance yet; neither
 candidate is released by these branch changes.
+
+**Test-build use policy:** Experimental debugger images are provided **only to debug and test your own code, not for production deployment**. They may change between builds or have incomplete hardware validation. Keep a known-working board-specific image and a recovery procedure before trying a new candidate. The firmware download command only opens the relevant GitHub file; flashing remains a separate, deliberate action.
 
 **RTA explanation:** The `Observed VM %` field is exclusive *measured elapsed
 segment time share*, not physical CPU utilization. The `Total` field is
