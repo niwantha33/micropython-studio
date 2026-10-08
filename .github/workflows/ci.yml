@@ -41,6 +41,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip check || true
           python -m pip install -r requirements.txt --dry-run
+          python -m py_compile src/mpy_daemon.py
           python -m py_compile src/*.py scripts/*.py || true
 
   build-vsix:
