@@ -95,7 +95,8 @@ It supports:
 - locals inspection
 - call stack view
 - runtime trace events
-- debug-file upload workflow
+- **Connect only** workflow for supported firmware with the debugger already frozen inside the image
+- optional, explicit legacy Pico debug-file upload for older existing firmware
 - dedicated debug firmware flow for supported boards
 
 For best results, start with a simple script first, confirm upload/run works, then enable the debugger.
@@ -204,3 +205,41 @@ Questions, bugs, and ideas are welcome.
 MicroPython Studio is licensed under the [MIT License](LICENSE.md).
 
 XBee MicroPython type hints and libraries are sourced from [Digi International's xbee-micropython](https://github.com/digidotcom/xbee-micropython), also under the MIT License.
+
+
+## Frozen debugger firmware — Pico and ESP32-S3 (development branches)
+
+**One firmware flash, then Start Debug → Connect only** is the intended workflow
+when using a debugger-enabled image that includes frozen Python helpers.
+There is **no separate upload of** `boot.py`, `dbgref.py`, or
+`trace_pump.py` for a newly flashed frozen-debugger image.
+
+| Board | Project REPL and file upload | Debugger + RTA | USB cables |
+| --- | --- | --- | --- |
+| Pico / Pico W / Pico 2 / Pico 2 W (frozen UF2 candidate) | CDC0 COM | CDC1 COM | One |
+| ESP32-S3 test candidate | Physical Serial/JTAG COM | Physical native-USB debugger COM | Two |
+
+1. Flash the **matching board-specific** debugger-enabled firmware once.
+2. Connect the REPL/upload COM in Studio; check the `>>>` prompt and file access.
+3. Select **Start Debug → Connect only**, then enter the *other*, dedicated
+   debugger COM port. Do not use the REPL COM as the debugger port.
+4. Test breakpoint, locals, Continue, breakpoint removal; then RTA On/Off.
+
+**Legacy Pico compatibility:** The older published UF2s might not contain the
+frozen debugger helpers and may still require the **Legacy Pico setup** option.
+That option overwrites `/boot.py`, `/dbgref.py` and `/trace_pump.py`, so only
+use it for older Pico firmware. **Never** use it on ESP32-S3 or on a new
+frozen-debugger Pico. It is not part of the normal installation flow.
+
+The frozen Pico build is isolated on
+[`feature/pico-frozen-debugger-v1`](https://github.com/niwantha33/micropython_live_debugger/tree/feature/pico-frozen-debugger-v1)
+and the ESP32-S3 firmware remains isolated on
+[`feature/esp32-s3-debugger-v1`](https://github.com/niwantha33/micropython_live_debugger/tree/feature/esp32-s3-debugger-v1).
+The Pico frozen candidate has **not** passed hardware acceptance yet; neither
+candidate is released by these branch changes.
+
+**RTA explanation:** The `Observed VM %` field is exclusive *measured elapsed
+segment time share*, not physical CPU utilization. The `Total` field is
+inclusive elapsed time; long native waits or sleeps may inflate it. Unknown
+addresses are unresolved function names, not CPU-load alarms. A proper
+scheduler CPU/idle metric would require additional target instrumentation.
