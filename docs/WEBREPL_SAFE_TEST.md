@@ -10,12 +10,13 @@ This branch fixes two independent problems:
 
 1. Keep the Pico W on the existing **USB REPL COM** (CDC0). Leave the frozen debugger on its separate USB CDC port.
 2. In **Device Dashboard → Wi-Fi Manager**, ensure STA is already connected and shows an IPv4 address.
-3. Tick **Enable Wireless Access (WebREPL)**. Enter a *WebREPL-only* password in the VS Code masked password prompt (different from your router's password).
-4. Dashboard calls `webrepl.start(password=...)` in device RAM through the **existing shared serial daemon**. This does **not** modify `boot.py`, `webrepl_cfg.py`, `main.py` or flash contents.
-5. After a confirmed start, Studio saves local project `device.cfg` entries for IP, password and `webrepl_enabled=true`. Do not commit the project config file, which contains credentials.
-6. Open **WebREPL** in the Studio status bar. Verify CONNECTED after authenticating. Type `print(1+1)`; expected response: `2`.
-7. Try **Reconnect**. Test a wrong password by changing only local project settings; restore correct password afterwards. Incorrect passwords must show a failure, not CONNECTED.
-8. Use **Stop WebREPL** to stop the *current* WebREPL listener, without modifying user files. WebREPL is session-only and needs starting again through USB after a board reboot.
+3. **Important for your Pico 2 W test:** if the Dashboard title says `Device: WebREPL 10.20.100.198` but the USB REPL is still connected on COM8, leave COM8 connected. The Dashboard now checks the **actual daemon COM port** instead of refusing the wireless Dashboard selection. If serial reports `WebREPL server started`, the listener already exists and must not be restarted.
+4. Tick **Enable Wireless Access (WebREPL)**. Enter a *WebREPL-only* password in the VS Code masked password prompt (different from your router's password).
+5. When the listener is NOT running, Dashboard calls `webrepl.start(password=...)` in device RAM through the **existing shared serial daemon**. This does **not** modify `boot.py`, `webrepl_cfg.py`, `main.py` or flash contents.
+6. After confirming an existing listener or a new start, Studio saves local project `device.cfg` entries for IP, password and `webrepl_enabled=true`. Do not commit the project config file, which contains credentials.
+7. Open **WebREPL** in the Studio status bar. Verify CONNECTED after authenticating. Type `print(1+1)`; expected response: `2`.
+8. Try **Reconnect**. Test a wrong password by changing only local project settings; restore correct password afterwards. Incorrect passwords must show a failure, not CONNECTED.
+9. Use **Stop WebREPL** to stop the *current* WebREPL listener, without modifying user files. WebREPL is session-only and needs starting again through USB after a board reboot.
 
 ### Diagnostics
 
@@ -37,3 +38,5 @@ If Dashboard shows a **WebREPL failed** message, copy only the error; **do not s
 - This is *not* persistent WebREPL boot auto-start. Automatic start would require a separate explicit design compatible with frozen debugger firmware.
 - The board must have a MicroPython firmware including `webrepl` and an active network STA interface.
 - Only runtime start and stop are in scope; do not merge until the actual Pico W WebREPL TCP handshake, interactive REPL and file transfer have been tested.
+
+**Existing boot configuration:** The Pico 2 W screenshot shows an existing `boot.py` that starts WebREPL automatically. This PR does not change that file. If auto-start is already configured, WebREPL may start again on a subsequent boot; 'session-only' describes Studio's new setup operation, not a guarantee about existing `boot.py` code.
