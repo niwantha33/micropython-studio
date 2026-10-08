@@ -1604,13 +1604,13 @@ function getWebviewContent(metrics) {
                 ? `
             <div class="webrepl-ip-box" id="webReplActiveBox">
                 <div style="flex:1">
-                    <div class="webrepl-ip-label">⭐ Remote Access Active  ·  Password: micro123</div>
+                    <div class="webrepl-ip-label">WebREPL · Session status</div>
                     <div class="webrepl-ip-val">${metrics.bootLog.ip}</div>
                     <div style="font-size:11px;color:#94a3b8;margin-top:4px">Auto-starts on every boot</div>
                 </div>
                 <div style="display:flex;flex-direction:column;gap:6px">
                     <button class="btn btn-warning" id="switchWirelessBtnStatic">⚡ Switch to Wireless</button>
-                    <button class="btn btn-danger btn-sm" id="disableRemoteBtnBox">🔒 Disable</button>
+                    <button class="btn btn-danger btn-sm" id="disableRemoteBtnBox">Stop WebREPL</button>
                 </div>
             </div>`
                 : ""
@@ -1954,18 +1954,36 @@ function getWebviewContent(metrics) {
                 }
             }
 
+            if (msg.command === 'webReplError') {
+                const toggle = document.getElementById('webReplToggle');
+                if (toggle) { toggle.checked = false; toggle.disabled = false; }
+                const box = document.getElementById('webReplInfoBox');
+                if (box) {
+                    box.style.display = 'block';
+                    box.replaceChildren();
+                    const err = document.createElement('div');
+                    err.style.color = '#ef4444';
+                    err.textContent = 'WebREPL failed: ' + (msg.message || 'Unknown error');
+                    box.appendChild(err);
+                }
+                return;
+            }
             if (msg.command === 'webReplEnabled') {
                 const box = document.getElementById('webReplInfoBox');
+                if (!box) return;
+                box.style.display = 'block';
+                const toggle = document.getElementById('webReplToggle');
+                if (toggle) { toggle.checked = true; toggle.disabled = false; }
                 box.innerHTML = \`
                     <div class="webrepl-ip-box">
                         <div style="flex:1">
-                            <div class="webrepl-ip-label">⭐ Remote Access Active  ·  Password: micro123</div>
+                            <div class="webrepl-ip-label">WebREPL · Session active</div>
                             <div class="webrepl-ip-val">\${msg.ip}</div>
-                            <div style="font-size:11px;color:#10b981;margin-top:4px">Auto-starts on every boot (boot.py updated)</div>
+                            <div style="font-size:11px;color:#10b981;margin-top:4px">Session only — boot.py unchanged</div>
                         </div>
                         <div style="display:flex;flex-direction:column;gap:6px">
                             <button class="btn btn-warning" id="switchWirelessBtn">⚡ Switch to Wireless</button>
-                            <button class="btn btn-danger btn-sm" id="disableRemoteBtnInBox">🔒 Disable</button>
+                            <button class="btn btn-danger btn-sm" id="disableRemoteBtnInBox">Stop WebREPL</button>
                         </div>
                     </div>\`;
 
@@ -2556,36 +2574,27 @@ print('OK')
       }
 
       if (message.command === "switchToWireless") {
-        const wsPort = `ws:${message.ip},micro123`;
+        // Use the password saved only after WebREPL startup was confirmed.
+        // Never hardcode credentials or show them in a tab title.
+        const cfgPath = path.join(workspaceRoot, "device.cfg");
+        const savedIp = await getConfigValue(cfgPath, "remote", "webrepl_ip");
+        const savedSecret = await getConfigValue(cfgPath, "remote", "webrepl_password");
+        const enabled = await getConfigValue(cfgPath, "remote", "webrepl_enabled");
+        if (enabled !== "true" || !savedIp || !savedSecret || savedIp !== message.ip) {
+          panel.webview.postMessage({
+            command: "webReplError",
+            message: "Start WebREPL on USB first; the saved IP/password is missing or stale.",
+          });
+          return;
+        }
+        const wsPort = `ws:${savedIp},${savedSecret}`;
         activePort = wsPort;
-        panel.title = `Device: ${wsPort}`;
+        panel.title = `Device: WebREPL ${savedIp}`;
         if (typeof onPortUpdate === "function") {
           onPortUpdate(wsPort);
         }
-
-        // Persist WebREPL details to device.cfg so the extension
-        // can auto-connect wirelessly next time — no USB required
-        try {
-          const cfgPath = path.join(workspaceRoot, "device.cfg");
-          await updateCfgComponent(
-            cfgPath,
-            "remote",
-            "webrepl_enabled",
-            "true",
-          );
-          await updateCfgComponent(cfgPath, "remote", "webrepl_ip", message.ip);
-          await updateCfgComponent(
-            cfgPath,
-            "remote",
-            "webrepl_password",
-            "micro123",
-          );
-        } catch (e) {
-          console.error("Failed to save WebREPL details to device.cfg:", e);
-        }
-
         vscode.window.showInformationMessage(
-          `Switched to wireless: ${wsPort}. IP saved — extension will auto-connect next time.`,
+          `WebREPL selected at ${savedIp}. It runs for this board session only; restart it via USB after a reboot.`,
         );
         return;
       }
