@@ -243,3 +243,19 @@ segment time share*, not physical CPU utilization. The `Total` field is
 inclusive elapsed time; long native waits or sleeps may inflate it. Unknown
 addresses are unresolved function names, not CPU-load alarms. A proper
 scheduler CPU/idle metric would require additional target instrumentation.
+
+
+### ESP32-C3 is not yet supported by the frozen dual-CDC debugger
+
+ESP32-C3's hardware USB Serial/JTAG controller offers a fixed-function CDC
+serial channel plus JTAG. It **cannot** create the same configurable second
+TinyUSB CDC interface used on ESP32-S3. Studio's current **Connect only**
+workflow needs an *independent* debug transport; do not select the REPL COM
+as the debugger port or upload Pico's debugger boot scripts to C3.
+
+The C3 feasibility work is isolated in
+[`feature/esp32-c3-feasibility-v1`](https://github.com/niwantha33/micropython_live_debugger/tree/feature/esp32-c3-feasibility-v1),
+with [board-inventory tracking issue #7](https://github.com/niwantha33/micropython_live_debugger/issues/7).
+Only after examining the exact board and its available USB/UART transport will
+a C3-specific test firmware be considered. No C3 debugger binary has been
+built, tested or published.
