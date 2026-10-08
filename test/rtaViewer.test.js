@@ -18,13 +18,13 @@ suite('Live RTA viewer', () => {
     });
 
     test('scrolls the full debugger page instead of clipping bottom panels', () => {
-        assert.match(source, /body \\{[^}]*min-height: 100vh;[^}]*height: auto;[^}]*overflow-y: auto;/);
-        assert.doesNotMatch(source, /body \\{[^}]*overflow: hidden;/);
-        assert.match(source, /\\.dashboard-grid \\{[^}]*flex: 0 0 auto;/);
-        assert.match(source, /\\.panels-container \\{[^}]*overflow: visible;/);
-        assert.match(source, /\\.panel-terminal \\{[^}]*height: clamp\\(320px, 52vh, 640px\\);/);
-        assert.match(source, /#log \\{[^}]*overflow-y: auto;/);
-        assert.match(source, /\\.rta-table-wrap \\{[^}]*max-height: 260px;[^}]*overflow: auto;/);
+        assert.match(source, /body \{[^}]*min-height: 100vh;[^}]*height: auto;[^}]*overflow-y: auto;/);
+        assert.doesNotMatch(source, /body \{[^}]*overflow: hidden;/);
+        assert.match(source, /\.dashboard-grid \{[^}]*flex: 0 0 auto;/);
+        assert.match(source, /\.panels-container \{[^}]*overflow: visible;/);
+        assert.match(source, /\.panel-terminal \{[^}]*height: clamp\(320px, 52vh, 640px\);/);
+        assert.match(source, /#log \{[^}]*overflow-y: auto;/);
+        assert.match(source, /\.rta-table-wrap \{[^}]*max-height: 260px;[^}]*overflow: auto;/);
     });
 
     test('provides direct keyboard-friendly shortcuts to the lower panels', () => {
