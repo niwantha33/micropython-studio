@@ -444,7 +444,14 @@ function extractGpioNumber(pinLabel) {
  */
 function createPinoutHtml(pinoutKey) {
   const data = PINOUT_DATA[pinoutKey];
-  if (!data) return '<div class="pinout-note">No verified pinout is available for this device. Choose the exact board model; do not rely on a generic chip diagram for wiring.</div>';
+  if (!data) {
+    const options = Object.entries(PINOUT_DATA)
+      .map(([key, board]) => `<option value="${key}">${board.name}</option>`).join('');
+    return `<div class="pinout-header">🧷 Pinout <select id="pinoutBoardSelect" onchange="switchPinout(this.value)">
+      <option value="" selected>Choose exact board</option>${options}</select></div>
+      <div class="pinout-note">No verified pinout is available for this device.
+      Choose the actual carrier board; do not use a generic MCU diagram for wiring.</div>`;
+  }
   const safeNote = String(data.note || '').replace(/[&<>"']/g, c => ({
     '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
   }[c]));
