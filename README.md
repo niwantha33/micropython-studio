@@ -1,17 +1,18 @@
-# MicroPython Studio
+# MicroPython Studio — Live MicroPython Debugger for VS Code
 
-### A friendly VS Code workspace for MicroPython, CircuitPython, and XBee
+**Set breakpoints on a real Raspberry Pi Pico 2 W, step through MicroPython code, inspect locals and call stacks, and capture live runtime traces.** MicroPython Studio also provides a REPL, device file manager, firmware tools, CircuitPython support and an optional local AI assistant.
+
+[**Install from VS Code Marketplace**](https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio) · [**Watch the real-device debugger demo**](https://www.youtube.com/watch?v=or_aG-Rhnb8) · [**Read the debugger guide**](https://niwantha33.github.io/micropython-studio/micropython-live-debugger.html)
 
 [![MicroPython](https://img.shields.io/badge/MicroPython-1.20%2B-blue?logo=micropython&logoColor=white)](https://micropython.org)
 [![CircuitPython](https://img.shields.io/badge/CircuitPython-10.x-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
-[![XBee](https://img.shields.io/badge/XBee-MicroPython-orange)](https://www.digi.com/xbee)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
-MicroPython Studio helps you build embedded Python projects without leaving VS Code. Create projects, connect boards, manage files, run scripts, debug code, flash firmware, use WebREPL/Web Workflow, and prototype with a built-in simulator.
+## See what makes the debugger different
 
-[Watch the live debugger demo](https://www.youtube.com/watch?v=or_aG-Rhnb8)
+On compatible **debugger-enabled firmware**, MicroPython Studio provides source breakpoints, step/continue controls, local/global variable inspection, call stacks and live RTA function tracing, without requiring a separate JTAG probe for those software-debugging features. The [demo](https://www.youtube.com/watch?v=or_aG-Rhnb8) shows the debugger operating on a real Pico 2 W.
 
----
+**Hardware-support status matters.** The existing Pico 2 W debugger workflow has been exercised on real hardware. The new Pico-family frozen-firmware builds and ESP32-S3 debugger improvements are under separate hardware qualification; an ESP32-C3 debugger has **not** been released. Do not interpret a successful CI build as evidence that your board is supported. Read the [board-specific firmware and test status](https://github.com/niwantha33/micropython_live_dbg_firmware#new-self-contained-firmware--test-only-not-in-this-repository) before flashing anything.
 
 ## Why Use It?
 
@@ -95,8 +96,9 @@ It supports:
 - locals inspection
 - call stack view
 - runtime trace events
-- debug-file upload workflow
-- dedicated debug firmware flow for supported boards
+- live function/runtime tracing (observed elapsed-time share, **not** CPU utilisation)
+- debugger-enabled firmware for supported board-specific configurations; existing published Pico firmware may need the legacy setup steps
+- test-only frozen debugger images are not published as stable releases until hardware validation
 
 For best results, start with a simple script first, confirm upload/run works, then enable the debugger.
 
