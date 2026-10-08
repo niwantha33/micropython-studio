@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supported boards and debugger firmware | MicroPython Studio</title>
+<meta name="description" content="Board-by-board MicroPython Studio support: Pico W stable debugger UF2, Pico 2 W hardware workflow, ESP32-S3 preview, experimental Pico builds and unsupported ESP32-C3 debugger.">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://niwantha33.github.io/micropython-studio/board-support.html">
+<meta property="og:title" content="MicroPython Studio hardware and firmware support">
+<meta property="og:description" content="Choose the correct board before flashing. Stable, preview and test-only debugger firmware are clearly distinguished.">
+<link rel="stylesheet" href="./site-docs.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="header"><div class="container nav">
+<a class="brand" href="./"><span class="brand-mark" aria-hidden="true">µP</span><span>MicroPython Studio</span></a>
+<nav class="navlinks" aria-label="Main navigation"><a href="./">Home</a><a href="./getting-started.html">Get started</a><a href="./board-support.html" aria-current="page">Boards &amp; firmware</a><a href="./troubleshooting.html">Troubleshooting</a><a href="./micropython-live-debugger.html">Live debugger</a><a href="https://github.com/niwantha33/micropython-studio">GitHub</a></nav>
+</div></header>
+<main id="main">
+<section class="hero"><div class="container">
+<div class="eyebrow">Firmware / Compatibility</div><h1>Match the firmware to your exact board.</h1>
+<p class="lead">Normal MicroPython USB REPL and file transfers can work on many boards. Live source debugging is different: it requires a compatible debugger-enabled image, an available transport and hardware acceptance.</p>
+<div class="cta-row"><a class="btn btn-primary" href="https://github.com/niwantha33/micropython_live_dbg_firmware">Official firmware repository ↗</a><a class="btn btn-secondary" href="./getting-started.html">Start with USB REPL →</a></div>
+</div></section>
+<section class="content"><div class="container">
+<h2>Public release status</h2>
+<p class="section-lead">Statuses below apply to the <strong>debugger firmware</strong>, not necessarily to ordinary serial scripting. Verified GitHub downloads are linked directly; successful automated compilation alone never means a board has been physically tested.</p>
+<div class="table-wrap"><table>
+<thead><tr><th scope="col">Board</th><th scope="col">Debugger firmware status</th><th scope="col">Connection guide</th><th scope="col">Next action</th></tr></thead>
+<tbody>
+<tr><td><strong>Raspberry Pi Pico W (RP2040)</strong></td><td><span class="status ok">Stable hardware-tested v2.6.0</span><br>Frozen debugger UF2 is a public release.</td><td>USB CDC0 = REPL and upload; USB CDC1 = debugger.</td><td><a href="https://github.com/niwantha33/micropython_live_dbg_firmware/releases/download/v2.6.0/micropython-studio-picow-debugger-v2.6.0.uf2">Download Pico W UF2 ↗</a></td></tr>
+<tr><td><strong>Raspberry Pi Pico 2 W (RP2350)</strong></td><td><span class="status preview">Existing live-debugger workflow hardware exercised</span><br>New frozen UF2 remains a test-only candidate.</td><td>Follow the exact image's USB transport instructions; do not assume all Pico models use identical firmware.</td><td><a href="https://github.com/niwantha33/micropython_live_dbg_firmware/tree/main/TestBuilds">Read test-build status ↗</a></td></tr>
+<tr><td><strong>Raspberry Pi Pico / Pico 2</strong></td><td><span class="status preview">Test-only candidates</span><br>Per-board hardware acceptance is incomplete.</td><td>Serial and debugger configuration must match the selected candidate.</td><td><a href="https://github.com/niwantha33/micropython_live_dbg_firmware/blob/main/TestBuilds/README.md">Review experimental files ↗</a></td></tr>
+<tr><td><strong>ESP32-S3</strong></td><td><span class="status preview">Preview, not stable</span><br>Long-duration RTA and reset qualification remain outstanding.</td><td>Serial/JTAG USB = REPL/upload; native USB = debugger; typically two USB connections.</td><td><a href="https://github.com/niwantha33/micropython_live_dbg_firmware/releases/tag/v2.6.0-esp32s3-preview">Read ESP32-S3 preview notes ↗</a></td></tr>
+<tr><td><strong>ESP32-C3 / ESP32-S2</strong></td><td><span class="status no">No released dual-transport debugger firmware</span></td><td>Do not use ESP32-S3 binaries, nor assume a second native USB CDC is available.</td><td><a href="https://github.com/niwantha33/micropython_live_dbg_firmware">Check future announcements ↗</a></td></tr>
+</tbody></table></div>
+<div class="callout warning"><strong>Do not flash blindly.</strong> Back up your MicroPython files, verify the board and recovery procedure, and choose a verified image that explicitly matches the hardware. Never install ESP32-S3 firmware on ESP32-C3 or a Pico W image on Pico 2 W.</div>
+</div></section>
+<section class="content"><div class="container">
+<h2>Which download should I choose?</h2>
+<div class="grid">
+<article class="card"><span class="number">01</span><h3>Install the IDE</h3><p>Use the approved <a href="https://marketplace.visualstudio.com/items?itemName=niwantha33.micropython-studio">VS Code Marketplace</a> extension or the <a href="https://github.com/niwantha33/micropython-studio/releases/download/v2.6.0/micropython-studio-2.6.0.vsix">stable v2.6.0 VSIX</a>. This is a PC extension, not board firmware.</p></article>
+<article class="card"><span class="number">02</span><h3>Choose board firmware</h3><p>The official <a href="https://github.com/niwantha33/micropython_live_dbg_firmware#releases">firmware download matrix</a> identifies approved vs preview releases. Match the board exactly.</p></article>
+<article class="card"><span class="number">03</span><h3>Test safely</h3><p>Confirm ordinary USB REPL before trying the separate debugger port. Only then check a breakpoint, locals, Continue, breakpoint removal and RTA On/Off.</p></article>
+</div>
+</div></section>
+<section class="content"><div class="container">
+<h2>Why two serial ports?</h2>
+<p>On the verified frozen Pico W image, the REPL/file channel is USB CDC0 and the debugger is USB CDC1. This allows normal serial access and debugging to use separate transports. Do not connect both functions to the same COM port.</p>
+<div class="callout"><strong>ESP32-S3 differs:</strong> its preview uses the physical USB Serial/JTAG path for REPL/upload and a separate native USB debugger interface. Follow the preview guide before plugging in or flashing. Board-specific USB capabilities matter more than the name “ESP32”.</div>
+<div class="link-grid">
+<a class="link-card" href="https://github.com/niwantha33/micropython_live_dbg_firmware/releases/tag/v2.6.0"><strong>Pico W stable firmware release ↗</strong><span>Versioned UF2, version file and checksum manifest.</span></a>
+<a class="link-card" href="https://github.com/niwantha33/micropython_live_dbg_firmware/blob/main/TestBuilds/README.md"><strong>Unreleased firmware candidates ↗</strong><span>Experimental binaries; test only, not an automatic upgrade.</span></a>
+<a class="link-card" href="./micropython-live-debugger.html"><strong>Debugger features and requirements →</strong><span>Breakpoints, stepping, variable inspection and trace meaning.</span></a>
+<a class="link-card" href="./troubleshooting.html"><strong>Connection troubleshooting →</strong><span>Missing COM port, busy REPL, WebREPL and safe recovery.</span></a>
+</div>
+</div></section>
+</main>
+<footer class="footer"><div class="container footgrid"><span>MicroPython Studio · Hardware status reflects published repository guidance, not an automatic hardware scan.</span><div class="footlinks"><a href="./">Home</a><a href="./getting-started.html">Get started</a><a href="https://github.com/niwantha33/micropython_live_dbg_firmware">Firmware source</a></div></div></footer>
+</body>
+</html>
