@@ -17,6 +17,10 @@ class AiAssistanceProvider {
         // Load history from state if available
         this._history = this._context.workspaceState.get('aiChatHistory', []);
         this._firmwareOverride = null;
+        this._selectedModel = this._context.workspaceState.get('aiSelectedModel', '');
+        this._models = [];
+        this._chatBusy = false;
+        this._installationBusy = false;
     }
 
     resolveWebviewView(webviewView) {
@@ -54,6 +58,17 @@ class AiAssistanceProvider {
                 case 'setFirmware':
                     this._firmwareOverride = data.value;
                     break;
+                case 'setModel':
+                    if (typeof data.value === 'string' && this._models.includes(data.value)) {
+                        this._selectedModel = data.value;
+                        await this._context.workspaceState.update('aiSelectedModel', data.value);
+                    }
+                    break;
+                case 'openLink':
+                    if (data.value === 'https://ollama.com') {
+                        await vscode.env.openExternal(vscode.Uri.parse(data.value));
+                    }
+                    break;
             }
         });
 
@@ -61,112 +76,119 @@ class AiAssistanceProvider {
         this._checkOllamaStatus();
     }
 
-    // ─── Ollama HTTP Helper (used only for chat streaming) ─────
-
-    /**
-     * Make a streaming HTTP request to the Ollama API.
-     * Parses NDJSON and calls onChunk(parsedJson) for each line.
-     */
-    _ollamaStream(apiPath, body, onChunk) {
+    // Ollama is local to the user's machine; no Python process or pip
+    // installation is needed for discovery or streamed chat.
+    _ollamaStatus() {
         return new Promise((resolve, reject) => {
-            const options = {
-                hostname: OLLAMA_HOST,
-                port: OLLAMA_PORT,
-                path: apiPath,
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            };
-
-            const req = http.request(options, (res) => {
+            const req = http.get({
+                hostname: OLLAMA_HOST, port: OLLAMA_PORT, path: '/api/tags'
+            }, res => {
+                let data = '';
                 if (res.statusCode !== 200) {
-                    let errData = '';
-                    res.on('data', chunk => errData += chunk);
-                    res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${errData}`)));
+                    res.resume();
+                    reject(new Error(`Ollama model discovery returned HTTP ${res.statusCode}`));
                     return;
                 }
-
-                let buffer = '';
                 res.on('data', chunk => {
-                    buffer += chunk.toString();
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // keep incomplete line in buffer
-                    for (const line of lines) {
-                        if (!line.trim()) continue;
-                        try {
-                            onChunk(JSON.parse(line));
-                        } catch { /* skip malformed JSON */ }
-                    }
+                    data += chunk.toString('utf8');
+                    if (data.length > 1024 * 1024) req.destroy(new Error('Ollama model list too large'));
                 });
                 res.on('end', () => {
-                    // Process any remaining data in buffer
-                    if (buffer.trim()) {
-                        try { onChunk(JSON.parse(buffer)); } catch { /* ignore */ }
-                    }
-                    resolve();
+                    try {
+                        const names = JSON.parse(data).models || [];
+                        resolve(names.map(m => m.name).filter(n => typeof n === 'string'));
+                    } catch (e) { reject(e); }
                 });
+                res.on('error', reject);
             });
-
+            req.setTimeout(5000, () => req.destroy(new Error('Ollama status timed out')));
             req.on('error', reject);
-            req.write(JSON.stringify(body));
-            req.end();
         });
     }
 
-    // ─── Status Check (via Python — reliable across firewalls) ──
+    _ollamaStream(apiPath, body, onChunk) {
+        return new Promise((resolve, reject) => {
+            let finished = false;
+            const done = (err) => {
+                if (finished) return;
+                finished = true;
+                if (err) reject(err); else resolve();
+            };
+            const req = http.request({
+                hostname: OLLAMA_HOST, port: OLLAMA_PORT, path: apiPath,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            }, res => {
+                if (res.statusCode !== 200) {
+                    let reason = '';
+                    res.on('data', c => { reason += c.toString(); if (reason.length > 4096) reason = reason.slice(0, 4096); });
+                    res.on('end', () => done(new Error(`Ollama HTTP ${res.statusCode}: ${reason}`)));
+                    res.on('error', done);
+                    return;
+                }
+                let buffer = '';
+                let complete = false;
+                const parse = (line) => {
+                    if (!line.trim() || finished) return;
+                    const chunk = JSON.parse(line);
+                    if (chunk.error) throw new Error(String(chunk.error));
+                    onChunk(chunk);
+                    if (chunk.done === true) complete = true;
+                };
+                res.on('data', chunk => {
+                    if (finished) return;
+                    buffer += chunk.toString('utf8');
+                    if (buffer.length > 1024 * 1024) {
+                        req.destroy(new Error('Ollama response line too large'));
+                        return;
+                    }
+                    let index;
+                    try {
+                        while ((index = buffer.indexOf('\n')) !== -1) {
+                            const line = buffer.slice(0, index);
+                            buffer = buffer.slice(index + 1);
+                            parse(line);
+                        }
+                    } catch (err) { req.destroy(err); }
+                });
+                res.on('end', () => {
+                    try {
+                        if (buffer.trim()) parse(buffer);
+                        done(complete ? null : new Error('Ollama ended before completing the response'));
+                    } catch (err) { done(err); }
+                });
+                res.on('aborted', () => done(new Error('Ollama closed the connection')));
+                res.on('error', done);
+            });
+            req.setTimeout(120000, () => req.destroy(new Error('Ollama stopped responding for 120 seconds')));
+            req.on('error', done);
+            req.end(JSON.stringify(body));
+        });
+    }
 
     async _checkOllamaStatus() {
-        const pythonPath = this._getPythonPath();
-        const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
-
-        const proc = spawn(pythonPath, [scriptPath, 'check']);
-
-        let result = '';
-        let errorOutput = '';
-
-        proc.stdout.on('data', (d) => result += d.toString());
-        proc.stderr.on('data', (d) => errorOutput += d.toString());
-
-        const timeout = setTimeout(() => {
-            proc.kill();
-            if (this._view) {
-                this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
+        try {
+            const models = await this._ollamaStatus();
+            this._models = models;
+            if (this._selectedModel && !models.includes(this._selectedModel)) {
+                this._selectedModel = '';
+                await this._context.workspaceState.update('aiSelectedModel', '');
             }
-        }, 8000);
-
-        proc.on('close', (code) => {
-            clearTimeout(timeout);
-            try {
-                if (code !== 0 || !result.trim()) {
-                    throw new Error(errorOutput || 'No output from check script');
-                }
-                const status = JSON.parse(result.trim());
-                if (this._view) {
-                    this._view.webview.postMessage({ type: 'status', value: status });
-                }
-
-                // ── Auto-reinstall if models are outdated ──────────
-                if (status.connected && status.installed) {
-                    const savedVersion = this._context.globalState.get('aiModelVersion', '0.0.0');
-                    if (savedVersion < AiAssistanceProvider.MODEL_VERSION) {
-                        console.log(`[AI] Models outdated (${savedVersion} < ${AiAssistanceProvider.MODEL_VERSION}), auto-reinstalling...`);
-                        this._installModel(true); // force reinstall
-                    }
-                }
-            } catch (e) {
-                console.error(`Ollama check failed: ${e.message}`);
-                if (this._view) {
-                    this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
-                }
-            }
-        });
-
-        proc.on('error', (err) => {
-            clearTimeout(timeout);
-            console.error(`Spawn error: ${err.message}`);
-            if (this._view) {
-                this._view.webview.postMessage({ type: 'status', value: { connected: false, installed: false } });
-            }
-        });
+            const status = {
+                connected: true,
+                installed: models.length > 0,
+                mpy: models.some(m => m === 'micro_ai-mpy' || m.startsWith('micro_ai-mpy:')),
+                cpy: models.some(m => m === 'micro_ai-cpy' || m.startsWith('micro_ai-cpy:')),
+                models,
+                selectedModel: this._selectedModel
+            };
+            this._view?.webview.postMessage({ type: 'status', value: status });
+        } catch (err) {
+            this._models = [];
+            this._view?.webview.postMessage({
+                type: 'status', value: { connected: false, installed: false, models: [], error: err.message }
+            });
+        }
     }
 
     // ─── Model Installation (via Python — terminal speed) ───────
