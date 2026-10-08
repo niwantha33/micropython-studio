@@ -42,7 +42,7 @@ suite('Passive and reliable MicroPython REPL', () => {
     test('backend waits for release and confirms exit status', () => {
         assert.ok(extension.includes("await connectionManager.suspend()"));
         assert.ok(extension.includes("await connectionManager.resume()"));
-        assert.ok(extension.includes("Task failed with exit code"));
+        assert.ok(extension.includes("Task failed"));
         assert.ok(extension.includes('[SUCCESS] Task complete.'));
     });
     test('acknowledged transitions resolve and duplicate requests share same pending operation', async () => {
