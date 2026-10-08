@@ -22,6 +22,13 @@ suite('Discoverability without unsupported debugger claims', () => {
     assert.ok(readme.includes('hardware qualification'));
     assert.ok(readme.includes('ESP32-C3 debugger has **not** been released'));
   });
+  test('automatic public release requires tag from main with matching version', () => {
+    const workflow = fs.readFileSync(path.join(repo,'.github','workflows','ci.yml'),'utf8');
+    assert.ok(workflow.includes("name: Verify approved release tag"));
+    assert.ok(workflow.includes('git merge-base --is-ancestor HEAD origin/main'));
+    assert.ok(workflow.includes('tag_version="${GITHUB_REF_NAME#v}"'));
+    assert.ok(workflow.includes('needs: [build-vsix, verify-release]'));
+  });
   test('public landing page is canonical, indexable and installation-linked', () => {
     assert.ok(landing.includes('micropython-live-debugger.html'));
     assert.ok(landing.includes('rel="canonical"'));
