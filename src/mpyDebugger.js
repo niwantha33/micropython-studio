@@ -479,7 +479,7 @@ function openDebuggerPanel(context, port, venvPython) {
                             if (!sessionReady && panel) {
                                 panel.webview.postMessage({
                                     evt: 'error',
-                                    msg: 'Debug CDC opened, but clear_all_bp received no reply. The debug CDC transport or trace_pump is not responding.'
+                                    msg: 'Debugger port opened but firmware did not answer. Check you selected the dedicated debug COM, that the board runs debugger-enabled firmware, and that its frozen trace pump is ready. Use Get debugger-enabled firmware for board-specific builds.'
                                 });
                             }
                         }, 3500);
@@ -1856,7 +1856,7 @@ const COMMANDS = [
   { op: 'rta_off', label: 'RTA Off', key: 'y', icon: 'rta-off', category: 'action', desc: 'Disable Real-time Analysis tracing' },
   { op: 'set_bp_here', label: 'Set BP', icon: 'bp', category: 'action', desc: 'Add breakpoint at editor cursor' },
   { op: 'bp_refresh', label: 'Breakpoints', icon: 'bp', category: 'query', desc: 'Show and refresh active breakpoints' },
-  { op: 'flash_firmware', label: 'Download Firmware', icon: 'flash', category: 'system', desc: 'Flash board debugger binary' }
+  { op: 'flash_firmware', label: 'Get Firmware', icon: 'flash', category: 'system', desc: 'Open board-specific firmware artifacts; does not automatically flash' }
 ];
 
 // SVG Icons mapping
@@ -2280,7 +2280,7 @@ window.addEventListener('message', (e) => {
       add('reply', 'DEBUG PUMP v' + m.protocol + ' · ' + m.build);
     }
     if (rtaAvailable === false) {
-      add('err', 'RTA firmware support is not present in the currently flashed UF2. Breakpoints/stepping still work.');
+      add('err', 'RTA is unavailable in this firmware image. Check the correct board-specific debugger-enabled firmware and its test/approval status.');
     }
   }
   else if (m.evt === 'pump_ready') {
