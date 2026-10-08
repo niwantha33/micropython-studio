@@ -5,7 +5,7 @@ const { buildSessionWebReplScript, parseSessionWebReplResult, buildWebReplStatus
 
 suite('WebREPL session-only dashboard startup', () => {
     test('start script reuses connected WLAN without writing device files', () => {
-        const script = buildSessionWebReplScript('hidden-test-password');
+        const script = buildSessionWebReplScript('testpass');
         assert.ok(script.includes('network.WLAN(network.STA_IF)'));
         assert.ok(script.includes('webrepl.start(password='));
         assert.ok(script.includes('MPS_WEBREPL_OK|'));
@@ -47,10 +47,10 @@ suite('WebREPL session-only dashboard startup', () => {
         assert.ok(!script.includes('webrepl.start('));
         assert.ok(!script.includes('webrepl.stop('));
         assert.ok(!script.includes('open('));
-        assert.ok(script.includes("\\n"));
+        assert.ok(script.includes("\n"));
     });
     test('parse status when listener already running on Pico 2 W', () => {
-        const raw = '>>>\\r\\nMPS_WEBREPL_STATUS|RUNNING|10.20.100.198\\r\\n';
+        const raw = '>>>\r\nMPS_WEBREPL_STATUS|RUNNING|10.20.100.198\r\n';
         assert.deepStrictEqual(parseWebReplStatus(raw), {state:'RUNNING',ip:'10.20.100.198'});
         assert.deepStrictEqual(parseWebReplStatus('MPS_WEBREPL_STATUS|STOPPED|192.168.0.35'), {state:'STOPPED',ip:'192.168.0.35'});
         assert.throws(() => parseWebReplStatus('MPS_WEBREPL_STATUS|RUNNING|999.1.1.1'), /Invalid/);
