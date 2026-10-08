@@ -17,6 +17,26 @@ suite('Live RTA viewer', () => {
         assert.ok(source.includes('Reset Stats'));
     });
 
+    test('scrolls the full debugger page instead of clipping bottom panels', () => {
+        assert.match(source, /body \\{[^}]*min-height: 100vh;[^}]*height: auto;[^}]*overflow-y: auto;/);
+        assert.doesNotMatch(source, /body \\{[^}]*overflow: hidden;/);
+        assert.match(source, /\\.dashboard-grid \\{[^}]*flex: 0 0 auto;/);
+        assert.match(source, /\\.panels-container \\{[^}]*overflow: visible;/);
+        assert.match(source, /\\.panel-terminal \\{[^}]*height: clamp\\(320px, 52vh, 640px\\);/);
+        assert.match(source, /#log \\{[^}]*overflow-y: auto;/);
+        assert.match(source, /\\.rta-table-wrap \\{[^}]*max-height: 260px;[^}]*overflow: auto;/);
+    });
+
+    test('provides direct keyboard-friendly shortcuts to the lower panels', () => {
+        assert.ok(source.includes('aria-label="Jump to debugger panels"'));
+        assert.ok(source.includes('href="#debug-console"'));
+        assert.ok(source.includes('href="#panel-breakpoints"'));
+        assert.ok(source.includes('href="#panel-stack"'));
+        assert.ok(source.includes('id="debug-console"'));
+        assert.ok(source.includes('id="panel-breakpoints"'));
+        assert.ok(source.includes('id="panel-stack"'));
+    });
+
     test('profiles nested RTA entry/exit events using exclusive runtime', () => {
         assert.ok(source.includes('function handleRtaEvent(m)'));
         assert.ok(source.includes('childTime: 0'));
