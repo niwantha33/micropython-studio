@@ -76,7 +76,7 @@ suite('WebREPL terminal handshake, authentication and lifecycle', function() {
         });
         const client = new WebReplClient('127.0.0.1',secret,srv.address().port);
         try {
-            const signal = awaitSignal(done => {
+            const signal = await awaitSignal(done => {
                 client.onConnect = () => done();
                 client.onDisconnect = reason => done('failed',reason);
                 client.connect();
