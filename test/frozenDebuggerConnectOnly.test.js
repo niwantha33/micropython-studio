@@ -2,24 +2,27 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-suite('Frozen debugger connection workflow', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mpyDebugger.js'), 'utf8');
+suite('Firmware-first debugger workflow', () => {
+    const dbg = fs.readFileSync(path.join(__dirname, '..', 'src', 'mpyDebugger.js'), 'utf8');
+    const ext = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.js'), 'utf8');
 
-  test('connect-only is the default option and does not upload files', () => {
-    const connectIdx = src.indexOf("id: 'connect'", src.indexOf('async function startDebugger('));
-    const uploadIdx = src.indexOf("id: 'upload'", src.indexOf('async function startDebugger('));
-    assert.ok(connectIdx !== -1 && uploadIdx !== -1 && connectIdx < uploadIdx);
-    assert.ok(src.includes('Connect only — debugger already in firmware'));
-    assert.ok(src.includes('Legacy Pico setup — upload debugger files'));
-  });
-
-  test('rejects choosing the same COM for REPL and debugger', () => {
-    assert.ok(src.includes("candidate.toUpperCase() === replPort.trim().toUpperCase()"));
-    assert.ok(src.includes('debugger requires the OTHER COM port'));
-  });
-
-  test('legacy Pico upload requires an explicit warning/consent', () => {
-    assert.ok(src.includes('This legacy setup uploads and overwrites /boot.py'));
-    assert.ok(src.includes('if (!answer) return;'));
-  });
+    test('start debugger exposes connect and firmware help, never uploads Python files', () => {
+        assert.ok(dbg.includes("id: 'connect'"));
+        assert.ok(dbg.includes("id: 'firmware'"));
+        assert.ok(!dbg.includes('uploadDebuggerFiles('));
+        assert.ok(!dbg.includes('verifyUploadedPumpFile('));
+        assert.ok(!dbg.includes("id: 'upload'"));
+        assert.ok(dbg.includes("micropython-ide.flashDebugFirmware"));
+    });
+    test('REPL port and debugger port must be different', () => {
+        assert.ok(dbg.includes("candidate.toUpperCase() === replPort.toUpperCase()"));
+        assert.ok(dbg.includes("debugger requires the OTHER COM port"));
+    });
+    test('firmware command navigates only, never flashes or overwrites boot.py', () => {
+        assert.ok(ext.includes("board.artifact_name"));
+        assert.ok(ext.includes("vscode.env.openExternal(uri)"));
+        assert.ok(ext.includes("No boot.py, dbgref.py or trace_pump.py upload"));
+        assert.ok(!ext.includes("Firmware flashed. Pico is rebooting."));
+        assert.ok(!dbg.includes("'--overwrite'"));
+    });
 });
