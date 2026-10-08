@@ -27,11 +27,7 @@ async function openDeviceTerminal(_context, devicePort) {
         activeTerminal.show();
         if (connectionManager.isConnected && connectionManager.portName === devicePort
             && connectionManager.isSuspended) {
-            try {
-                await connectionManager.resume();
-            } catch (err) {
-                vscode.window.showWarningMessage(`REPL resume failed: ${err.message}`);
-            }
+            vscode.window.showInformationMessage('REPL is temporarily busy with a device operation. It will be available when the owner resumes it.');
         }
         return;
     }
@@ -68,7 +64,8 @@ async function openDeviceTerminal(_context, devicePort) {
             emit(terminalNotice(`Opening REPL on ${devicePort} (no reset or interrupt sent).`));
             try {
                 if (connectionManager.isConnected && connectionManager.portName === devicePort) {
-                    if (connectionManager.isSuspended) await connectionManager.resume();
+                    if (connectionManager.isSuspended)
+                        emit(terminalNotice('REPL temporarily busy with another device operation. No reset was sent.'));
                     else onConnected();
                 } else {
                     await connectionManager.connect(devicePort);
