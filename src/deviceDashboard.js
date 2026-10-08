@@ -391,60 +391,10 @@ try {
   // fallback — empty, pinout section will show nothing
 }
 
-/**
- * Map sys.platform / device.cfg mcu values → pinouts.json key.
- * Priority: connected device sys.platform > device.cfg mcu field > first available key.
- * @param {string} platform  - sys.platform from device (e.g. 'rp2', 'esp32') or 'Unknown'
- * @param {string} mcuFromCfg - mcu value from device.cfg (e.g. 'rp2350', 'rp2_w', 'esp32')
- * @param {string} machineStr - os.uname().machine from device (e.g. 'Raspberry Pi Pico 2 W with RP2350')
- * @returns {string} key into PINOUT_DATA
- */
+// Keep this board-identity logic separately unit-testable.
+const {resolvePinoutKey: resolveKey} = require('./pinoutResolver');
 function resolvePinoutKey(platform, mcuFromCfg, machineStr) {
-  // 1. device.cfg mcu is most specific — sys.platform returns 'rp2' for BOTH RP2040 and RP2350
-  //    so cfg takes priority to get the correct board name
-  if (mcuFromCfg) {
-    const m = mcuFromCfg.toLowerCase().trim();
-    if (PINOUT_DATA[m]) return m;
-    // prefix matches: rp2350w → rp2350_w, rp2w → rp2_w, etc.
-    /** @type {Array<[RegExp, string]>} */
-    const aliases = [
-      // Full human-readable names (from project wizard board picker)
-      [/pico\s*2\s*w/i, "rp2350_w"],
-      [/pico\s*2/i, "rp2350"],
-      [/pico\s*w/i, "rp2_w"],
-      [/pico/i, "rp2"],
-      // Short codes
-      [/^rp2350.?w/, "rp2350_w"],
-      [/^rp2350/, "rp2350"],
-      [/^rp2.?w/, "rp2_w"],
-      [/^rp2/, "rp2"],
-      [/^esp32/, "esp32"],
-      [/^esp8266/, "esp8266"],
-      [/^samd/, "samd"],
-      [/^stm32/, "stm32"],
-      [/^mimxrt/, "mimxrt"],
-      [/^nrf/, "nrf"],
-    ];
-    for (const [re, key] of aliases) {
-      if (re.test(m) && PINOUT_DATA[key]) return key;
-    }
-  }
-
-  // 1.5 Try to resolve via machine string (very useful for rp2/rp2350 ambiguity)
-  if (machineStr && machineStr !== "Unknown") {
-    const m = machineStr.toLowerCase();
-    if (m.includes("pico 2 w") || m.includes("rp2350 w") || m.includes("rp2350_w")) return "rp2350_w";
-    if (m.includes("pico 2") || m.includes("rp2350")) return "rp2350";
-    if (m.includes("pico w") || m.includes("rp2040 w") || m.includes("rp2_w")) return "rp2_w";
-    if (m.includes("pico") && m.includes("rp2040")) return "rp2";
-  }
-
-  // 2. Fall back to sys.platform from connected device
-  if (platform && platform !== "Unknown" && PINOUT_DATA[platform])
-    return platform;
-
-  // 3. Default to first key in pinouts.json
-  return Object.keys(PINOUT_DATA)[0] || "rp2";
+  return resolveKey(platform, mcuFromCfg, machineStr, PINOUT_DATA);
 }
 
 /**
@@ -493,8 +443,19 @@ function extractGpioNumber(pinLabel) {
  * @param {string} pinoutKey - resolved key from resolvePinoutKey()
  */
 function createPinoutHtml(pinoutKey) {
-  const data =
-    PINOUT_DATA[pinoutKey] || PINOUT_DATA[Object.keys(PINOUT_DATA)[0]];
+  const data = PINOUT_DATA[pinoutKey];
+  if (!data) return '<div class="pinout-note">No verified pinout is available for this device. Choose the exact board model; do not rely on a generic chip diagram for wiring.</div>';
+  const safeNote = String(data.note || '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[c]));
+  const warning = data.reference_only
+    ? '<div class="pinout-note">BOARD-SPECIFIC REFERENCE ONLY — check the actual PCB pin labels and schematic. ' + safeNote + '</div>'
+    : '<div class="pinout-note">' + safeNote + '</div>';
+  if (!data.left.length && !data.right.length) {
+    return `<div class="pinout-header">🧷 Pinout <select id="pinoutBoardSelect" onchange="switchPinout(this.value)">
+      ${Object.entries(PINOUT_DATA).map(([k, v]) => `<option value="${k}" ${k === pinoutKey ? 'selected' : ''}>${v.name}</option>`).join('')}
+      </select></div>${warning}<div class="pinout-note">No GPIO mapping is displayed until this carrier is verified.</div>`;
+  }
 
   let leftHtml = "";
   let rightHtml = "";
@@ -541,6 +502,7 @@ function createPinoutHtml(pinoutKey) {
                 </select>
             </div>
         </div>
+        ${warning}
         <div class="pinout-wrapper">
             <div class="board-chip">
                 <div class="chip-label">${data.name.split(" ")[0]}</div>
