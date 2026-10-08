@@ -1044,10 +1044,6 @@ function openDebuggerPanel(context, port, venvPython) {
 // matching board firmware. A legacy UF2 requires a firmware upgrade.
 async function startDebugger(context, gRemoteDevicePort, venvPython) {
     const replPort = gRemoteDevicePort && gRemoteDevicePort !== '-' ? String(gRemoteDevicePort).trim() : '';
-    if (!replPort) {
-        vscode.window.showWarningMessage('Connect the MicroPython REPL/upload port first (Refresh Device Files).');
-        return;
-    }
     const pick = await vscode.window.showQuickPick([
         {
             label: '$(plug) Connect to debugger',
@@ -1063,6 +1059,10 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
     if (!pick) return;
     if (pick.id === 'firmware') {
         await vscode.commands.executeCommand('micropython-ide.flashDebugFirmware', { source: 'debugger' });
+        return;
+    }
+    if (!replPort) {
+        vscode.window.showWarningMessage('Connect the MicroPython REPL/upload port first (Refresh Device Files).');
         return;
     }
 
