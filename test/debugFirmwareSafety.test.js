@@ -7,19 +7,20 @@ suite('Debug firmware release safety', () => {
     const ext = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'extension.js'), 'utf8');
     const dbg = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'mpyDebugger.js'), 'utf8');
 
-    test('stable firmware channel is explicitly not RTA-certified before hardware release', () => {
+    test('unvalidated frozen candidates are never marked released', () => {
         assert.strictEqual(cfg.rta_certified, false);
         assert.strictEqual(cfg.rta_certified_source_commit, null);
+        assert.ok(cfg.boards.every(b => b.ready_for_release === false));
+        assert.ok(cfg.boards.filter(b => b.artifact_name).every(b => b.artifact_name.endsWith('-UNVALIDATED')));
     });
-
-    test('debugger RTA firmware action requests an RTA-certified build', () => {
-        assert.ok(dbg.includes("requireRta: rtaSupported === false"));
-        assert.ok(dbg.includes("source: 'debugger'"));
+    test('S3 points to test builds, not April 2026 legacy firmware', () => {
+        assert.ok(!JSON.stringify(cfg).includes('ESP32S3/firmware.bin'));
+        assert.ok(cfg.boards.find(b => b.id === 'esp32-s3').download_page.includes('weekly-candidate-builds.yml'));
     });
-
-    test('stable flash command refuses uncertified firmware for RTA', () => {
-        assert.ok(ext.includes("if (options.requireRta && !RTA_CERTIFIED)"));
-        assert.ok(ext.includes('No firmware was flashed.'));
-        assert.ok(ext.includes('hardware-test Pico 2 W UF2 from firmware PR #1'));
+    test('download guide does not silently flash unvalidated firmware', () => {
+        assert.ok(ext.includes('vscode.env.openExternal(uri)'));
+        assert.ok(ext.includes("artifact_name"));
+        assert.ok(ext.includes('UNVALIDATED TEST BUILD'));
+        assert.ok(!dbg.includes('uploadDebuggerFiles'));
     });
 });

@@ -12,13 +12,12 @@ suite('Resource leak regression', () => {
         assert.strictEqual(creates.length, 1);
     });
 
-    test('debugger setup output channel is reused across upload attempts', () => {
+    test('firmware-first debugger creates no file-upload setup output channel', () => {
         const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'mpyDebugger.js'), 'utf8');
-        assert.ok(source.includes('let debugSetupOutputChannel = null;'));
-        assert.ok(source.includes('function getDebugSetupOutputChannel()'));
-        assert.ok(source.includes('const out = getDebugSetupOutputChannel();'));
+        assert.ok(!source.includes('uploadDebuggerFiles('));
+        assert.ok(!source.includes('getDebugSetupOutputChannel'));
         const creates = source.match(/createOutputChannel\('MPy Debugger Setup'\)/g) || [];
-        assert.strictEqual(creates.length, 1);
+        assert.strictEqual(creates.length, 0);
     });
 
     test('connection and port detection logging reuse channels', () => {

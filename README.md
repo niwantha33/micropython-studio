@@ -95,7 +95,8 @@ It supports:
 - locals inspection
 - call stack view
 - runtime trace events
-- debug-file upload workflow
+- **Connect only** workflow for supported firmware with the debugger already frozen inside the image
+- no debugger Python-file upload: firmware must contain the frozen debugger helpers
 - dedicated debug firmware flow for supported boards
 
 For best results, start with a simple script first, confirm upload/run works, then enable the debugger.
@@ -204,3 +205,85 @@ Questions, bugs, and ideas are welcome.
 MicroPython Studio is licensed under the [MIT License](LICENSE.md).
 
 XBee MicroPython type hints and libraries are sourced from [Digi International's xbee-micropython](https://github.com/digidotcom/xbee-micropython), also under the MIT License.
+
+
+## Frozen debugger firmware — Pico and ESP32-S3 (development branches)
+
+**One firmware flash, then Start Debug → Connect only** is the intended workflow
+when using a debugger-enabled image that includes frozen Python helpers.
+There is **no separate upload of** `boot.py`, `dbgref.py`, or
+`trace_pump.py` for a newly flashed frozen-debugger image.
+
+| Board | Project REPL and file upload | Debugger + RTA | USB cables |
+| --- | --- | --- | --- |
+| Pico / Pico W / Pico 2 / Pico 2 W (frozen UF2 candidate) | CDC0 COM | CDC1 COM | One |
+| ESP32-S3 test candidate | Physical Serial/JTAG COM | Physical native-USB debugger COM | Two |
+
+1. Flash the **matching board-specific** debugger-enabled firmware once.
+2. Connect the REPL/upload COM in Studio; check the `>>>` prompt and file access.
+3. Select **Start Debug → Connect to debugger**, then enter the *other*, dedicated
+   debugger COM port. Do not use the REPL COM as the debugger port.
+4. Test breakpoint, locals, Continue, breakpoint removal; then RTA On/Off.
+
+**Firmware-first policy:** Studio no longer uploads debugger Python files.
+An older published Pico UF2 may **not** contain the frozen debugger transport,
+so upgrade to a board-specific frozen-debugger image **after that exact image
+passes hardware validation**. The `Get debugger-enabled firmware` menu opens
+the [weekly test-build workflow](https://github.com/niwantha33/micropython_live_dbg_firmware/actions/workflows/weekly-candidate-builds.yml)
+and names the correct **UNVALIDATED** artifact; it does not flash the board.
+Do not interpret an unvalidated CI candidate as the latest approved public
+release. Nothing overwrites an existing `boot.py`, `main.py` or the file system.
+
+The frozen Pico build is isolated on
+[`feature/pico-frozen-debugger-v1`](https://github.com/niwantha33/micropython_live_debugger/tree/feature/pico-frozen-debugger-v1)
+and the ESP32-S3 firmware remains isolated on
+[`feature/esp32-s3-debugger-v1`](https://github.com/niwantha33/micropython_live_debugger/tree/feature/esp32-s3-debugger-v1).
+The Pico frozen candidate has **not** passed hardware acceptance yet; neither
+candidate is released by these branch changes.
+
+**RTA explanation:** The `Observed VM %` field is exclusive *measured elapsed
+segment time share*, not physical CPU utilization. The `Total` field is
+inclusive elapsed time; long native waits or sleeps may inflate it. Unknown
+addresses are unresolved function names, not CPU-load alarms. A proper
+scheduler CPU/idle metric would require additional target instrumentation.
+
+
+### ESP32-C3 is not yet supported by the frozen dual-CDC debugger
+
+ESP32-C3's hardware USB Serial/JTAG controller offers a fixed-function CDC
+serial channel plus JTAG. It **cannot** create the same configurable second
+TinyUSB CDC interface used on ESP32-S3. Studio's current **Connect only**
+workflow needs an *independent* debug transport; do not select the REPL COM
+as the debugger port or upload Pico's debugger boot scripts to C3.
+
+The C3 feasibility work is isolated in
+[`feature/esp32-c3-feasibility-v1`](https://github.com/niwantha33/micropython_live_debugger/tree/feature/esp32-c3-feasibility-v1),
+with [board-inventory tracking issue #7](https://github.com/niwantha33/micropython_live_debugger/issues/7).
+Only after examining the exact board and its available USB/UART transport will
+a C3-specific test firmware be considered. No C3 debugger binary has been
+built, tested or published.
+
+## Pinout model and safe wiring
+
+The Dashboard selects a **model-specific** reference where MicroPython
+reports it. ESP32-S2, ESP32-S3 and ESP32-C3 must not silently use the
+classic ESP32 30-pin diagram. The reference files live in
+[`resource/pinouts/pinouts.json`](resource/pinouts/pinouts.json).
+Pico/Pico W/Pico 2/Pico 2 W use their standard 40-pin layouts.
+
+Other vendors' physical carriers are **not interchangeable** simply because
+the MCU is named ESP32. The generic 30-pin ESP32 diagram has 15 positions
+per side, not 15 versus 20. The ESP32-C3 generic pin map is hidden until a
+specific carrier schematic is verified; the user's photographed
+ESP32-C3-MINI-1 dual-USB-C board needs an exact schematic / header validation.
+An unknown board shows a warning instead of borrowing an unrelated Pico
+diagram. Treat unverified pin diagrams as reference only and verify all
+GPIO assignments against the physical PCB before connecting peripherals.
+
+## Next phase — reliable REPL and device connection cleanup
+
+A separate review should address daemon/terminal connection ownership,
+port locking and stale lock cleanup, suspend/resume timeouts, explicit
+disconnect/reconnect state, unsolicited terminal startup commands and noisy
+USB reset behaviour. Do not merge this with the firmware-first debugger
+rollout until unit tests and Pico + ESP32-S3 hardware regression pass.

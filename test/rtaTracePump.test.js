@@ -44,37 +44,23 @@ suite('RTA on/off regression', () => {
         assert.ok(source.includes('cmd_buf[:] = cmd_buf[1:]'));
     });
 
-    test('Studio verifies uploaded pump on REPL but Connect only uses debug CDC exclusively', () => {
+    test('frozen pump protocol is documented, but Studio never writes debugger files', () => {
         const pump = fs.readFileSync(
-            path.resolve(__dirname, '..', 'src', 'debugger_files', 'trace_pump.py'),
-            'utf8'
-        );
-        const boot = fs.readFileSync(
-            path.resolve(__dirname, '..', 'src', 'debugger_files', 'boot.py'),
-            'utf8'
+            path.resolve(__dirname, '..', 'src', 'debugger_files', 'trace_pump.py'), 'utf8'
         );
         const host = fs.readFileSync(
-            path.resolve(__dirname, '..', 'src', 'mpyDebugger.js'),
-            'utf8'
+            path.resolve(__dirname, '..', 'src', 'mpyDebugger.js'), 'utf8'
         );
-
         assert.ok(pump.includes('PUMP_PROTOCOL = 5'));
         assert.ok(pump.includes('PUMP_BUILD = "2026-10-07-rta-viewer-v5"'));
-        assert.ok(host.includes("'cat', '--port', replPort, '--path', '/trace_pump.py'"));
-        assert.ok(host.includes("const hasOldPop = r.out.includes('cmd_buf.pop(0)')"));
-
-        assert.ok(!host.includes('async function prepareLivePump'));
-        assert.ok(host.includes("prompt: 'Debug CDC port (the SECOND COM port Windows shows for the board)'"));
-        assert.ok(host.includes("op: 'debug CDC open; synchronizing breakpoint table'"));
+        assert.ok(!host.includes('uploadDebuggerFiles('));
+        assert.ok(!host.includes('verifyUploadedPumpFile('));
+        assert.ok(host.includes('Dedicated debugger COM port'));
+        assert.ok(host.includes('op: \'debug CDC open; synchronizing breakpoint table\''));
         assert.ok(!host.includes("JSON.stringify({ op: 'pump_info' })"));
         assert.ok(host.includes("msg.text.startsWith('cleared all bp slots')"));
         assert.ok(host.includes("evt: 'pump_capability'"));
         assert.ok(host.includes('installCurrentBreakpoints();'));
-
-        assert.ok(boot.includes('CDCInterface(timeout=0, txbuf=4096, rxbuf=512)'));
-        assert.ok(!boot.includes('time.sleep(3)'));
-        assert.ok(boot.includes('trace_pump.start()'));
-        assert.ok(boot.includes('[boot] trace_pump supervisor started'));
     });
 
     test('debug CDC endpoint IO waits for Windows host-open DTR', () => {
