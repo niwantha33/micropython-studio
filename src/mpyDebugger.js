@@ -1138,29 +1138,56 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
         vscode.window.showWarningMessage('Connect a device first (Refresh Device Files).');
         return;
     }
+    // Frozen-debugger UF2/Pico and ESP32-S3 test firmware contain their own
+    // Python USB bootstrap and trace pump. No filesystem upload is required.
+    // Keep the legacy choice solely for older Pico firmware already in use.
     const pick = await vscode.window.showQuickPick(
         [
-            { label: '$(cloud-upload) Upload debugger files', description: 'Copy boot.py, dbgref.py, trace_pump.py to device', id: 'upload' },
-            { label: '$(plug) Connect only', description: 'Skip upload — device already set up', id: 'connect' },
+            {
+                label: '$(plug) Connect only — debugger already in firmware',
+                description: 'Recommended for frozen-debugger Pico UF2 and ESP32-S3 test firmware; uploads nothing',
+                id: 'connect'
+            },
+            {
+                label: '$(cloud-upload) Legacy Pico setup — upload debugger files',
+                description: 'Only for older Pico UF2 that lacks frozen debugger helpers; NEVER for ESP32-S3',
+                id: 'upload'
+            },
         ],
-        { placeHolder: `REPL port: ${replPort}` }
+        { placeHolder: `Project/REPL: ${replPort} | debugger: dedicated CDC COM` }
     );
     if (!pick) return;
     if (pick.id === 'upload') {
+        const answer = await vscode.window.showWarningMessage(
+            'This legacy setup uploads and overwrites /boot.py, /dbgref.py and /trace_pump.py on your Pico. ' +
+            'Do NOT use it on ESP32-S3 or on a Pico with the new frozen-debugger firmware. ' +
+            'Use Connect only for those boards.',
+            { modal: true },
+            'I have older Pico firmware — upload'
+        );
+        if (!answer) return;
         const ok = await uploadDebuggerFiles(context, replPort, venvPython);
         if (!ok) return;
         vscode.window.showInformationMessage(
-            'Debugger files verified on the Pico. Reset the board, then Start Debug again and choose Connect only.'
+            'Legacy Pico debugger files verified. Reset that Pico, then Start Debug → Connect only.'
         );
         return;
     }
 
-    const port = await vscode.window.showInputBox({
-        prompt: 'Debug CDC port (the SECOND COM port Windows shows for the board)',
-        placeHolder: 'e.g. COM3',
+    const portInput = await vscode.window.showInputBox({
+        prompt: 'Choose the dedicated debugger CDC COM port — NOT the REPL/upload COM port',
+        placeHolder: 'e.g. COM13 (ESP32 native USB), or Pico USB CDC1',
+        validateInput: value => {
+            const candidate = String(value || '').trim();
+            if (!candidate) return 'Enter the debugger COM port.';
+            if (candidate.toUpperCase() === replPort.trim().toUpperCase()) {
+                return 'This is the project REPL/upload port. The debugger requires the OTHER COM port.';
+            }
+            return null;
+        }
     });
-    if (!port) return;
-    openDebuggerPanel(context, port, venvPython);
+    if (!portInput) return;
+    openDebuggerPanel(context, portInput.trim(), venvPython);
 }
 
 function getHtml(buildInfo) {
