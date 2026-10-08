@@ -20,7 +20,7 @@ suite('Debug firmware release safety', () => {
     test('download guide does not silently flash unvalidated firmware', () => {
         assert.ok(ext.includes('vscode.env.openExternal(uri)'));
         assert.ok(ext.includes("board.download_url"));
-        assert.ok(ext.includes('experimental test firmware'));
+        assert.ok(ext.includes('Experimental debugger firmware for debugging and testing your own code ONLY. NOT FOR PRODUCTION USE.'));
         assert.ok(!dbg.includes('uploadDebuggerFiles'));
     });
 });

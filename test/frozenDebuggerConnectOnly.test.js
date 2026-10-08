@@ -21,7 +21,7 @@ suite('Firmware-first debugger workflow', () => {
     test('firmware command navigates only, never flashes or overwrites boot.py', () => {
         assert.ok(ext.includes("board.download_url"));
         assert.ok(ext.includes("vscode.env.openExternal(uri)"));
-        assert.ok(ext.includes('experimental test firmware'));
+        assert.ok(ext.includes('Experimental debugger firmware for debugging and testing your own code ONLY. NOT FOR PRODUCTION USE.'));
         assert.ok(!ext.includes("Firmware flashed. Pico is rebooting."));
         assert.ok(!dbg.includes("'--overwrite'"));
     });

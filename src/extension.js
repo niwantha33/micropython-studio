@@ -1312,7 +1312,7 @@ function activate(context) {
                 ? 'ESP32-S3 requires the matching flash files and instructions.'
                 : 'Choose only the UF2 for your board.';
             const answer = await vscode.window.showWarningMessage(
-                `${board.label}: experimental test firmware, not hardware-approved. ${extra}`,
+                `${board.label}: Experimental debugger firmware for debugging and testing your own code ONLY. NOT FOR PRODUCTION USE. Back up your device files before flashing. Download only opens the firmware file; Studio does not flash it. ${extra}`,
                 { modal: true }, 'Download', 'View files'
             );
             if (!answer) return;
