@@ -1930,7 +1930,7 @@ function getWebviewContent(metrics) {
                                 </label>
                                 <div>
                                     <div class="toggle-label">Enable Wireless Access (WebREPL)</div>
-                                    <div class="toggle-sub">Upload code &amp; use REPL over Wi-Fi — no USB needed</div>
+                                    <div class="toggle-sub">Optional · PC must reach this board on TCP 8266. USB REPL/debugger work without it.</div>
                                 </div>
                             </div>
                             <div id="webReplInfoBox" style="display:none"></div>\`;
