@@ -197,6 +197,8 @@ class AiAssistanceProvider {
     static MODEL_VERSION = '0.8.4';
 
     async _installModel(forceReinstall = false) {
+        if (this._installationBusy) return;
+        this._installationBusy = true;
         const pythonPath = this._getPythonPath();
         const scriptPath = path.join(this._extensionUri.fsPath, 'src', 'ollama_helper.py');
         const modelfilePath = path.join(this._extensionUri.fsPath, 'resource', 'Modelfile-mpy');
@@ -216,9 +218,24 @@ class AiAssistanceProvider {
             args = [scriptPath, command, modelfilePath];
         }
 
-        const proc = spawn(pythonPath, args);
-
+        let proc;
+        try { proc = spawn(pythonPath, args); }
+        catch (err) {
+            this._installationBusy = false;
+            this._view?.webview.postMessage({ type: 'error', value: err.message });
+            return;
+        }
         let buffer = '';
+        let installFailed = false;
+        let finished = false;
+        const fail = message => {
+            if (finished) return;
+            finished = true;
+            this._installationBusy = false;
+            this._view?.webview.postMessage({ type: 'error', value: message });
+        };
+        proc.on('error', err => fail('Cannot run local model installer: ' + err.message));
+        const timer = setTimeout(() => { proc.kill(); fail('Model installation timed out (15 minutes)'); }, 15 * 60 * 1000);
         proc.stdout.on('data', (d) => {
             buffer += d.toString();
             const lines = buffer.split('\n');
@@ -227,6 +244,10 @@ class AiAssistanceProvider {
             for (const line of lines) {
                 try {
                     const status = JSON.parse(line.trim());
+                    if (status.error || status.success === false) {
+                        installFailed = true;
+                        this._view?.webview.postMessage({ type: 'installProgress', value: status.error || 'Model creation failed' });
+                    }
                     if (status.status) {
                         let msg = status.status;
                         if (status.total && status.completed) {
@@ -244,7 +265,11 @@ class AiAssistanceProvider {
         });
 
         proc.on('close', (code) => {
-            if (code === 0) {
+            clearTimeout(timer);
+            if (finished) return;
+            finished = true;
+            this._installationBusy = false;
+            if (code === 0 && !installFailed) {
                 // Save the model version so we don't reinstall again
                 this._context.globalState.update('aiModelVersion', AiAssistanceProvider.MODEL_VERSION);
                 if (this._view) {
@@ -262,6 +287,21 @@ class AiAssistanceProvider {
     // ─── Chat (direct HTTP streaming — no Python, no CLI) ───────
 
     async _handleChat(message) {
+        if (this._chatBusy) return;
+        const initialHistory = this._history.slice();
+        this._chatBusy = true;
+        try {
+            await this._runChat(message);
+        } catch (err) {
+            this._history = initialHistory;
+            this._view?.webview.postMessage({ type: 'chatResponse', value: '\n❌ AI Error: ' + err.message });
+            this._view?.webview.postMessage({ type: 'chatDone' });
+        } finally {
+            this._chatBusy = false;
+        }
+    }
+
+    async _runChat(message) {
         // -------------------------------
         // 1. FILE CONTEXT (current editor)
         // -------------------------------
@@ -282,7 +322,11 @@ class AiAssistanceProvider {
         const contextData = await this._getContext();
         const firmware = this._firmwareOverride || contextData.firmware;
         const isCircuitPython = typeof firmware === 'string' && firmware.toLowerCase().includes('circuitpython');
-        const modelName = isCircuitPython ? 'micro_ai-cpy' : 'micro_ai-mpy';
+        const preferred = isCircuitPython ? 'micro_ai-cpy' : 'micro_ai-mpy';
+        const modelName = this._models.includes(this._selectedModel) && this._selectedModel
+            ? this._selectedModel
+            : (this._models.includes(preferred) ? preferred : this._models[0]);
+        if (!modelName) throw new Error('No Ollama model installed. Open Local AI setup first.');
         // const aiFooter = isCircuitPython ? '[CircuitPython Studio AI]' : '[MicroPython Studio AI]';
 
         // -------------------------------
@@ -320,9 +364,8 @@ device_firmware = ${firmware}
         // -------------------------------
         // 6. FINAL PROMPT (ephemeral — not saved to history)
         // -------------------------------
-        const latestPrompt = deviceOutput
-            ? `${message}\n\n<device_output>\n${deviceOutput}\n</device_output>`
-            : message + systemContext;
+        const latestPrompt = `${message}\n\n${systemContext}` +
+            (deviceOutput ? `\n\n<device_output>\n${deviceOutput.slice(0, 4000)}\n</device_output>` : '');
 
         // Replace last history entry with context-rich prompt for the API call
         const messagesToSend = [...this._history];
@@ -357,15 +400,7 @@ device_firmware = ${firmware}
                 }
             }, (chunk) => {
                 // Handle Ollama-level error inside stream
-                if (chunk.error) {
-                    this._view.webview.postMessage({
-                        type: 'chatResponse',
-                        value: `\n❌ ${chunk.error}`
-                    });
-                    return;
-                }
-
-                if (chunk.message && chunk.message.content) {
+                 if (chunk.message && chunk.message.content) {
                     rawAccumulated += chunk.message.content;
 
                     // Strip completed <think>...</think> blocks from full accumulated text
@@ -410,14 +445,8 @@ device_firmware = ${firmware}
                 this._context.workspaceState.update('aiChatHistory', this._history);
             }
             this._view.webview.postMessage({ type: 'chatDone' });
-
         } catch (err) {
-            console.error('❌ Chat failed:', err);
-            this._view.webview.postMessage({
-                type: 'chatResponse',
-                value: `\n❌ AI Error: ${err.message}`
-            });
-            this._view.webview.postMessage({ type: 'chatDone' });
+            throw err;
         }
     }
 
