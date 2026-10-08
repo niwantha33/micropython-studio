@@ -28,55 +28,8 @@ const { startDebugger } = require('./mpyDebugger');
 const { openWebReplTerminal } = require('./webrepl_bridge.py');
 const { startSimulator, stopSimulator } = require('./simulator');
 
-// Download a URL to a local path, following redirects.
-function downloadFile(url, dest, redirects = 5) {
-    const https = require('https');
-    const fs = require('fs');
-    return new Promise((resolve, reject) => {
-        const req = https.get(url, (res) => {
-            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
-                res.resume();
-                return resolve(downloadFile(res.headers.location, dest, redirects - 1));
-            }
-            if (res.statusCode !== 200) {
-                res.resume();
-                return reject(new Error('HTTP ' + res.statusCode));
-            }
-            const file = fs.createWriteStream(dest);
-            res.pipe(file);
-            file.on('finish', () => file.close(() => resolve(dest)));
-            file.on('error', reject);
-        });
-        req.on('error', reject);
-        req.setTimeout(30000, () => req.destroy(new Error('timeout')));
-    });
-}
-
-// Detect a Pico in BOOTSEL mode by looking for a drive containing INFO_UF2.TXT
-// with a Raspberry Pi RP2350 / RP2040 board ID. Returns the mount path or null.
-async function findPicoBootselDrive() {
-    const fs = require('fs');
-    const path = require('path');
-    const candidates = [];
-    if (process.platform === 'win32') {
-        for (let c = 67; c <= 90; c++) candidates.push(String.fromCharCode(c) + ':\\');
-    } else if (process.platform === 'darwin') {
-        candidates.push('/Volumes/RPI-RP2', '/Volumes/RP2350');
-    } else {
-        const u = process.env.USER || 'user';
-        candidates.push(`/media/${u}/RPI-RP2`, `/media/${u}/RP2350`, `/run/media/${u}/RPI-RP2`, `/run/media/${u}/RP2350`);
-    }
-    for (const d of candidates) {
-        try {
-            const info = path.join(d, 'INFO_UF2.TXT');
-            if (fs.existsSync(info)) {
-                const txt = fs.readFileSync(info, 'utf8');
-                if (/RP2350|RP2040|Raspberry Pi/i.test(txt)) return d;
-            }
-        } catch (_) { /* skip */ }
-    }
-    return null;
-}
+// Firmware downloads are now deliberate browser actions to board-specific CI artifacts.
+// Never automatically flash an unvalidated debugger firmware or overwrite device files.
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
