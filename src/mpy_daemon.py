@@ -31,7 +31,8 @@ def log_to_file(msg: str):
     pass
 
 def _get_lock_path(port: str) -> str:
-    lock_name = f"mps_lock_{port.replace('/', '_').replace('\\\\', '_').replace('\\', '_').replace(':', '_')}.lock"
+    safe_port = port.replace("\\", "_").replace("/", "_").replace(":", "_")
+    lock_name = f"mps_lock_{safe_port}.lock"
     return os.path.join(tempfile.gettempdir(), lock_name)
 
 def _acquire_lock(port: str) -> bool:
