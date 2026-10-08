@@ -26,18 +26,18 @@ function buildWebReplStatusScript() {
         "            print('MPS_WEBREPL_STATUS|RUNNING|' + _mps_ip)",
         'except Exception as _mps_err:',
         "    print('MPS_WEBREPL_ERROR|' + type(_mps_err).__name__ + ': ' + str(_mps_err))",
-    ].join('\\n');
+    ].join('\n');
 }
 
 function parseWebReplStatus(raw) {
-    const lines = String(raw || '').split(/\\r?\\n/).map(s => s.trim());
+    const lines = String(raw || '').split(/\r?\n/).map(s => s.trim());
     const err = lines.find(x => x.startsWith(ERROR));
     if (err) throw new Error(err.slice(ERROR.length).slice(0,260));
     const statusLine = lines.find(x => x.startsWith(STATUS));
     if (!statusLine) throw new Error('Board did not report WebREPL status over USB REPL.');
     const [, state, ip] = statusLine.split('|');
     if (!['RUNNING', 'STOPPED', 'UNKNOWN'].includes(state) ||
-        !/^\\d{1,3}(?:\\.\\d{1,3}){3}$/.test(ip || '') ||
+        !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip || '') ||
         ip.split('.').some(x => Number(x) > 255)) {
         throw new Error('Invalid WebREPL status from board.');
     }
