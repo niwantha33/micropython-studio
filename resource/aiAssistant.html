@@ -535,6 +535,31 @@
             return text.replace(/[&<>"']/g, function(m) { return map[m]; });
         }
 
+        // Local AI must still render text without access to CDNs.
+        // Remote Markdown/highlighter assets are optional enhancements only.
+        const marked = window.marked || {
+            _renderer: null,
+            use(options) { this._renderer = options.renderer; },
+            setOptions() {},
+            parse(input) {
+                const pieces = String(input || '').split(/(```[\s\S]*?```)/g);
+                return pieces.map(part => {
+                    if (part.startsWith('```') && part.endsWith('```')) {
+                        const firstBreak = part.indexOf('\n');
+                        const lang = firstBreak > 0 ? part.slice(3, firstBreak).trim() : '';
+                        const code = firstBreak > 0 ? part.slice(firstBreak + 1, -3) : part.slice(3, -3);
+                        return this._renderer.code({ text: code, lang });
+                    }
+                    return escapeHtml(part).replace(/\n/g, '<\u0062r>');
+                }).join('');
+            }
+        };
+        const hljs = window.hljs || {
+            getLanguage() { return false; },
+            highlightAuto(code) { return { value: escapeHtml(code) }; },
+            highlightElement() {}
+        };
+
         // Configure Modern Markdown Parser (marked.js v10+)
         marked.use({
             renderer: {
