@@ -1310,7 +1310,7 @@ function activate(context) {
     function loadDebugFirmwareConfig() {
         const cfgPath = path.join(context.extensionPath, 'src', 'debug_firmware.json');
         try {
-            const cfg = JSON.parse(fsSync.readFileSync(cfgPath, 'utf8'));
+            const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
             return Array.isArray(cfg.boards) ? cfg.boards : [];
         } catch (e) {
             vscode.window.showErrorMessage('Cannot load debug firmware catalog: ' + e.message);
