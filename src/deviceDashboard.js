@@ -2517,10 +2517,10 @@ print('OK')
               : "Start WebREPL for this session: choose a password different from your Wi-Fi password",
             value: savedSecret || "",
             password: true,
-            placeHolder: "4–64 characters",
+            placeHolder: "4–9 characters",
             ignoreFocusOut: true,
-            validateInput: value => value.length >= 4 && value.length <= 64
-              ? null : "Use 4–64 characters",
+            validateInput: value => value.length >= 4 && value.length <= 9
+              ? null : "Use 4–9 characters",
           });
           if (secret === undefined) {
             panel.webview.postMessage({ command: "webReplCancelled" });
