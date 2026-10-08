@@ -6,6 +6,12 @@ This branch fixes two independent problems:
 1. The WebREPL host console previously used binary frames for login, did not verify authentication, and could start before the webview was ready.
 2. Dashboard **Enable Wireless Access** used a separate serial subprocess, could hang, overwrote `boot.py`, hardcoded a WebREPL password and did **not** save `device.cfg` until an unrelated “Switch” action.
 
+## What users need to know
+
+WebREPL is **optional**. USB REPL and the frozen debugger work without it. For wireless access, the board must have Wi-Fi connected, MicroPython's WebREPL listener must be running, and the PC must have an IP route to the board with TCP port **8266** permitted. Merely displaying a Wi-Fi IP in the Dashboard does not prove that the PC can connect to WebREPL.
+
+Some user-defined `boot.py` recovery logic intentionally skips Wi-Fi/WebREPL when USB activity is detected. Do not overwrite that boot script or promise WebREPL starts automatically. If a PC and board use different IP ranges, communication may still work through a router, but it needs a working route. An unreachable port is a **network/server** issue, not proof the debugger is broken.
+
 ## Safe workflow
 
 1. Keep the Pico W on the existing **USB REPL COM** (CDC0). Leave the frozen debugger on its separate USB CDC port.
