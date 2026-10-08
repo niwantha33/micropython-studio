@@ -59,8 +59,8 @@ function resolveUsbReplPort(selectedPort, manager) {
 }
 
 function buildSessionWebReplScript(password) {
-    if (typeof password !== 'string' || password.length < 4 || password.length > 64) {
-        throw new Error('WebREPL password must contain 4–64 characters.');
+    if (typeof password !== 'string' || password.length < 4 || password.length > 9) {
+        throw new Error('WebREPL password must contain 4–9 characters.');
     }
     // JSON string syntax is valid for ordinary Python unicode string literals.
     return [
