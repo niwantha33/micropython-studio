@@ -148,7 +148,8 @@ async function getConfigValue(configPath, section, key) {
  * @param {string} newValue - New value to set
  */
 async function updateCfgComponent(cfgFilePath, section, key, newValue) {
-    console.log(`Updating ${cfgFilePath} -> [${section}] ${key} = "${newValue}"`);
+    const displayValue = /password|secret|token|api[_-]?key/i.test(key) ? '[REDACTED]' : newValue;
+    console.log(`Updating ${cfgFilePath} -> [${section}] ${key} = "${displayValue}"`);
 
     try {
         const data = await fs.readFile(cfgFilePath, 'utf8');
@@ -203,7 +204,7 @@ async function updateCfgComponent(cfgFilePath, section, key, newValue) {
         }
 
         await fs.writeFile(cfgFilePath, newLines.join('\n'));
-        console.log(`Updated ${key} in [${section}] to "${newValue}"`);
+        console.log(`Updated ${key} in [${section}] to "${displayValue}"`);
     } catch (err) {
         console.error(`Error updating config: ${err.message}`);
         throw err;

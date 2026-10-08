@@ -1,182 +1,7 @@
 const vscode = require('vscode');
 const path = require('path');
-const net = require('net');
-const crypto = require('crypto');
+const { WebReplClient } = require('./webreplClient');
 const { getConfigValue } = require('./commonFxn');
-
-// ─── Node.js WebREPL WebSocket Client ────────────────────────────────────────
-// Runs entirely in the extension host — no browser-side WebSocket needed.
-
-class WebReplClient {
-    constructor(host, password, port = 8266) {
-        this.host = host;
-        this.password = password;
-        this.port = port;
-        this.socket = null;
-        this._buf = Buffer.alloc(0);
-        this._handshakeDone = false;
-        this._authenticated = false;
-
-        // Callbacks set by caller
-        this.onData = null;          // (Buffer) → void
-        this.onConnect = null;       // () → void
-        this.onDisconnect = null;    // (reason: string) → void
-    }
-
-    connect() {
-        this.socket = net.createConnection(this.port, this.host);
-        this.socket.setTimeout(10000);
-
-        this.socket.on('connect', () => {
-            this.socket.setTimeout(0);
-            const key = crypto.randomBytes(16).toString('base64');
-            this.socket.write(
-                `GET / HTTP/1.1\r\n` +
-                `Host: ${this.host}:${this.port}\r\n` +
-                `Upgrade: websocket\r\n` +
-                `Connection: Upgrade\r\n` +
-                `Sec-WebSocket-Key: ${key}\r\n` +
-                `Sec-WebSocket-Version: 13\r\n` +
-                `\r\n`
-            );
-        });
-
-        this.socket.on('data', (chunk) => {
-            if (!this._handshakeDone) {
-                this._buf = Buffer.concat([this._buf, chunk]);
-                const sep = this._buf.indexOf('\r\n\r\n');
-                if (sep !== -1) {
-                    this._handshakeDone = true;
-                    const rest = this._buf.slice(sep + 4);
-                    this._buf = Buffer.alloc(0);
-                    if (rest.length > 0) this._handleWsData(rest);
-                }
-            } else {
-                this._handleWsData(chunk);
-            }
-        });
-
-        this.socket.on('timeout', () => {
-            this.socket.destroy();
-            if (this.onDisconnect) this.onDisconnect('Connection timed out');
-        });
-
-        this.socket.on('error', (err) => {
-            if (this.onDisconnect) this.onDisconnect(err.message);
-        });
-
-        this.socket.on('close', () => {
-            if (this.onDisconnect) this.onDisconnect('Disconnected');
-        });
-    }
-
-    _handleWsData(chunk) {
-        this._buf = Buffer.concat([this._buf, chunk]);
-        while (this._buf.length >= 2) {
-            const opcode = this._buf[0] & 0x0f;
-            const masked = (this._buf[1] & 0x80) !== 0;
-            let payloadLen = this._buf[1] & 0x7f;
-            let offset = 2;
-
-            if (payloadLen === 126) {
-                if (this._buf.length < 4) return;
-                payloadLen = (this._buf[2] << 8) | this._buf[3];
-                offset = 4;
-            } else if (payloadLen === 127) {
-                if (this._buf.length < 10) return;
-                payloadLen = this._buf.readUInt32BE(6);
-                offset = 10;
-            }
-
-            const maskBytes = masked ? 4 : 0;
-            const total = offset + maskBytes + payloadLen;
-            if (this._buf.length < total) return;
-
-            let payload = Buffer.from(this._buf.slice(offset + maskBytes, total));
-            if (masked) {
-                const mask = this._buf.slice(offset, offset + 4);
-                for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
-            }
-            this._buf = this._buf.slice(total);
-
-            if (opcode === 8) { // close frame
-                this.socket.destroy();
-                return;
-            }
-            if (opcode === 1 || opcode === 2) { // text or binary
-                // Auto-authenticate
-                if (!this._authenticated && payload.toString().includes('Password')) {
-                    this._sendFrame(Buffer.from(this.password + '\r\n'));
-                    this._authenticated = true;
-                    if (this.onConnect) this.onConnect();
-                } else if (this._authenticated && this.onData) {
-                    this.onData(payload);
-                }
-            }
-        }
-    }
-
-    _sendFrame(payload, opcode = 0x82) {
-        if (!this.socket || this.socket.destroyed) return;
-        if (typeof payload === 'string') payload = Buffer.from(payload);
-        const mask = crypto.randomBytes(4);
-        const masked = Buffer.alloc(payload.length);
-        for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ mask[i % 4];
-
-        let hdr;
-        if (payload.length < 126) {
-            hdr = Buffer.from([opcode, 0x80 | payload.length, ...mask]);
-        } else if (payload.length < 65536) {
-            hdr = Buffer.from([opcode, 0x80 | 126,
-                (payload.length >> 8) & 0xff, payload.length & 0xff, ...mask]);
-        } else {
-            // 64-bit extended length (high 32 bits always 0 for sane file sizes)
-            hdr = Buffer.from([opcode, 0x80 | 127,
-                0, 0, 0, 0,
-                (payload.length >>> 24) & 0xff, (payload.length >>> 16) & 0xff,
-                (payload.length >>> 8) & 0xff, payload.length & 0xff,
-                ...mask]);
-        }
-        this.socket.write(Buffer.concat([hdr, masked]));
-    }
-
-    /** Drain-aware version: returns a Promise that resolves once the OS
-     *  TCP send buffer has flushed, preventing backpressure overflows. */
-    _sendFrameAsync(payload, opcode = 0x82) {
-        return new Promise((resolve, reject) => {
-            if (!this.socket || this.socket.destroyed) return reject(new Error('Socket closed'));
-            if (typeof payload === 'string') payload = Buffer.from(payload);
-            const mask = crypto.randomBytes(4);
-            const masked = Buffer.alloc(payload.length);
-            for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ mask[i % 4];
-
-            let hdr;
-            if (payload.length < 126) {
-                hdr = Buffer.from([opcode, 0x80 | payload.length, ...mask]);
-            } else if (payload.length < 65536) {
-                hdr = Buffer.from([opcode, 0x80 | 126,
-                    (payload.length >> 8) & 0xff, payload.length & 0xff, ...mask]);
-            } else {
-                hdr = Buffer.from([opcode, 0x80 | 127,
-                    0, 0, 0, 0,
-                    (payload.length >>> 24) & 0xff, (payload.length >>> 16) & 0xff,
-                    (payload.length >>> 8) & 0xff, payload.length & 0xff,
-                    ...mask]);
-            }
-            const ok = this.socket.write(Buffer.concat([hdr, masked]));
-            if (ok) resolve();
-            else this.socket.once('drain', resolve);
-        });
-    }
-
-    send(data) { this._sendFrame(data, 0x82); }              // binary frame
-    sendText(data) { this._sendFrame(data, 0x81); }          // text frame
-    sendAsync(data) { return this._sendFrameAsync(data, 0x82); } // binary, drain-aware
-
-    disconnect() {
-        if (this.socket) { this.socket.destroy(); this.socket = null; }
-    }
-}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -215,7 +40,7 @@ async function openWebReplTerminal(context, devicePort) {
     const creds = await resolveWebReplCredentials(devicePort);
     if (!creds) {
         vscode.window.showErrorMessage(
-            'WebREPL not configured. Enable it from Device Dashboard → Wi-Fi Manager.'
+            'WebREPL is optional. To use it, start WebREPL on the board through Wi-Fi Manager, then make sure this PC can reach the board on TCP port 8266. USB REPL and debugging work without WebREPL.'
         );
         return;
     }
@@ -417,8 +242,26 @@ async function openWebReplTerminal(context, devicePort) {
         panel.webview.postMessage({ type: 'status', state: 'disconnected', reason });
     };
 
-    // Forward keystrokes / file commands from webview → board
+    // Start only after the webview has installed its message listener;
+    // otherwise fast TCP errors/auth status arrive before UI is ready.
+    let uiReady = false;
     panel.webview.onDidReceiveMessage((msg) => {
+        if (msg.type === 'ready') {
+            if (uiReady) return;
+            uiReady = true;
+            panel.webview.postMessage({type:'status', state:'connecting', ip});
+            client.connect();
+            return;
+        }
+        if (msg.type === 'reconnect') {
+            if (!uiReady) return;
+            binaryState = 0;
+            incomingBuf = Buffer.alloc(0);
+            panel.webview.postMessage({type:'status', state:'connecting', ip});
+            client.connect();
+            return;
+        }
+        if (client.state !== 'connected') return;
         if (msg.type === 'input') {
             if (binaryState !== 0) return; // ignore keystrokes during file transfer
             client.sendText(Buffer.from(msg.data));
@@ -441,7 +284,6 @@ async function openWebReplTerminal(context, devicePort) {
 
     panel.onDidDispose(() => client.disconnect());
 
-    client.connect();
 }
 
 // ─── Webview HTML ─────────────────────────────────────────────────────────────
@@ -468,7 +310,7 @@ function getHtml(ip, csp, termJsUri, fileSaverUri, cssUri) {
         <span style="font-size: 11px; opacity: 0.7;">${ip}</span>
     </div>
     <div class="header-actions">
-        <button onclick="window.location.reload()" title="Hard Refresh UI">Refresh</button>
+        <button onclick="vscodeApi.postMessage({type:'reconnect'})" title="Reconnect to WebREPL">Reconnect</button>
     </div>
 </header>
 
@@ -551,7 +393,8 @@ window.onload = function() {
         vscodeApi.postMessage({ type: 'input', data: bytes });
     });
     
-    // Initial focus
+    // Webview is now ready to receive connection/authentication status.
+    vscodeApi.postMessage({ type: 'ready' });
     setTimeout(() => term.focus(), 100);
 };
 
@@ -568,14 +411,22 @@ window.addEventListener('message', function(event) {
     } else if (msg.type === 'status') {
         const dot = document.getElementById('status-dot');
         const txt = document.getElementById('status-text');
-        if (msg.state === 'connected') {
+        if (msg.state === 'connecting') {
+            dot.className = '';
+            txt.textContent = 'CONNECTING';
+            term.write('Connecting to WebREPL on ${ip}:8266...\\r\\n');
+        } else if (msg.state === 'connected') {
             dot.className = 'ok';
             txt.textContent = 'CONNECTED';
-            term.write('\\x1b[38;5;48m✔ WebREPL connected to ${ip}\\x1b[m\\r\\n');
+            term.write('\\x1b[38;5;48m✔ WebREPL authenticated\\x1b[m\\r\\n');
         } else {
             dot.className = '';
             txt.textContent = 'DISCONNECTED';
-            term.write('\\x1b[38;5;203m✘ Disconnected: ' + (msg.reason || 'Server closed') + '\\x1b[m\\r\\n');
+            const reason = msg.reason || 'Server closed';
+            term.write('\\x1b[38;5;203m✘ WebREPL: ' + reason + '\\x1b[m\\r\\n');
+            if (/timed out|refused|unreach|cannot reach|handshake|server closed|connect/i.test(reason)) {
+                term.write('Check that WebREPL is running on the board and this PC can reach its IP on TCP 8266. USB REPL/debugging do not need WebREPL.\\r\\n');
+            }
         }
     } else if (msg.type === 'fileStatus') {
         document.getElementById('file-status').innerHTML = msg.html;

@@ -4,7 +4,11 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { runMpremote } = require("./runCommand");
 const wsQueue = require("./wsQueue");
+
+const { buildSessionWebReplScript, parseSessionWebReplResult, buildWebReplStatusScript, parseWebReplStatus, resolveUsbReplPort } = require("./webreplSession");
+
 const { buildWifiScanScript, parseWifiScanOutput } = require("./wifiScan");
+
 const { scanWorkspacePins } = require("./pinScanner");
 const {
   updateCfgComponent,
@@ -1592,7 +1596,7 @@ function getWebviewContent(metrics) {
                     </label>
                     <div>
                         <div class="toggle-label">Enable Wireless Access (WebREPL)</div>
-                        <div class="toggle-sub">Lets you upload code &amp; use REPL over Wi-Fi — no USB cable needed</div>
+                        <div class="toggle-sub">Optional · PC must reach this board on TCP 8266. USB REPL/debugger work without it.</div>
                     </div>
                 </div>
                 <div id="webReplInfoBox" style="display:none"></div>
@@ -1604,13 +1608,13 @@ function getWebviewContent(metrics) {
                 ? `
             <div class="webrepl-ip-box" id="webReplActiveBox">
                 <div style="flex:1">
-                    <div class="webrepl-ip-label">⭐ Remote Access Active  ·  Password: micro123</div>
+                    <div class="webrepl-ip-label">WebREPL · Session status</div>
                     <div class="webrepl-ip-val">${metrics.bootLog.ip}</div>
-                    <div style="font-size:11px;color:#94a3b8;margin-top:4px">Auto-starts on every boot</div>
+                    <div style="font-size:11px;color:#94a3b8;margin-top:4px">Existing boot configuration unchanged</div>
                 </div>
                 <div style="display:flex;flex-direction:column;gap:6px">
                     <button class="btn btn-warning" id="switchWirelessBtnStatic">⚡ Switch to Wireless</button>
-                    <button class="btn btn-danger btn-sm" id="disableRemoteBtnBox">🔒 Disable</button>
+                    <button class="btn btn-danger btn-sm" id="disableRemoteBtnBox">Stop WebREPL</button>
                 </div>
             </div>`
                 : ""
@@ -1665,7 +1669,7 @@ function getWebviewContent(metrics) {
                 if (webReplToggle.checked) {
                     webReplToggle.disabled = true;
                     document.getElementById('webReplInfoBox').innerHTML =
-                        '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Starting WebREPL daemon…</div>';
+                        '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Checking WebREPL…</div>';
                     document.getElementById('webReplInfoBox').style.display = 'block';
                     vscode.postMessage({ command: 'enableWebrepl', ssid: window._mpsLastSsid || '', password: window._mpsLastPassword || '' });
                 } else {
@@ -1900,7 +1904,7 @@ function getWebviewContent(metrics) {
                 document.getElementById('connectBtn').addEventListener('click', () => {
                     const ssid = document.getElementById('ssidSelect').value;
                     const password = document.getElementById('wifiPassword').value;
-                    // Store credentials so the WebREPL enable handler can embed them in boot.py
+                    // Wi-Fi credentials remain in memory for existing Wi-Fi connect flow. Do not embed them in boot.py.
                     window._mpsLastSsid = ssid;
                     window._mpsLastPassword = password;
                     document.getElementById('connectStatus').innerHTML =
@@ -1947,7 +1951,7 @@ function getWebviewContent(metrics) {
                                 </label>
                                 <div>
                                     <div class="toggle-label">Enable Wireless Access (WebREPL)</div>
-                                    <div class="toggle-sub">Upload code &amp; use REPL over Wi-Fi — no USB needed</div>
+                                    <div class="toggle-sub">Optional · PC must reach this board on TCP 8266. USB REPL/debugger work without it.</div>
                                 </div>
                             </div>
                             <div id="webReplInfoBox" style="display:none"></div>\`;
@@ -1957,7 +1961,7 @@ function getWebviewContent(metrics) {
                             if (this.checked) {
                                 this.disabled = true;
                                 document.getElementById('webReplInfoBox').innerHTML =
-                                    '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Starting WebREPL daemon…</div>';
+                                    '<div style="display:flex;align-items:center;gap:10px;color:#94a3b8"><div class="spinner"></div> Checking WebREPL…</div>';
                                 document.getElementById('webReplInfoBox').style.display = 'block';
                                 vscode.postMessage({ command: 'enableWebrepl', ssid: window._mpsLastSsid || '', password: window._mpsLastPassword || '' });
                             } else {
@@ -1971,18 +1975,36 @@ function getWebviewContent(metrics) {
                 }
             }
 
+            if (msg.command === 'webReplError') {
+                const toggle = document.getElementById('webReplToggle');
+                if (toggle) { toggle.checked = false; toggle.disabled = false; }
+                const box = document.getElementById('webReplInfoBox');
+                if (box) {
+                    box.style.display = 'block';
+                    box.replaceChildren();
+                    const err = document.createElement('div');
+                    err.style.color = '#ef4444';
+                    err.textContent = 'WebREPL failed: ' + (msg.message || 'Unknown error');
+                    box.appendChild(err);
+                }
+                return;
+            }
             if (msg.command === 'webReplEnabled') {
                 const box = document.getElementById('webReplInfoBox');
+                if (!box) return;
+                box.style.display = 'block';
+                const toggle = document.getElementById('webReplToggle');
+                if (toggle) { toggle.checked = true; toggle.disabled = false; }
                 box.innerHTML = \`
                     <div class="webrepl-ip-box">
                         <div style="flex:1">
-                            <div class="webrepl-ip-label">⭐ Remote Access Active  ·  Password: micro123</div>
+                            <div class="webrepl-ip-label">WebREPL · Listening</div>
                             <div class="webrepl-ip-val">\${msg.ip}</div>
-                            <div style="font-size:11px;color:#10b981;margin-top:4px">Auto-starts on every boot (boot.py updated)</div>
+                            <div style="font-size:11px;color:#10b981;margin-top:4px">Listener active — boot.py unchanged</div>
                         </div>
                         <div style="display:flex;flex-direction:column;gap:6px">
                             <button class="btn btn-warning" id="switchWirelessBtn">⚡ Switch to Wireless</button>
-                            <button class="btn btn-danger btn-sm" id="disableRemoteBtnInBox">🔒 Disable</button>
+                            <button class="btn btn-danger btn-sm" id="disableRemoteBtnInBox">Stop WebREPL</button>
                         </div>
                     </div>\`;
 
@@ -2139,6 +2161,43 @@ async function runDeviceScript(
       if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     }
   }, "Dashboard " + tempName, true);
+}
+
+/**
+ * WebREPL setup MUST use the already-open USB REPL daemon. Starting another
+ * mpremote/backend process competes for COM and makes the UI appear stuck.
+ * Do not touch boot.py or install MicroPython helper files.
+ */
+async function runWebReplSessionCode(code, selectedPort) {
+  const manager = require("./connectionManager");
+  return wsQueue.run(async () => {
+    if (!selectedPort || selectedPort.startsWith("ws:")) {
+      throw new Error("Connect the USB serial REPL before enabling WebREPL.");
+    }
+    if (!manager.isConnected || manager.portName !== selectedPort) {
+      throw new Error("USB REPL is not connected to the dashboard port. Connect it and retry.");
+    }
+    if (manager.isSuspended) {
+      throw new Error("USB REPL is busy with another operation. Wait and retry.");
+    }
+    let timer;
+    try {
+      const result = await Promise.race([
+        manager.runCodeSilently(code),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(
+            "WebREPL startup did not respond within 20 seconds. Check the Serial REPL and try again after it becomes idle."
+          )), 20000);
+        }),
+      ]);
+      if (result.stderr && result.stderr.trim()) {
+        throw new Error("Device WebREPL startup error: " + result.stderr.trim().slice(0, 400));
+      }
+      return result.stdout || "";
+    } finally {
+      clearTimeout(timer);
+    }
+  }, "WebREPL session", true);
 }
 
 /**
@@ -2418,245 +2477,102 @@ print('OK')
       }
 
       if (message.command === "enableWebrepl") {
-        // CircuitPython does not support WebREPL — uses Web Workflow via settings.toml instead
-        const cfgPathWr = path.join(workspaceRoot, "device.cfg");
-        const fwType = await getConfigValue(
-          cfgPathWr,
-          "device",
-          "device_firmware",
-        ).catch(() => "");
-        if (fwType === "CircuitPython") {
-          panel.webview.postMessage({
-            command: "wifiConnectError",
-            message:
-              "WebREPL is not supported on CircuitPython. Use Web Workflow via settings.toml instead.",
-          });
-          return;
-        }
+        // The board can already have WebREPL running from an existing boot.py.
+        // NEVER call webrepl.start() again just because Dashboard selected ws:.
+        const cfgPath = path.join(workspaceRoot, "device.cfg");
+        try {
+          const fwType = await getConfigValue(cfgPath, "device", "device_firmware");
+          if (fwType === "CircuitPython") {
+            throw new Error("CircuitPython uses Web Workflow, not MicroPython WebREPL.");
+          }
+          const manager = require("./connectionManager");
+          const serialPort = resolveUsbReplPort(activePort, manager);
+          if (!serialPort) {
+            throw new Error("No connected USB REPL available to check WebREPL. Select the board's USB COM port in Studio; the existing wireless listener is not changed.");
+          }
+          const status = parseWebReplStatus(
+            await runWebReplSessionCode(buildWebReplStatusScript(), serialPort)
+          );
+          const wirelessMatch = /^ws:([^,]+)/.exec(activePort || "");
+          if (wirelessMatch && wirelessMatch[1] !== status.ip) {
+            throw new Error("The wireless IP differs from the board on " + serialPort + ". Select the correct device before continuing.");
+          }
+          if (status.state === "UNKNOWN") {
+            throw new Error("This firmware cannot report WebREPL listener status safely. Use the existing WebREPL console or check its port; no board changes were made.");
+          }
 
-        let ssid = message.ssid || "";
-        let password = message.password || "";
-
-        // If credentials weren't sent from webview (board was already connected
-        // when dashboard opened), ask the user now
-        if (!ssid) {
-          ssid = await vscode.window.showInputBox({
-            prompt:
-              "Enter your Wi-Fi network name (SSID) for auto-connect on boot",
-            placeHolder: "e.g. MyHomeNetwork",
+          const running = status.state === "RUNNING";
+          const savedSecret = running
+            ? await getConfigValue(cfgPath, "remote", "webrepl_password") : null;
+          const secret = await vscode.window.showInputBox({
+            prompt: running
+              ? "WebREPL is already running. Enter its EXISTING password (no restart)."
+              : "Start WebREPL for this session: choose a password different from your Wi-Fi password",
+            value: savedSecret || "",
+            password: true,
+            placeHolder: "4–9 characters",
+            ignoreFocusOut: true,
+            validateInput: value => value.length >= 4 && value.length <= 9
+              ? null : "Use 4–9 characters",
           });
-          if (!ssid) {
+          if (secret === undefined) {
             panel.webview.postMessage({ command: "webReplCancelled" });
             return;
           }
-          password =
-            (await vscode.window.showInputBox({
-              prompt: `Enter password for "${ssid}"`,
-              password: true,
-              placeHolder: "Wi-Fi password",
-            })) || "";
-        }
 
-        // Warning modal — user must explicitly confirm before boot.py is touched
-        const confirmed = await vscode.window.showWarningMessage(
-          `This will write boot.py on your device.\n\nOn every boot, the board will try to connect to "${ssid}" and start WebREPL.\n\nIf Wi-Fi is unavailable the board still starts normally — USB serial is never affected.\n\nTo undo at any time: Dashboard → Disable Remote Access`,
-          { modal: true },
-          "I understand — Enable Remote Access",
-        );
-        if (!confirmed) {
-          panel.webview.postMessage({ command: "webReplCancelled" });
-          return;
-        }
-
-        // Escape single quotes for embedding in Python string literals
-        const safeSsid = ssid.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-        const safePassword = password
-          .replace(/\\/g, "\\\\")
-          .replace(/'/g, "\\'");
-
-        // The safe boot.py template:
-        //  • time.sleep(2) first — USB CDC initialises before any risky code runs
-        //  • Full try/except — any crash is caught, USB serial stays alive
-        //  • Writes mps_boot.log — Dashboard reads this to show last-boot status
-        const bootPyContent = [
-          "# MicroPython Studio - Robust Remote Access Boot",
-          "import time, gc, machine, network, webrepl, os, sys, select",
-          "",
-          "# ===== Configuration =====",
-          `WIFI_SSID = '${safeSsid}'`,
-          `WIFI_PASS = '${safePassword}'`,
-          "WEBREPL_PASS = 'micro123'",
-          "USB_WAIT_TIME = 3000      # ms (USB detection window)",
-          "WIFI_TIMEOUT = 30000      # ms",
-          "WIFI_RETRIES = 3",
-          "DEBUG = True",
-          "",
-          "def _log(msg, level='INFO'):",
-          "    if DEBUG: print(f'[{level}] {msg}')",
-          "",
-          "def _log_file(msg):",
-          "    try:",
-          "        with open('mps_boot.log', 'w') as f:",
-          "            f.write(msg)",
-          "    except: pass",
-          "",
-          "def usb_activity_detect(timeout_ms):",
-          "    _log('USB detect window...', 'DEBUG')",
-          "    start = time.ticks_ms()",
-          "    while time.ticks_diff(time.ticks_ms(), start) < timeout_ms:",
-          "        try:",
-          "            if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:",
-          "                _log('USB activity detected!', 'OK')",
-          "                return True",
-          "        except: pass",
-          "        time.sleep_ms(50)",
-          "    return False",
-          "",
-          "def connect_wifi(ssid, password):",
-          "    sta = network.WLAN(network.STA_IF)",
-          "    sta.active(True)",
-          "    for attempt in range(WIFI_RETRIES):",
-          "        _log(f'WiFi attempt {attempt+1}/{WIFI_RETRIES}')",
-          "        if sta.isconnected(): return sta",
-          "        try: sta.disconnect()",
-          "        except: pass",
-          "        sta.connect(ssid, password)",
-          "        start = time.ticks_ms()",
-          "        while not sta.isconnected():",
-          "            if time.ticks_diff(time.ticks_ms(), start) > WIFI_TIMEOUT:",
-          "                _log('WiFi timeout', 'WARN')",
-          "                break",
-          "            time.sleep_ms(200)",
-          "        if sta.isconnected():",
-          "            ip = sta.ifconfig()[0]",
-          "            _log(f'Connected: {ip}', 'OK')",
-          "            _log_file('OK:' + ip)",
-          "            return sta",
-          "    return None",
-          "",
-          "def setup_webrepl():",
-          "    try:",
-          "        try: webrepl.stop()",
-          "        except: pass",
-          "        if 'webrepl_cfg.py' not in os.listdir():",
-          "            with open('webrepl_cfg.py', 'w') as f:",
-          "                f.write(\"PASS = 'micro123'\\\\n\")",
-          "        time.sleep_ms(200)",
-          "        webrepl.start()",
-          "        _log('WebREPL started', 'OK')",
-          "        return True",
-          "    except Exception as e:",
-          "        _log(f'WebREPL error: {e}', 'ERROR')",
-          "        return False",
-          "",
-          "def main():",
-          "    _log(f'Boot @ {machine.freq()} Hz')",
-          "    if usb_activity_detect(USB_WAIT_TIME):",
-          "        _log('USB mode - skipping WiFi/WebREPL', 'WARN')",
-          "        return",
-          "    wlan = connect_wifi(WIFI_SSID, WIFI_PASS)",
-          "    if wlan and wlan.isconnected():",
-          "        setup_webrepl()",
-          "    else:",
-          "        _log_file('WIFI_TIMEOUT:not available')",
-          "        _log('USB mode only', 'WARN')",
-          "    gc.collect()",
-          "",
-          "try: main()",
-          "except Exception as e: _log_file('ERROR:' + str(e))",
-        ].join("\\n");
-
-        const script = `import network, sys
-sta = network.WLAN(network.STA_IF)
-ip = sta.ifconfig()[0] if sta.isconnected() else ''
-try:
-    # 1. Write webrepl password config
-    with open('webrepl_cfg.py', 'w') as f:
-        f.write("PASS = 'micro123'\\n")
-    # 2. Write safe boot.py with USB-first delay and crash protection
-    with open('boot.py', 'w') as f:
-        f.write("""${bootPyContent}""")
-    # 3. Start WebREPL for this session (evict stale cached modules first)
-    for mod in ('webrepl_cfg', 'webrepl'):
-        if mod in sys.modules:
-            del sys.modules[mod]
-    import webrepl
-    webrepl.start()
-    print('OK|' + ip)
-except Exception as e:
-    print('FAIL|' + str(e))
-`;
-        try {
-          const raw = await runDeviceScript(
-            script,
-            "_webrepl_setup.py",
-            workspaceRoot,
-            activePort,
-            outputChannel,
-          );
-          const line =
-            raw
-              .split("\n")
-              .find((l) => l.startsWith("OK|") || l.startsWith("FAIL|")) ||
-            "FAIL|";
-          const [status, ipVal] = line.split("|");
-          if (status === "OK") {
-            panel.webview.postMessage({ command: "webReplEnabled", ip: ipVal });
-          } else {
-            panel.webview.postMessage({
-              command: "wifiConnectError",
-              message: `WebREPL failed: ${ipVal}`,
-            });
+          let ip = status.ip;
+          if (!running) {
+            const raw = await runWebReplSessionCode(
+              buildSessionWebReplScript(secret), serialPort
+            );
+            ip = parseSessionWebReplResult(raw);
           }
+
+          // Record the board's IP and user-supplied password only after it
+          // reports RUNNING or confirms startup. Login is then verified by
+          // the WebREPL Console (a listening port alone isn't authentication).
+          await updateCfgComponent(cfgPath, "remote", "webrepl_enabled", "true");
+          await updateCfgComponent(cfgPath, "remote", "webrepl_ip", ip);
+          await updateCfgComponent(cfgPath, "remote", "webrepl_password", secret);
+          panel.webview.postMessage({ command: "webReplEnabled", ip, alreadyRunning: running });
+          outputChannel.appendLine("[WebREPL] " +
+            (running ? "Existing listener detected at " : "Listener started at ") +
+            ip + ":8266; boot.py not modified.");
         } catch (err) {
-          panel.webview.postMessage({
-            command: "wifiConnectError",
-            message: `WebREPL error: ${err.message}`,
-          });
+          const detail = err instanceof Error ? err.message : String(err);
+          outputChannel.appendLine("[WebREPL] Setup failed: " + detail);
+          panel.webview.postMessage({ command: "webReplError", message: detail });
         }
         return;
       }
 
-      // ── Disable Remote Access — writes a clean boot.py, removes config files ──
       if (message.command === "disableRemoteAccess") {
-        const confirmed = await vscode.window.showWarningMessage(
-          "This will overwrite boot.py on your device and disable automatic Wi-Fi / WebREPL on boot.",
-          { modal: true },
-          "Disable Remote Access",
-        );
-        if (!confirmed) return;
-
-        const script = `import os
-try:
-    with open('boot.py', 'w') as f:
-        f.write('# boot.py\\n# Remote access disabled by MicroPython Studio\\n')
-    for f in ('webrepl_cfg.py', 'mps_boot.log'):
-        try:
-            os.remove(f)
-        except:
-            pass
-    print('OK')
-except Exception as e:
-    print('FAIL|' + str(e))
-`;
+        // Stop only this session's listener, never replace boot.py or delete
+        // a user's existing WebREPL configuration or debugger files.
         try {
-          const raw = await runDeviceScript(
-            script,
-            "_webrepl_disable.py",
-            workspaceRoot,
-            activePort,
-            outputChannel,
-          );
-          if (raw.includes("OK")) {
-            vscode.window.showInformationMessage(
-              "Remote access disabled. The board will no longer auto-connect to Wi-Fi on boot.",
-            );
-            panel.webview.postMessage({ command: "remoteAccessDisabled" });
+          const mgr = require("./connectionManager");
+          const usbPort = resolveUsbReplPort(activePort, mgr);
+          if (!usbPort) throw new Error("Connect the USB REPL to stop WebREPL safely.");
+          const stopScript = [
+            "try:",
+            "    import webrepl",
+            "    webrepl.stop()",
+            "    print('MPS_WEBREPL_STOP_OK')",
+            "except Exception as e:",
+            "    print('MPS_WEBREPL_STOP_ERROR|' + str(e))",
+          ].join("\n");
+          const raw = await runWebReplSessionCode(stopScript, usbPort);
+          if (!raw.includes("MPS_WEBREPL_STOP_OK")) {
+            const error = raw.match(/MPS_WEBREPL_STOP_ERROR\|([^\r\n]+)/);
+            throw new Error(error ? error[1] : "Device did not confirm WebREPL stop.");
           }
+          const cfgPath = path.join(workspaceRoot, "device.cfg");
+          await updateCfgComponent(cfgPath, "remote", "webrepl_enabled", "false");
+          panel.webview.postMessage({ command: "remoteAccessDisabled" });
+          outputChannel.appendLine("[WebREPL] Session stopped. Existing boot.py and device files preserved.");
         } catch (err) {
-          vscode.window.showErrorMessage(
-            `Failed to disable remote access: ${err.message}`,
-          );
+          const detail = err instanceof Error ? err.message : String(err);
+          panel.webview.postMessage({ command: "webReplError", message: detail });
         }
         return;
       }
@@ -2686,36 +2602,27 @@ except Exception as e:
       }
 
       if (message.command === "switchToWireless") {
-        const wsPort = `ws:${message.ip},micro123`;
+        // Use the password saved only after WebREPL startup was confirmed.
+        // Never hardcode credentials or show them in a tab title.
+        const cfgPath = path.join(workspaceRoot, "device.cfg");
+        const savedIp = await getConfigValue(cfgPath, "remote", "webrepl_ip");
+        const savedSecret = await getConfigValue(cfgPath, "remote", "webrepl_password");
+        const enabled = await getConfigValue(cfgPath, "remote", "webrepl_enabled");
+        if (enabled !== "true" || !savedIp || !savedSecret || savedIp !== message.ip) {
+          panel.webview.postMessage({
+            command: "webReplError",
+            message: "Start WebREPL on USB first; the saved IP/password is missing or stale.",
+          });
+          return;
+        }
+        const wsPort = `ws:${savedIp},${savedSecret}`;
         activePort = wsPort;
-        panel.title = `Device: ${wsPort}`;
+        panel.title = `Device: WebREPL ${savedIp}`;
         if (typeof onPortUpdate === "function") {
           onPortUpdate(wsPort);
         }
-
-        // Persist WebREPL details to device.cfg so the extension
-        // can auto-connect wirelessly next time — no USB required
-        try {
-          const cfgPath = path.join(workspaceRoot, "device.cfg");
-          await updateCfgComponent(
-            cfgPath,
-            "remote",
-            "webrepl_enabled",
-            "true",
-          );
-          await updateCfgComponent(cfgPath, "remote", "webrepl_ip", message.ip);
-          await updateCfgComponent(
-            cfgPath,
-            "remote",
-            "webrepl_password",
-            "micro123",
-          );
-        } catch (e) {
-          console.error("Failed to save WebREPL details to device.cfg:", e);
-        }
-
         vscode.window.showInformationMessage(
-          `Switched to wireless: ${wsPort}. IP saved — extension will auto-connect next time.`,
+          `WebREPL selected at ${savedIp}. It runs for this board session only; restart it via USB after a reboot.`,
         );
         return;
       }
