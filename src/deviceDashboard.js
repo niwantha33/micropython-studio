@@ -2567,10 +2567,10 @@ print('OK')
             "    print('MPS_WEBREPL_STOP_OK')",
             "except Exception as e:",
             "    print('MPS_WEBREPL_STOP_ERROR|' + str(e))",
-          ].join("\\n");
+          ].join("\n");
           const raw = await runWebReplSessionCode(stopScript, usbPort);
           if (!raw.includes("MPS_WEBREPL_STOP_OK")) {
-            const error = raw.match(/MPS_WEBREPL_STOP_ERROR\\|([^\\r\\n]+)/);
+            const error = raw.match(/MPS_WEBREPL_STOP_ERROR\|([^\r\n]+)/);
             throw new Error(error ? error[1] : "Device did not confirm WebREPL stop.");
           }
           const cfgPath = path.join(workspaceRoot, "device.cfg");
