@@ -64,7 +64,8 @@ suite('RTA on/off regression', () => {
         assert.ok(host.includes("const hasOldPop = r.out.includes('cmd_buf.pop(0)')"));
 
         assert.ok(!host.includes('async function prepareLivePump'));
-        assert.ok(host.includes("prompt: 'Debug CDC port (the SECOND COM port Windows shows for the board)'"));
+        assert.ok(host.includes("prompt: 'Choose the dedicated debugger CDC COM port — NOT the REPL/upload COM port'"));
+        assert.ok(host.includes("candidate.toUpperCase() === replPort.trim().toUpperCase()"));
         assert.ok(host.includes("op: 'debug CDC open; synchronizing breakpoint table'"));
         assert.ok(!host.includes("JSON.stringify({ op: 'pump_info' })"));
         assert.ok(host.includes("msg.text.startsWith('cleared all bp slots')"));
