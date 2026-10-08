@@ -44,11 +44,14 @@
     .features article{border:1px solid #394960;border-radius:10px;padding:12px 16px}
     .features h3{font-size:1rem;margin:0}.features p{font-size:.95rem;margin:5px 0}
     footer{border-top:1px solid #394960;font-size:.9rem;color:#a7b8ca}
+    .skip-link{position:absolute;top:-90px;left:12px;background:white;color:#111;padding:12px;z-index:20}
+    .skip-link:focus{top:12px} a:focus-visible{outline:3px solid #ff965c;outline-offset:3px}
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <header><nav aria-label="Main navigation"><a href="./">MicroPython Studio home</a> · <a href="./getting-started.html">Get started</a> · <a href="./board-support.html">Board support</a> · <a href="./troubleshooting.html">Help</a> · <a href="https://github.com/niwantha33/micropython-studio">Source code</a> · <a href="https://github.com/niwantha33/micropython-studio/issues">Support</a></nav></header>
-  <main>
+  <main id="main">
     <h1>Debug MicroPython on real hardware, inside VS Code</h1>
     <p class="lead">Set a breakpoint on a Raspberry Pi Pico 2 W, pause execution, inspect Python variables and call stacks, step through code, and explore recorded function runtime traces.</p>
     <div class="buttons">
