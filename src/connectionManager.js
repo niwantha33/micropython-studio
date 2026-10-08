@@ -138,7 +138,9 @@ class ConnectionManager extends EventEmitter {
             try {
                 const [pidText, type] = fs.readFileSync(lockPath, 'utf8').trim().split(':');
                 const pid = Number.parseInt(pidText, 10);
-                if (Number.isInteger(pid) && isPidRunning(pid)) {
+                if (pid === process.pid && type === 'suspended_lock' && !this.daemonProcess) {
+                    fs.unlinkSync(lockPath); // stale lock owned by this extension itself
+                } else if (Number.isInteger(pid) && isPidRunning(pid)) {
                     throw new Error(`Port ${portName} is already owned by PID ${pid} (${type || 'unknown'}). Close the other connection first.`);
                 }
                 // A dead owner's lock is stale and safe to remove.
@@ -156,6 +158,7 @@ class ConnectionManager extends EventEmitter {
 
             logMsg(`[ConnectionManager] Spawning daemon process: ${pythonPath} ${daemonPath}`);
             this.daemonProcess = spawn(pythonPath, [daemonPath]);
+            const daemon = this.daemonProcess;
 
             let stdoutBuffer = '';
             let connected = false;
@@ -168,10 +171,10 @@ class ConnectionManager extends EventEmitter {
             };
             const startTimeout = setTimeout(() => {
                 settle(new Error(`Timed out connecting to ${portName}. Check COM selection and close other serial tools.`));
-                try { this.daemonProcess?.kill(); } catch (_) {}
+                try { daemon.kill(); } catch (_) {}
             }, 10000);
 
-            this.daemonProcess.stdout.on('data', (data) => {
+            daemon.stdout.on('data', (data) => {
                 stdoutBuffer += data.toString();
                 let newlineIndex;
                 while ((newlineIndex = stdoutBuffer.indexOf('\n')) !== -1) {
@@ -189,22 +192,24 @@ class ConnectionManager extends EventEmitter {
                 }
             });
 
-            this.daemonProcess.on('error', (err) => {
+            daemon.on('error', (err) => {
                 logMsg(`[ConnectionManager] Daemon spawn error: ${err.message}`);
                 settle(err);
             });
 
-            this.daemonProcess.stderr.on('data', (data) => {
+            daemon.stderr.on('data', (data) => {
                 console.error(`mpy_daemon stderr: ${data}`);
             });
 
-            this.daemonProcess.on('close', (code) => {
+            daemon.on('close', (code) => {
                 logMsg(`[ConnectionManager] Daemon closed with code: ${code}`);
                 const error = new Error(`Serial daemon stopped (exit code ${code}).`);
                 if (!connected) settle(error);
-                this._daemonGone(error);
-                this.daemonProcess = null;
-                this.emit('disconnected');
+                if (this.daemonProcess === daemon) {
+                    this._daemonGone(error);
+                    this.daemonProcess = null;
+                    this.emit('disconnected');
+                }
             });
 
             // Send initialization config
@@ -212,7 +217,9 @@ class ConnectionManager extends EventEmitter {
             const verbose = vscode.workspace.getConfiguration('micropython-studio').get('verboseLogging', false);
             const initConfig = { port: portName, baudrate: baudRate, verbose: verbose };
             logMsg(`[ConnectionManager] Sending initConfig: ${JSON.stringify(initConfig)}`);
-            this.daemonProcess.stdin.write(JSON.stringify(initConfig) + '\n');
+            daemon.stdin.write(JSON.stringify(initConfig) + '\n', err => {
+                if (err) settle(err);
+            });
         });
     }
 
@@ -249,6 +256,7 @@ class ConnectionManager extends EventEmitter {
                 const req = this._runCodeRequests.get(msg.id);
                 if (req) {
                     this._runCodeRequests.delete(msg.id);
+                    clearTimeout(req.timer);
                     if (msg.success) {
                         req.resolve({ stdout: msg.stdout, stderr: msg.stderr });
                     } else {
@@ -375,6 +383,7 @@ class ConnectionManager extends EventEmitter {
         this._removeOurSuspendedLock();
         for (const [id, pending] of this._runCodeRequests) {
             this._runCodeRequests.delete(id);
+            clearTimeout(pending.timer);
             pending.reject(error);
         }
     }
@@ -648,8 +657,19 @@ except Exception as e:
         };
 
         return new Promise((resolve, reject) => {
-            this._runCodeRequests.set(reqId, { resolve, reject });
-            this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n');
+            const timer = setTimeout(() => {
+                if (!this._runCodeRequests.has(reqId)) return;
+                this._runCodeRequests.delete(reqId);
+                reject(new Error('Device operation timed out after 120 seconds. Check REPL/USB connection.'));
+            }, 120000);
+            this._runCodeRequests.set(reqId, { resolve, reject, timer });
+            this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n', err => {
+                if (err && this._runCodeRequests.has(reqId)) {
+                    this._runCodeRequests.delete(reqId);
+                    clearTimeout(timer);
+                    reject(err);
+                }
+            });
         });
     }
 
