@@ -21,6 +21,10 @@ suite('Discoverability without unsupported debugger claims', () => {
     assert.ok(readme.includes('https://www.youtube.com/watch?v=or_aG-Rhnb8'));
     assert.ok(readme.includes('hardware qualification'));
     assert.ok(readme.includes('ESP32-C3 debugger has **not** been released'));
+    assert.ok(readme.includes('Experimental debugger firmware — for debugging and testing your own code ONLY. NOT FOR PRODUCTION USE.'));
+    assert.ok(readme.includes('not to an approved, board-specific stable release'));
+    assert.ok(readme.includes('does **not** automatically flash the board or overwrite `boot.py`'));
+    assert.ok(readme.includes('**Test-build use policy:**'));
   });
   test('automatic public release requires tag from main with matching version', () => {
     const workflow = fs.readFileSync(path.join(repo,'.github','workflows','ci.yml'),'utf8');
