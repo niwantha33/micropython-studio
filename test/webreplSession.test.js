@@ -41,6 +41,7 @@ suite('WebREPL session-only dashboard startup', () => {
     test('does not print passwords in configuration logs', () => {
         const cfg = fs.readFileSync(path.join(__dirname,'..','src','commonFxn.js'),'utf8');
         assert.ok(cfg.includes('[REDACTED]'));
-        assert.ok(!cfg.includes('${key} = "${newValue}"'));
+        assert.ok(cfg.includes('const displayValue = /password|secret|token|api')); 
+        assert.ok(cfg.includes('console.log(`Updated ${key} in [${section}] to "${displayValue}"`)'));
     });
 });
