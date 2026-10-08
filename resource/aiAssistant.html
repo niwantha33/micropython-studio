@@ -444,6 +444,7 @@
             <button id="clear-btn" style="background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; display: flex; align-items: center;" title="Clear Chat">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
             </button>
+            <select id="model-select" title="Choose installed Ollama model" aria-label="Ollama model" style="max-width:155px;background:var(--secondary-bg);color:var(--text-color);border:1px solid var(--border-color);border-radius:6px;padding:5px;min-width:95px;"><option value="">Detecting models...</option></select>
             <div class="status-badge">
                 <div id="status-dot" class="status-dot"></div>
                 <span id="status-text">...</span>
@@ -496,6 +497,7 @@
         const userInput = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
         const clearBtn = document.getElementById('clear-btn');
+        const modelSelect = document.getElementById('model-select');
         const statusDot = document.getElementById('status-dot');
         const statusText = document.getElementById('status-text');
         const setupOverlay = document.getElementById('setup-overlay');
@@ -506,6 +508,9 @@
         let currentAiMessageElement = null;
         let isThinking = false;
         let currentFirmware = 'MicroPython';
+        modelSelect.addEventListener('change', () => {
+            if (modelSelect.value) vscode.postMessage({ type: 'setModel', value: modelSelect.value });
+        });
         let chatTimerInterval = null;
         let chatStartTime = null;
         let renderScheduled = false;
@@ -533,14 +538,22 @@
         // Configure Modern Markdown Parser (marked.js v10+)
         marked.use({
             renderer: {
+                // Raw LLM HTML is untrusted. It must never execute in the VS Code webview.
+                html(token) { return escapeHtml(token.text || token.raw || ''); },
+                link(token) {
+                    const href = String(token.href || '');
+                    const title = String(token.text || '');
+                    if (!/^https?:\/\//i.test(href)) return escapeHtml(title);
+                    return '<a href="' + escapeHtml(href) + '" rel="noopener noreferrer">' + escapeHtml(title) + '</a>';
+                },
                 code(token) {
                     const code = token.text;
-                    const language = token.lang || 'python';
+                    const language = String(token.lang || 'python').replace(/[^a-zA-Z0-9_+-]/g, '');
                     const highlighted = hljs.getLanguage(language) 
                         ? hljs.highlight(code, { language }).value 
                         : hljs.highlightAuto(code).value;
 
-                    return `<div class="code-block-container"><pre><div class="code-header"><span>${language}</span><div class="code-actions"><button class="action-btn" onclick="handleAction('copy', this)" title="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button><button class="action-btn" onclick="handleAction('insert', this)" title="Insert into editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Insert</span></button><button class="action-btn" onclick="handleAction('run', this)" title="Run on device"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span></button><button class="action-btn" onclick="handleAction('new', this)" title="New file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg><span>New</span></button></div></div><code class="hljs language-${language}">${highlighted}</code><textarea style="display:none" class="raw-code">${escapeHtml(code)}</textarea></pre></div>`;
+                    return `<div class="code-block-container"><pre><div class="code-header"><span>${escapeHtml(language)}</span><div class="code-actions"><button class="action-btn" onclick="handleAction('copy', this)" title="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button><button class="action-btn" onclick="handleAction('insert', this)" title="Insert into editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Insert</span></button><button class="action-btn" onclick="handleAction('run', this)" title="Run on device"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span></button><button class="action-btn" onclick="handleAction('new', this)" title="New file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg><span>New</span></button></div></div><code class="hljs language-${language}">${highlighted}</code><textarea style="display:none" class="raw-code">${escapeHtml(code)}</textarea></pre></div>`;
                 }
             }
         });
@@ -564,12 +577,6 @@
         });
 
         sendBtn.addEventListener('click', sendMessage);
-
-        setupBtn.addEventListener('click', () => {
-            vscode.postMessage({ type: 'installModel' });
-            setupBtn.disabled = true;
-            setupBtn.textContent = 'Installing...';
-        });
 
         function sendMessage() {
             const text = userInput.value.trim();
@@ -854,6 +861,26 @@
         }
 
         function updateStatus(status) {
+            const models = Array.isArray(status.models) ? status.models : [];
+            modelSelect.replaceChildren();
+            if (!models.length) {
+                const option = document.createElement('option');
+                option.textContent = 'No local model';
+                option.value = '';
+                modelSelect.add(option);
+            }
+            for (const name of models) {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                modelSelect.add(option);
+            }
+            modelSelect.disabled = models.length === 0;
+            if (status.selectedModel && models.includes(status.selectedModel)) {
+                modelSelect.value = status.selectedModel;
+            } else if (models.includes(currentFirmware === 'CircuitPython' ? 'micro_ai-cpy' : 'micro_ai-mpy')) {
+                modelSelect.value = currentFirmware === 'CircuitPython' ? 'micro_ai-cpy' : 'micro_ai-mpy';
+            }
             const errorEl = document.getElementById('error-msg');
             if (status.connected) errorEl.style.display = 'none';
 
