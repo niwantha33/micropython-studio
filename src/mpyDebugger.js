@@ -615,9 +615,16 @@ function openDebuggerPanel(context, port, venvPython) {
                                     if (!sm) continue;
                                     const funPtr = parseInt(sm[1], 10);
                                     const funName = sm[2];
+                                    parsed += 1;
+                                    // A chunk can be older than live metadata when heap
+                                    // addresses are reused. Reject conflicting old names.
+                                    const nativeIdentity = rtaNativeIdentity.get(funPtr);
+                                    if (nativeIdentity) {
+                                        const liveSimpleName = nativeIdentity.slice(nativeIdentity.lastIndexOf(':') + 1);
+                                        if (funName !== liveSimpleName && !funName.endsWith('.' + liveSimpleName)) continue;
+                                    }
                                     funToName.set(funPtr, funName);
                                     panel.webview.postMessage({ evt: 'rta_name', fun: funPtr, name: funName, kind: 'function' });
-                                    parsed += 1;
                                 }
                             }
                             rtaSymRemaining = Math.max(0, rtaSymRemaining - parsed);
