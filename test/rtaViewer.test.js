@@ -90,6 +90,9 @@ suite('Live RTA viewer', () => {
         assert.ok(source.includes('rtaNames.delete(key)'));
         assert.ok(source.includes('rtaNativeIdentity.clear()'));
         assert.ok(source.includes('funToName.clear()'));
+        assert.ok(source.includes("name: '__rta_names_optin'"));
+        assert.ok(source.includes("'rta_names_on'"));
+        assert.ok(source.includes('funName.endsWith(\'.\' + liveSimpleName)'));
         assert.ok(source.includes("p.name + ' · fun=0x'"));
         assert.ok(source.includes('requestSymbolMap();')); // Existing fallback remains.
     });
