@@ -812,6 +812,8 @@ function openDebuggerPanel(context, port, venvPython) {
                 if (msg.evt === 'rta_entry') {
                     rtaEvents.push({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
+                        // Snapshot the live name so later heap reuse cannot relabel history.
+                        _rtaNativeName: rtaNativeIdentity.has(msg.fun) ? funToName.get(msg.fun) : undefined,
                         ph: "B",
                         ts: msg.ts,
                         pid: 1,
@@ -822,6 +824,7 @@ function openDebuggerPanel(context, port, venvPython) {
                 if (msg.evt === 'rta_exit') {
                     rtaEvents.push({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
+                        _rtaNativeName: rtaNativeIdentity.has(msg.fun) ? funToName.get(msg.fun) : undefined,
                         ph: "E",
                         ts: msg.ts,
                         pid: 1,
@@ -2149,8 +2152,13 @@ function setRtaNativeName(fun, name, bytecode, context) {
   const identity = String(bytecode) + ':' + String(context) + ':' + name;
   const previousIdentity = rtaNativeIdentity.get(key);
   if (previousIdentity !== undefined && previousIdentity !== identity) {
-    // The address has been reused or its runtime object changed. Forget old names/kinds.
+    // A different object now occupies this ID. Never relabel the old totals
+    // with a new function name: discard only the reused object's old profile.
     rtaNames.delete(key);
+    rtaProfiles.delete(key);
+    for (let i = rtaStack.length - 1; i >= 0; i--) {
+      if (String(rtaStack[i].fun) === key) rtaStack.splice(i, 1);
+    }
   }
   rtaNativeIdentity.set(key, identity);
   const previous = rtaNames.get(key);
@@ -2624,10 +2632,15 @@ function dumpRtaTrace() {
                     }
                 }
                 
-                // Resolve name
-                if (funToName.has(funPtr)) {
+                // Metadata captured with the event is stronger than a later
+                // address lookup: the heap may reuse an identifier over time.
+                const liveName = ev._rtaNativeName;
+                delete ev._rtaNativeName;
+                if (liveName) {
+                    ev.name = liveName;
+                } else if (funToName.has(funPtr) && !rtaNativeIdentity.has(funPtr)) {
                     ev.name = funToName.get(funPtr);
-                } else if (taskMap.has(funPtr)) {
+                } else if (taskMap.has(funPtr) && !rtaNativeIdentity.has(funPtr)) {
                     ev.name = taskMap.get(funPtr);
                 }
             }
