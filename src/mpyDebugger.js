@@ -26,6 +26,8 @@ let rtaEvents = [];
 let rtaDumpTimer = null;
 const taskMap = new Map();
 const funToName = new Map();
+// The identity is tied to this RTA capture, not to a reusable heap address.
+const rtaNativeIdentity = new Map();
 
 function scheduleRtaTraceDump() {
     if (rtaDumpTimer) clearTimeout(rtaDumpTimer);
@@ -769,6 +771,8 @@ function openDebuggerPanel(context, port, venvPython) {
                         }
                         rtaEvents = [];
                         taskMap.clear();
+                        funToName.clear();
+                        rtaNativeIdentity.clear();
                         requestTaskMap();
                         requestSymbolMap();
                         if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: true });
@@ -783,6 +787,19 @@ function openDebuggerPanel(context, port, venvPython) {
                             panel.webview.postMessage({ evt: 'error', msg: msg.text });
                         }
                         vscode.window.showWarningMessage(msg.text);
+                    }
+                }
+                if (msg.evt === 'rta_native_name') {
+                    const fun = Number(msg.fun);
+                    const name = String(msg.name || '');
+                    if (Number.isSafeInteger(fun) && fun > 0 && fun <= 0xFFFFFFFF && name) {
+                        const identity = String(msg.bytecode) + ':' + String(msg.context) + ':' + name;
+                        if (rtaNativeIdentity.get(fun) !== identity) {
+                            // Runtime metadata supersedes an earlier guess for a reused address.
+                            rtaNativeIdentity.set(fun, identity);
+                            funToName.set(fun, name);
+                        }
+                        if (panel) panel.webview.postMessage(msg);
                     }
                 }
                 if (msg.evt === 'rta_entry') {
@@ -1857,6 +1874,7 @@ let rtaEnabled = false;
 let rtaAvailable = null; // true / false / null = legacy capability unknown
 const rtaProfiles = new Map();
 const rtaNames = new Map();
+const rtaNativeIdentity = new Map();
 const rtaStack = [];
 let rtaEventCount = 0;
 let rtaFirstTs = null;
@@ -2107,6 +2125,21 @@ function setRtaName(fun, name, kind) {
   scheduleRtaRender();
 }
 
+function setRtaNativeName(fun, name, bytecode, context) {
+  const key = String(fun);
+  const identity = String(bytecode) + ':' + String(context) + ':' + name;
+  const previousIdentity = rtaNativeIdentity.get(key);
+  if (previousIdentity !== undefined && previousIdentity !== identity) {
+    // The address has been reused or its runtime object changed. Forget old names/kinds.
+    rtaNames.delete(key);
+  }
+  rtaNativeIdentity.set(key, identity);
+  const previous = rtaNames.get(key);
+  if (!previous || (previous.name !== name && !previous.name.endsWith('.' + name))) {
+    setRtaName(fun, name, 'function');
+  }
+}
+
 function getRtaProfile(fun) {
   const key = String(fun);
   let profile = rtaProfiles.get(key);
@@ -2237,7 +2270,7 @@ function renderRtaProfiler() {
       : (p.kind === 'system' ? 'SYSTEM' : (p.kind === 'unknown' ? 'UNKNOWN' : 'FUNC'));
     html += '<tr>' +
       '<td><span class="rta-state"><span class="rta-state-dot ' + stateClass + '"></span>' + stateText + '</span></td>' +
-      '<td class="rta-name-cell" title="' + escapeHtml(p.name) + '">' + escapeHtml(p.name) + '</td>' +
+      '<td class="rta-name-cell" title="' + escapeHtml(p.name + ' · fun=0x' + (Number(p.fun) >>> 0).toString(16).padStart(8, '0')) + '">' + escapeHtml(p.name) + '</td>' +
       '<td><span class="rta-kind ' + p.kind + '">' + kindLabel + '</span></td>' +
       '<td>' + p.calls + '</td>' +
       '<td><div class="rta-load"><div class="rta-load-track"><div class="rta-load-fill" style="width:' + Math.min(100, pct).toFixed(1) + '%"></div></div><span class="rta-load-text">' + pct.toFixed(1) + '%</span></div></td>' +
@@ -2421,6 +2454,8 @@ window.addEventListener('message', (e) => {
   }
   else if (m.evt === 'rta_status') {
     if (m.enabled) {
+      rtaNames.clear();
+      rtaNativeIdentity.clear();
       resetRtaProfiler();
     } else {
       // Firmware stops emission before it can safely close the final segment
@@ -2440,6 +2475,7 @@ window.addEventListener('message', (e) => {
   else if (m.evt === 'open') add('reply', 'connected to ' + m.port);
   else if (m.evt === 'names') { currentNames = m.names || []; }
   else if (m.evt === 'rta_name') { setRtaName(m.fun, m.name, m.kind || 'task'); }
+  else if (m.evt === 'rta_native_name') { setRtaNativeName(m.fun, m.name, m.bytecode, m.context); }
   else if (m.evt === 'fun_name') {
     funNames[m.fun] = { name: m.name, fsPath: m.fsPath, defLine: m.defLine };
     setRtaName(m.fun, m.name, 'function');
