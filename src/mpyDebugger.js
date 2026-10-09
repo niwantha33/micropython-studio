@@ -799,7 +799,7 @@ function openDebuggerPanel(context, port, venvPython) {
                             rtaNativeIdentity.set(fun, identity);
                             funToName.set(fun, name);
                         }
-                        if (panel) panel.webview.postMessage(msg);
+                        // The generic bridge-message forwarding below notifies the webview.
                     }
                 }
                 if (msg.evt === 'rta_entry') {
