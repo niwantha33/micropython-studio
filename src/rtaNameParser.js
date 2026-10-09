@@ -3,7 +3,7 @@
 // Optional backward-compatible firmware text replies:
 //   rta_name=200344d0:get_gpio_state
 // The function pointer is a runtime VM object address, NOT a linker-map symbol.
-const RTA_NAME_REPLY = /^rta_name=([0-9a-fA-F]{8}):([^\r\n]{1,72})$/;
+const RTA_NAME_REPLY = /^rta_name=([0-9a-fA-F]{8}):([^:\r\n]{1,72})$/;
 
 function parseRtaNameReply(text) {
     if (typeof text !== 'string') return null;
