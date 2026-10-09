@@ -85,7 +85,10 @@ def reader_loop(ser, stop_evt):
                 is_valid = False
             elif t in (0x05, 0x06) and n != 8:
                 is_valid = False
-            elif t not in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06):
+            elif t == 0x07 and not (13 <= n <= 72):
+                # Runtime symbol: function:u32 + bytecode:u32 + context:u32 + UTF-8 name.
+                is_valid = False
+            elif t not in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07):
                 is_valid = False
             elif n > 256: # Avoid huge buffer reads on corrupt length
                 is_valid = False
@@ -200,6 +203,17 @@ def reader_loop(ser, stop_evt):
                 fun = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)
                 ts = payload[4] | (payload[5] << 8) | (payload[6] << 16) | (payload[7] << 24)
                 say(evt="rta_exit", fun=fun, ts=ts)
+            elif t == 0x07:
+                fun = int.from_bytes(payload[0:4], "little")
+                bytecode = int.from_bytes(payload[4:8], "little")
+                context = int.from_bytes(payload[8:12], "little")
+                try:
+                    name = payload[12:].decode("utf-8")
+                except UnicodeError:
+                    name = ""
+                if fun and name and name.isprintable():
+                    say(evt="rta_native_name", fun=fun, bytecode=bytecode,
+                        context=context, name=name)
             else:
                 say(evt="raw", type=t, payload=payload.hex())
             del buf[:total]
