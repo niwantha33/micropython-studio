@@ -38,9 +38,12 @@ A bounded 64-slot firmware cache suppresses redundant metadata and
 re-emits it when the identity of a function pointer changes. Metadata
 is omitted if the ring cannot fit it without crowding timing frames.
 
-The bridge accepts 0x07 alongside all existing frame types. Older
-firmware emits no 0x07 and continues to use the existing symbol/task
-lookup. The timestamp encoding and timing calculations are unchanged.
+Studio explicitly opts in through the existing debugger poke_global command,
+invoking dbg.rta_names_on() only if that API exists. A firmware image with
+the metadata patch defaults to names OFF. Older Studio bridges will therefore
+never receive new 0x07 frames. Older firmware emits no 0x07 and continues to
+use the existing symbol/task lookup. The timestamp encoding and timing
+calculations are unchanged.
 
 ## Safety and limitations
 
