@@ -7,6 +7,7 @@ const vscode = require('vscode');
 const path = require('path');
 const { spawn } = require('child_process');
 const { getBuildInfo } = require('./buildInfo');
+const { parseRtaNameReply } = require('./rtaNameParser');
 
 const REQUIRED_PUMP_PROTOCOL = 5;
 const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
@@ -490,6 +491,18 @@ function openDebuggerPanel(context, port, venvPython) {
 
                 // Capture slot numbers from reply text: "bp N @ mod.func:line ip=..."
                 if (msg.evt === 'reply' && typeof msg.text === 'string') {
+                    // Optional symbol announcement from newer firmware.
+                    // This address came from a live VM code_state, not the .map
+                    // file or a host-supplied dereference. Legacy pumps omit it.
+                    const liveSymbol = parseRtaNameReply(msg.text);
+                    if (liveSymbol && panel) {
+                        panel.webview.postMessage({
+                            evt: 'rta_name',
+                            fun: liveSymbol.fun,
+                            name: liveSymbol.name,
+                            kind: 'function'
+                        });
+                    }
                     if (!sessionReady && msg.text.startsWith('cleared all bp slots')) {
                         const cap = msg.text.match(/\spump=(\d+)\s+build=([^\s]+)\s+rta=(\d+)/);
                         if (cap) {
@@ -808,7 +821,8 @@ function openDebuggerPanel(context, port, venvPython) {
                 const internalRtaSymbolReply =
                     msg.evt === 'reply' &&
                     typeof msg.text === 'string' &&
-                    msg.text.startsWith('poked global __rta_sym_');
+                    (msg.text.startsWith('poked global __rta_sym_') ||
+                     parseRtaNameReply(msg.text) !== null);
                 const internalRtaSymbolSend =
                     msg.evt === 'sent' &&
                     msg.op === 'poke_global' &&
