@@ -1,6 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 suite('Live RTA viewer', () => {
     const source = fs.readFileSync(
@@ -91,6 +92,39 @@ suite('Live RTA viewer', () => {
         assert.ok(source.includes('funToName.clear()'));
         assert.ok(source.includes("p.name + ' · fun=0x'"));
         assert.ok(source.includes('requestSymbolMap();')); // Existing fallback remains.
+    });
+
+    test('runtime identity change invalidates an old qualified name and task type', () => {
+        const match = source.match(
+            /(function setRtaNativeName\(fun, name, bytecode, context\) \{[\s\S]*?\n\})\n\nfunction getRtaProfile/
+        );
+        assert.ok(match, 'native function resolver is present');
+        const rtaNames = new Map();
+        const rtaNativeIdentity = new Map();
+        const sandbox = {
+            rtaNames,
+            rtaNativeIdentity,
+            setRtaName(fun, name, kind) {
+                rtaNames.set(String(fun), { name, kind });
+            }
+        };
+        const setRtaNativeName = vm.runInNewContext('(' + match[1] + ')', sandbox);
+
+        const fn = 0x20001234;
+        setRtaNativeName(fn, 'blink', 0x10001234, 0x20001000);
+        assert.strictEqual(rtaNames.get(String(fn)).name, 'blink');
+
+        // A qualified symbol or mapped asyncio name is retained when the
+        // live function identity has not changed.
+        rtaNames.set(String(fn), { name: 'main.blink', kind: 'task' });
+        setRtaNativeName(fn, 'blink', 0x10001234, 0x20001000);
+        assert.strictEqual(rtaNames.get(String(fn)).name, 'main.blink');
+        assert.strictEqual(rtaNames.get(String(fn)).kind, 'task');
+
+        // The same heap address can later hold a different function.
+        setRtaNativeName(fn, 'worker', 0x10002000, 0x20001000);
+        assert.strictEqual(rtaNames.get(String(fn)).name, 'worker');
+        assert.strictEqual(rtaNames.get(String(fn)).kind, 'function');
     });
 
     test('decodes optional firmware 0x07 names while preserving legacy RTA frames', () => {
