@@ -25,7 +25,7 @@ A separately built debug-firmware candidate can emit a live name frame:
 
 - Frame: 0xAA 0x07 LENGTH PAYLOAD
 - Payload: function_ptr:u32LE, bytecode_ptr:u32LE, context_ptr:u32LE,
-  name:utf8 (1–60 bytes)
+  name:utf8 (1–60 bytes), crc16_ccitt:u16LE
 - function_ptr is the exact code_state->fun_bc identifier used for timing.
 - bytecode_ptr and context_ptr are opaque identity tokens only. The host
   must not dereference them.
@@ -40,7 +40,7 @@ is omitted if the ring cannot fit it without crowding timing frames.
 
 Studio explicitly opts in through the existing debugger poke_global command,
 invoking dbg.rta_names_on() only if that API exists. A firmware image with
-the metadata patch defaults to names OFF. Older Studio bridges will therefore
+the metadata patch defaults to names OFF. Its optional name frames carry\na CRC16 checksum; the bridge discards any metadata with an invalid CRC. Older Studio bridges will therefore
 never receive new 0x07 frames. Older firmware emits no 0x07 and continues to
 use the existing symbol/task lookup. The timestamp encoding and timing
 calculations are unchanged.
