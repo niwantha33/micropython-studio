@@ -40,7 +40,8 @@ is omitted if the ring cannot fit it without crowding timing frames.
 
 Studio explicitly opts in through the existing debugger poke_global command,
 invoking dbg.rta_names_on() only if that API exists. A firmware image with
-the metadata patch defaults to names OFF. Its optional name frames carry\na CRC16 checksum; the bridge discards any metadata with an invalid CRC. Older Studio bridges will therefore
+the metadata patch defaults to names OFF. Its optional name frames carry
+CRC16 checksum; the bridge discards any metadata with an invalid CRC. Older Studio bridges will therefore
 never receive new 0x07 frames. Older firmware emits no 0x07 and continues to
 use the existing symbol/task lookup. The timestamp encoding and timing
 calculations are unchanged.
