@@ -81,6 +81,29 @@ suite('Live RTA viewer', () => {
         assert.ok(source.includes("op === 'rta_resolve_names'"));
     });
 
+    test('accepts runtime function names but invalidates identities reused within a capture', () => {
+        assert.ok(source.includes("msg.evt === 'rta_native_name'"));
+        assert.ok(source.includes("m.evt === 'rta_native_name'"));
+        assert.ok(source.includes('function setRtaNativeName(fun, name, bytecode, context)'));
+        assert.ok(source.includes('previousIdentity !== undefined && previousIdentity !== identity'));
+        assert.ok(source.includes('rtaNames.delete(key)'));
+        assert.ok(source.includes('rtaNativeIdentity.clear()'));
+        assert.ok(source.includes('funToName.clear()'));
+        assert.ok(source.includes("p.name + ' · fun=0x'"));
+        assert.ok(source.includes('requestSymbolMap();')); // Existing fallback remains.
+    });
+
+    test('decodes optional firmware 0x07 names while preserving legacy RTA frames', () => {
+        const bridge = fs.readFileSync(
+            path.resolve(__dirname, '..', 'src', 'dbg_bridge.py'),
+            'utf8'
+        );
+        assert.ok(bridge.includes('t == 0x07 and not (13 <= n <= 72)'));
+        assert.ok(bridge.includes('t in (0x05, 0x06) and n != 8'));
+        assert.ok(bridge.includes('payload[12:].decode("utf-8")'));
+        assert.ok(bridge.includes('say(evt="rta_native_name", fun=fun'));
+    });
+
     test('uses firmware microsecond timestamps and does not claim exact CPU load', () => {
         assert.ok(source.includes("return us.toFixed(0) + ' µs'"));
         assert.ok(source.includes('Firmware timestamps are microseconds'));
