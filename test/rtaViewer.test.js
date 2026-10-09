@@ -144,9 +144,10 @@ suite('Live RTA viewer', () => {
             path.resolve(__dirname, '..', 'src', 'dbg_bridge.py'),
             'utf8'
         );
-        assert.ok(bridge.includes('t == 0x07 and not (13 <= n <= 72)'));
+        assert.ok(bridge.includes('t == 0x07 and not (15 <= n <= 74)'));
         assert.ok(bridge.includes('t in (0x05, 0x06) and n != 8'));
-        assert.ok(bridge.includes('payload[12:].decode("utf-8")'));
+        assert.ok(bridge.includes('payload[12:-2].decode("utf-8")'));
+        assert.ok(bridge.includes('binascii.crc_hqx(payload[:-2], 0xFFFF)'));
         assert.ok(bridge.includes('say(evt="rta_native_name", fun=fun'));
     });
 
