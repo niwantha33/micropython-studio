@@ -6,7 +6,7 @@ Status: **experimental design for hardware evaluation only**. Do not flash or pu
 
 The RTA firmware emits a 32-bit `code_state->fun_bc` value in each `rta_entry`/`rta_exit` event (0x05/0x06). It is the **MicroPython function object identity**. It is not a C return address, instruction pointer, asyncio task pointer or executable section offset.
 
-For example, the debugger may display `0x200344d0` as UNKNOWN. `0x200...` is an SRAM-space address on RP2350, but exact classification requires the matching board firmware's linker memory ranges and current GC heap layout. A linker map only describes statically linked objects/sections; it does **not** label transient Python functions allocated from the GC heap. A heap region check can classify the address range, **not** recover a function name.
+For example, the debugger may display `0x200344d0` as UNKNOWN. `0x200...` is an SRAM-space address on RP2350, but exact classification requires the matching board firmware's linker memory ranges and current GC heap layout. **For this pinned RP2 MicroPython revision, `ports/rp2/main.c` explicitly calls `gc_init(&__GcHeapStart, &__GcHeapEnd)`**, so those exact linker symbols mark the default GC heap bounds (subject to optional PSRAM configuration). A linker map only describes statically linked objects/sections; it does **not** label transient Python functions allocated from the GC heap. A heap region check can classify the address range, **not** recover a function name.
 
 The code backing a function (bytecode/frozen code) may be in flash, but the address carried in the RTA packet identifies the **function object**. Running `addr2line` or `nm` on that heap address will generally not produce a meaningful Python function name.
 
@@ -42,8 +42,8 @@ After building the **exact** source and board, these commands can show static li
 ```bash
 cd ~/micropython/ports/rp2/build-RPI_PICO2_W
 ls -lh firmware.elf firmware.map
-arm-none-eabi-nm -n firmware.elf | grep -E 'gc_pool|mp_obj_fun_bc_get_name|rta_'
-grep -nE '(\.bss|\.data|\.text|heap|stack)' firmware.map | head -n 45
+arm-none-eabi-nm -n firmware.elf | grep -E '__GcHeap(Start|End)|mp_obj_fun_bc_get_name|rta_'
+grep -nE '(__GcHeapStart|__GcHeapEnd|\.bss|\.data|\.text)' firmware.map | head -n 45
 ```
 
 Map filename may vary; check the actual build directory rather than assuming `firmware.map` is always present. Use the ELF from the **same image** running on the board. Do not run heap pointer values through `addr2line` and present the result as a decoded Python function.
