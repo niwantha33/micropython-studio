@@ -975,6 +975,18 @@ function openDebuggerPanel(context, port, venvPython) {
             bridge.stdin.write(JSON.stringify({ op: 'tasks' }) + '\n');
             return;
         }
+        if (msg.op === 'rta_on') {
+            // Explicit opt-in: older Studio/debug bridges will never receive
+            // the additive 0x07 frames, and older firmware remains supported.
+            bridge.stdin.write(JSON.stringify({
+                op: 'poke_global',
+                name: '__rta_names_optin',
+                depth: 0,
+                expr: "hasattr(__import__('dbg'),'rta_names_on') and __import__('dbg').rta_names_on()"
+            }) + '\n');
+            bridge.stdin.write(JSON.stringify(msg) + '\n');
+            return;
+        }
         if (msg.op === 'rta_resolve_names') {
             const taskOk = requestTaskMap();
             const symbolOk = requestSymbolMap();
