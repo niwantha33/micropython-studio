@@ -104,9 +104,13 @@ suite('Live RTA viewer', () => {
         assert.ok(match, 'native function resolver is present');
         const rtaNames = new Map();
         const rtaNativeIdentity = new Map();
+        const rtaProfiles = new Map();
+        const rtaStack = [];
         const sandbox = {
             rtaNames,
             rtaNativeIdentity,
+            rtaProfiles,
+            rtaStack,
             setRtaName(fun, name, kind) {
                 rtaNames.set(String(fun), { name, kind });
             }
@@ -125,9 +129,14 @@ suite('Live RTA viewer', () => {
         assert.strictEqual(rtaNames.get(String(fn)).kind, 'task');
 
         // The same heap address can later hold a different function.
+        // Old measurements and active frames must not follow the new name.
+        rtaProfiles.set(String(fn), { name: 'main.blink', totalExclusive: 88 });
+        rtaStack.push({ fun: fn, start: 100, childTime: 0 });
         setRtaNativeName(fn, 'worker', 0x10002000, 0x20001000);
         assert.strictEqual(rtaNames.get(String(fn)).name, 'worker');
         assert.strictEqual(rtaNames.get(String(fn)).kind, 'function');
+        assert.strictEqual(rtaProfiles.has(String(fn)), false);
+        assert.strictEqual(rtaStack.length, 0);
     });
 
     test('decodes optional firmware 0x07 names while preserving legacy RTA frames', () => {
