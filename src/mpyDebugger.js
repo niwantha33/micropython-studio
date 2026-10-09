@@ -1117,8 +1117,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
+  height: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* Scrollbar Customization */
@@ -1279,13 +1281,13 @@ body {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
   gap: 16px;
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
+  align-items: start;
 }
 @media (max-width: 800px) {
   .dashboard-grid {
     grid-template-columns: 1fr;
-    overflow-y: auto;
   }
 }
 
@@ -1293,6 +1295,8 @@ body {
 .panel-terminal {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  height: clamp(320px, 52vh, 640px);
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -1311,6 +1315,7 @@ body {
 }
 #log {
   flex: 1;
+  min-height: 0;
   padding: 12px;
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1326,8 +1331,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow-y: auto;
   min-height: 0;
+  min-width: 0;
+  overflow: visible;
 }
 .panel-card {
   background: var(--bg-card);
@@ -1437,6 +1443,24 @@ body {
 .sent { color: var(--accent-primary); }
 .rta { color: var(--accent-purple); font-weight: 500; }
 
+/* Page-level shortcuts stay usable even when the RTA table is scrolled. */
+.debugger-panel-nav {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 11px;
+}
+.debugger-panel-nav a {
+  color: #a5b4fc;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.debugger-panel-nav a:hover,
+.debugger-panel-nav a:focus-visible {
+  border-color: currentColor;
+}
+
 /* Live RTA Viewer */
 .rta-viewer {
   background: linear-gradient(180deg, rgba(217,70,239,0.06), rgba(21,24,36,0.92));
@@ -1531,6 +1555,7 @@ body {
 .rta-table-wrap {
   max-height: 260px;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: var(--bg-input);
 }
 .rta-table {
@@ -1718,6 +1743,12 @@ td.v:focus, td.vg:focus {
   <!-- Dynamic configuration-driven buttons will render here -->
 </div>
 
+<nav class="debugger-panel-nav" aria-label="Jump to debugger panels">
+  <a href="#debug-console">↓ Debug Console</a>
+  <a href="#panel-breakpoints">↓ Breakpoints</a>
+  <a href="#panel-stack">↓ Call Stack</a>
+</nav>
+
 <div id="rta-viewer" class="rta-viewer">
   <div class="rta-viewer-header">
     <div class="rta-title-wrap">
@@ -1759,7 +1790,7 @@ td.v:focus, td.vg:focus {
 </div>
 
 <div class="dashboard-grid">
-  <div class="panel-terminal">
+  <div class="panel-terminal" id="debug-console">
     <div class="panel-terminal-header">
       <span>DEBUG CONSOLE / PORT LOG</span>
       <button class="btn btn-clear" style="padding: 2px 6px; font-size: 10px;" onclick="document.getElementById('log').innerHTML=''">Clear Log</button>
