@@ -1301,22 +1301,31 @@ function activate(context) {
         vscode.commands.registerCommand('micropython-ide.flashDebugFirmware', async () => {
             const boards = loadDebugFirmwareConfig();
             if (!boards.length) return;
-            const available = boards.filter(board => typeof board.download_url === 'string' && board.download_url);
+            // The published firmware repository is the only distribution
+            // authority. Never directly download branch-tip or mutable
+            // TestBuilds binaries through Studio's stable-release action.
+            const available = boards.filter(board =>
+                board.download_page &&
+                board.id !== 'esp32-c3' && board.id !== 'esp32-s2'
+            );
             const pick = await vscode.window.showQuickPick(
-                available.map(board => ({ label: board.label, board })),
-                { placeHolder: 'Select your board' }
+                available.map(board => ({ label: board.label, description: board.status, board })),
+                { placeHolder: 'Select board — approved release or Monday test-build folder' }
             );
             if (!pick) return;
             const board = pick.board;
-            const extra = board.id === 'esp32-s3'
-                ? 'ESP32-S3 requires the matching flash files and instructions.'
-                : 'Choose only the UF2 for your board.';
-            const answer = await vscode.window.showWarningMessage(
-                `${board.label}: Experimental debugger firmware for debugging and testing your own code ONLY. NOT FOR PRODUCTION USE. Back up your device files before flashing. Download only opens the firmware file; Studio does not flash it. ${extra}`,
-                { modal: true }, 'Download', 'View files'
-            );
+            const approved = board.ready_for_release === true &&
+                typeof board.download_url === 'string' &&
+                /\/releases\/download\/[^/]+\//.test(board.download_url);
+            const message = approved
+                ? `${board.label}: Hardware-tested, version-pinned firmware release. Back up device files; Studio only opens the download and never flashes automatically.`
+                : `${board.label}: Experimental debugger firmware for debugging and testing your own code ONLY. NOT FOR PRODUCTION USE. Hardware validation is incomplete. Studio opens the firmware repository page, not a mutable test binary. Back up device files before any manual flashing.`;
+            const answer = approved
+                ? await vscode.window.showWarningMessage(message, { modal: true }, 'Download pinned release', 'View release')
+                : await vscode.window.showWarningMessage(message, { modal: true }, 'View firmware repository');
             if (!answer) return;
-            const url = answer === 'Download' ? board.download_url : board.download_page;
+            const url = (approved && answer === 'Download pinned release')
+                ? board.download_url : board.download_page;
             const uri = vscode.Uri.parse(url);
             if (uri.scheme !== 'https' || uri.authority !== 'github.com' ||
                 !uri.path.startsWith('/niwantha33/micropython_live_dbg_firmware/')) {

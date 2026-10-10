@@ -1,5 +1,5 @@
 {
-  "_comment": "Debugger download DISCOVERY ONLY. No automatic flashing or debugger-file upload. All frozen candidate builds are unvalidated until real-board acceptance.",
+  "_comment": "Firmware discovery ONLY. Downloads served exclusively from micropython_live_dbg_firmware. Stable releases are immutable; unvalidated Monday TestBuilds are browse-only. No automatic flash/upload.",
   "release_base": "https://github.com/niwantha33/micropython_live_dbg_firmware",
   "boards": [
     {
@@ -9,8 +9,8 @@
       "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/tree/main/TestBuilds/Pico2w",
       "artifact_name": "weekly-candidate-pico2w-frozen-UNVALIDATED",
       "ready_for_release": false,
-      "notes": "Choose UF2 matching the exact Pico model. One USB cable, CDC0 REPL and CDC1 debugger. New frozen firmware only; legacy published UF2 may still require files.",
-      "download_url": "https://github.com/niwantha33/micropython_live_dbg_firmware/raw/refs/heads/main/TestBuilds/Pico2w/firmware_pico2_w.uf2"
+      "notes": "UNVALIDATED Monday candidate. Open dedicated firmware repository TestBuilds, verify board and VERSION/SHA256, and back up device files before manual testing. Never auto-flash.",
+      "download_url": null
     },
     {
       "id": "pico2",
@@ -19,18 +19,18 @@
       "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/tree/main/TestBuilds/Pico2",
       "artifact_name": "weekly-candidate-pico2-frozen-UNVALIDATED",
       "ready_for_release": false,
-      "notes": "Choose UF2 matching the exact Pico model. One USB cable, CDC0 REPL and CDC1 debugger. New frozen firmware only; legacy published UF2 may still require files.",
-      "download_url": "https://github.com/niwantha33/micropython_live_dbg_firmware/raw/refs/heads/main/TestBuilds/Pico2/firmware_pico2.uf2"
+      "notes": "UNVALIDATED Monday candidate. Open dedicated firmware repository TestBuilds, verify board and VERSION/SHA256, and back up device files before manual testing. Never auto-flash.",
+      "download_url": null
     },
     {
       "id": "picow",
       "label": "Raspberry Pi Pico W",
-      "status": "Frozen-debugger candidate — CI built; hardware acceptance pending",
-      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/tree/main/TestBuilds/Picow",
-      "artifact_name": "weekly-candidate-picow-frozen-UNVALIDATED",
-      "ready_for_release": false,
-      "notes": "Choose UF2 matching the exact Pico model. One USB cable, CDC0 REPL and CDC1 debugger. New frozen firmware only; legacy published UF2 may still require files.",
-      "download_url": "https://github.com/niwantha33/micropython_live_dbg_firmware/raw/refs/heads/main/TestBuilds/Picow/firmware_pico_w.uf2"
+      "status": "Hardware-tested Pico W frozen debugger v2.6.0; Monday test candidates separate",
+      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/releases/tag/v2.6.0",
+      "artifact_name": null,
+      "ready_for_release": true,
+      "notes": "Pinned hardware-tested release: CDC0 REPL/upload, CDC1 debugger. Monday candidates cannot overwrite this release.",
+      "download_url": "https://github.com/niwantha33/micropython_live_dbg_firmware/releases/download/v2.6.0/micropython-studio-picow-debugger-v2.6.0.uf2"
     },
     {
       "id": "pico",
@@ -39,18 +39,18 @@
       "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/tree/main/TestBuilds/Pico",
       "artifact_name": "weekly-candidate-pico-frozen-UNVALIDATED",
       "ready_for_release": false,
-      "notes": "Choose UF2 matching the exact Pico model. One USB cable, CDC0 REPL and CDC1 debugger. New frozen firmware only; legacy published UF2 may still require files.",
-      "download_url": "https://github.com/niwantha33/micropython_live_dbg_firmware/raw/refs/heads/main/TestBuilds/Pico/firmware_pico.uf2"
+      "notes": "UNVALIDATED Monday candidate. Open dedicated firmware repository TestBuilds, verify board and VERSION/SHA256, and back up device files before manual testing. Never auto-flash.",
+      "download_url": null
     },
     {
       "id": "esp32-s3",
       "label": "ESP32-S3",
-      "status": "ESP32-S3 candidate — breakpoint and short RTA tested; long stability pending",
-      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/tree/main/TestBuilds/ESP32S3",
+      "status": "v2.6.0 frozen debugger PREVIEW; long RTA and reconnect acceptance pending",
+      "download_page": "https://github.com/niwantha33/micropython_live_dbg_firmware/releases/tag/v2.6.0-esp32s3-preview",
       "artifact_name": "weekly-candidate-esp32s3-UNVALIDATED",
       "ready_for_release": false,
-      "notes": "Physical Serial/JTAG port is REPL/upload; separate native USB port is debugger. Never flash the older ESP32S3 stable-folder binary expecting this transport.",
-      "download_url": "https://github.com/niwantha33/micropython_live_dbg_firmware/raw/refs/heads/main/TestBuilds/ESP32S3/firmware_esp32s3.bin"
+      "notes": "Preview only. Read complete flashing instructions in firmware repository. Serial/JTAG REPL/upload; native USB debugger.",
+      "download_url": null
     },
     {
       "id": "esp32-s2",
