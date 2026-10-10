@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "Live MicroPython debugger for Raspberry Pi Pico 2 W: breakpoints, stepping, locals, call stack and runtime tracing. Includes REPL, file tools, ESP32 and CircuitPython workflows.",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {
