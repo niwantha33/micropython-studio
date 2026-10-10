@@ -27,6 +27,8 @@ let rtaEvents = [];
 let rtaDumpTimer = null;
 const taskMap = new Map();
 const funToName = new Map();
+// The identity is tied to this RTA capture, not to a reusable heap address.
+const rtaNativeIdentity = new Map();
 
 function scheduleRtaTraceDump() {
     if (rtaDumpTimer) clearTimeout(rtaDumpTimer);
@@ -626,9 +628,16 @@ function openDebuggerPanel(context, port, venvPython) {
                                     if (!sm) continue;
                                     const funPtr = parseInt(sm[1], 10);
                                     const funName = sm[2];
+                                    parsed += 1;
+                                    // A chunk can be older than live metadata when heap
+                                    // addresses are reused. Reject conflicting old names.
+                                    const nativeIdentity = rtaNativeIdentity.get(funPtr);
+                                    if (nativeIdentity) {
+                                        const liveSimpleName = nativeIdentity.slice(nativeIdentity.lastIndexOf(':') + 1);
+                                        if (funName !== liveSimpleName && !funName.endsWith('.' + liveSimpleName)) continue;
+                                    }
                                     funToName.set(funPtr, funName);
                                     panel.webview.postMessage({ evt: 'rta_name', fun: funPtr, name: funName, kind: 'function' });
-                                    parsed += 1;
                                 }
                             }
                             rtaSymRemaining = Math.max(0, rtaSymRemaining - parsed);
@@ -782,6 +791,8 @@ function openDebuggerPanel(context, port, venvPython) {
                         }
                         rtaEvents = [];
                         taskMap.clear();
+                        funToName.clear();
+                        rtaNativeIdentity.clear();
                         requestTaskMap();
                         requestSymbolMap();
                         if (panel) panel.webview.postMessage({ evt: 'rta_status', enabled: true });
@@ -798,9 +809,24 @@ function openDebuggerPanel(context, port, venvPython) {
                         vscode.window.showWarningMessage(msg.text);
                     }
                 }
+                if (msg.evt === 'rta_native_name') {
+                    const fun = Number(msg.fun);
+                    const name = String(msg.name || '');
+                    if (Number.isSafeInteger(fun) && fun > 0 && fun <= 0xFFFFFFFF && name) {
+                        const identity = String(msg.bytecode) + ':' + String(msg.context) + ':' + name;
+                        if (rtaNativeIdentity.get(fun) !== identity) {
+                            // Runtime metadata supersedes an earlier guess for a reused address.
+                            rtaNativeIdentity.set(fun, identity);
+                            funToName.set(fun, name);
+                        }
+                        // The generic bridge-message forwarding below notifies the webview.
+                    }
+                }
                 if (msg.evt === 'rta_entry') {
                     rtaEvents.push({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
+                        // Snapshot the live name so later heap reuse cannot relabel history.
+                        _rtaNativeName: rtaNativeIdentity.has(msg.fun) ? funToName.get(msg.fun) : undefined,
                         ph: "B",
                         ts: msg.ts,
                         pid: 1,
@@ -811,6 +837,7 @@ function openDebuggerPanel(context, port, venvPython) {
                 if (msg.evt === 'rta_exit') {
                     rtaEvents.push({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
+                        _rtaNativeName: rtaNativeIdentity.has(msg.fun) ? funToName.get(msg.fun) : undefined,
                         ph: "E",
                         ts: msg.ts,
                         pid: 1,
@@ -970,6 +997,18 @@ function openDebuggerPanel(context, port, venvPython) {
         }
         if (msg.op === 'tasks') {
             bridge.stdin.write(JSON.stringify({ op: 'tasks' }) + '\n');
+            return;
+        }
+        if (msg.op === 'rta_on') {
+            // Explicit opt-in: older Studio/debug bridges will never receive
+            // the additive 0x07 frames, and older firmware remains supported.
+            bridge.stdin.write(JSON.stringify({
+                op: 'poke_global',
+                name: '__rta_names_optin',
+                depth: 0,
+                expr: "hasattr(__import__('dbg'),'rta_names_on') and __import__('dbg').rta_names_on()"
+            }) + '\n');
+            bridge.stdin.write(JSON.stringify(msg) + '\n');
             return;
         }
         if (msg.op === 'rta_resolve_names') {
@@ -1871,6 +1910,7 @@ let rtaEnabled = false;
 let rtaAvailable = null; // true / false / null = legacy capability unknown
 const rtaProfiles = new Map();
 const rtaNames = new Map();
+const rtaNativeIdentity = new Map();
 const rtaStack = [];
 let rtaEventCount = 0;
 let rtaFirstTs = null;
@@ -2121,6 +2161,26 @@ function setRtaName(fun, name, kind) {
   scheduleRtaRender();
 }
 
+function setRtaNativeName(fun, name, bytecode, context) {
+  const key = String(fun);
+  const identity = String(bytecode) + ':' + String(context) + ':' + name;
+  const previousIdentity = rtaNativeIdentity.get(key);
+  if (previousIdentity !== undefined && previousIdentity !== identity) {
+    // A different object now occupies this ID. Never relabel the old totals
+    // with a new function name: discard only the reused object's old profile.
+    rtaNames.delete(key);
+    rtaProfiles.delete(key);
+    for (let i = rtaStack.length - 1; i >= 0; i--) {
+      if (String(rtaStack[i].fun) === key) rtaStack.splice(i, 1);
+    }
+  }
+  rtaNativeIdentity.set(key, identity);
+  const previous = rtaNames.get(key);
+  if (!previous || (previous.name !== name && !previous.name.endsWith('.' + name))) {
+    setRtaName(fun, name, 'function');
+  }
+}
+
 function getRtaProfile(fun) {
   const key = String(fun);
   let profile = rtaProfiles.get(key);
@@ -2251,7 +2311,7 @@ function renderRtaProfiler() {
       : (p.kind === 'system' ? 'SYSTEM' : (p.kind === 'unknown' ? 'UNKNOWN' : 'FUNC'));
     html += '<tr>' +
       '<td><span class="rta-state"><span class="rta-state-dot ' + stateClass + '"></span>' + stateText + '</span></td>' +
-      '<td class="rta-name-cell" title="' + escapeHtml(p.name) + '">' + escapeHtml(p.name) + '</td>' +
+      '<td class="rta-name-cell" title="' + escapeHtml(p.name + ' · fun=0x' + (Number(p.fun) >>> 0).toString(16).padStart(8, '0')) + '">' + escapeHtml(p.name) + '</td>' +
       '<td><span class="rta-kind ' + p.kind + '">' + kindLabel + '</span></td>' +
       '<td>' + p.calls + '</td>' +
       '<td><div class="rta-load"><div class="rta-load-track"><div class="rta-load-fill" style="width:' + Math.min(100, pct).toFixed(1) + '%"></div></div><span class="rta-load-text">' + pct.toFixed(1) + '%</span></div></td>' +
@@ -2435,6 +2495,8 @@ window.addEventListener('message', (e) => {
   }
   else if (m.evt === 'rta_status') {
     if (m.enabled) {
+      rtaNames.clear();
+      rtaNativeIdentity.clear();
       resetRtaProfiler();
     } else {
       // Firmware stops emission before it can safely close the final segment
@@ -2454,6 +2516,7 @@ window.addEventListener('message', (e) => {
   else if (m.evt === 'open') add('reply', 'connected to ' + m.port);
   else if (m.evt === 'names') { currentNames = m.names || []; }
   else if (m.evt === 'rta_name') { setRtaName(m.fun, m.name, m.kind || 'task'); }
+  else if (m.evt === 'rta_native_name') { setRtaNativeName(m.fun, m.name, m.bytecode, m.context); }
   else if (m.evt === 'fun_name') {
     funNames[m.fun] = { name: m.name, fsPath: m.fsPath, defLine: m.defLine };
     setRtaName(m.fun, m.name, 'function');
@@ -2583,10 +2646,15 @@ function dumpRtaTrace() {
                     }
                 }
                 
-                // Resolve name
-                if (funToName.has(funPtr)) {
+                // Metadata captured with the event is stronger than a later
+                // address lookup: the heap may reuse an identifier over time.
+                const liveName = ev._rtaNativeName;
+                delete ev._rtaNativeName;
+                if (liveName) {
+                    ev.name = liveName;
+                } else if (funToName.has(funPtr) && !rtaNativeIdentity.has(funPtr)) {
                     ev.name = funToName.get(funPtr);
-                } else if (taskMap.has(funPtr)) {
+                } else if (taskMap.has(funPtr) && !rtaNativeIdentity.has(funPtr)) {
                     ev.name = taskMap.get(funPtr);
                 }
             }
