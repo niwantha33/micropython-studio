@@ -14,6 +14,35 @@ const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
 
 let panel = null;
 let bridge = null;
+let nativeEventSink = null;
+
+function emitNative(evt) {
+    if (!nativeEventSink) return;
+    try { nativeEventSink(evt); } catch (error) { console.error('[MicroPython Native Debug]', error); }
+}
+
+function sendNativeCommand(op) {
+    if (!bridge || !bridge.stdin || bridge.killed) return false;
+    if (!['continue', 'step', 'step_in', 'step_out', 'locals', 'globals', 'call_stack'].includes(op)) return false;
+    try {
+        bridge.stdin.write(JSON.stringify({ op }) + '\n');
+        return true;
+    } catch (_) { return false; }
+}
+
+function connectNativeDebugger(context, debugPort, venvPython, onEvent) {
+    if (panel) throw new Error('A MicroPython debug connection is already open. Close the existing debugger panel first.');
+    if (typeof onEvent !== 'function') throw new Error('Native debugger event sink is required.');
+    nativeEventSink = onEvent;
+    try { openDebuggerPanel(context, debugPort, venvPython); }
+    catch (error) { nativeEventSink = null; throw error; }
+}
+
+function disconnectNativeDebugger() {
+    if (panel) panel.dispose();
+    nativeEventSink = null;
+}
+
 let bpDisposable = null;
 const bpSlotMap = new Map(); // key "module:func:line" -> Set<slot> (filled on reply)
 const pendingBpReplies = []; // queue of {key, fsPath, line1, cancelled}
@@ -287,7 +316,9 @@ function openDebuggerPanel(context, port, venvPython) {
     }
 
     function postBreakpointSnapshot() {
-        if (panel) panel.webview.postMessage({ evt: 'breakpoints', items: buildBreakpointSnapshot() });
+        const items = buildBreakpointSnapshot();
+        if (panel) panel.webview.postMessage({ evt: 'breakpoints', items });
+        emitNative({ evt: 'breakpoints', items });
     }
 
     function registerSourceBreakpoint(bp, announce = true) {
@@ -467,6 +498,7 @@ function openDebuggerPanel(context, port, venvPython) {
                             msg: msg.msg || 'Debug CDC transport lost'
                         });
                     }
+                    emitNative({ evt: 'transport_lost', msg: msg.msg || 'Debug CDC transport lost' });
                     try { bridge.kill(); } catch (e) {}
                     continue;
                 }
@@ -480,10 +512,9 @@ function openDebuggerPanel(context, port, venvPython) {
                         panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; synchronizing breakpoint table' });
                         startupTimer = setTimeout(() => {
                             if (!sessionReady && panel) {
-                                panel.webview.postMessage({
-                                    evt: 'error',
-                                    msg: 'Debugger port opened but firmware did not answer. Check you selected the dedicated debug COM, that the board runs debugger-enabled firmware, and that its frozen trace pump is ready. Use Get debugger-enabled firmware for board-specific builds.'
-                                });
+                                const error = 'Debugger port opened but firmware did not answer. Check the dedicated debug COM and matching debugger-enabled firmware.';
+                                panel.webview.postMessage({ evt: 'error', msg: error });
+                                emitNative({ evt: 'error', msg: error });
                             }
                         }, 3500);
                     } catch (e) {
@@ -545,6 +576,7 @@ function openDebuggerPanel(context, port, venvPython) {
                         }
                         installCurrentBreakpoints();
                         panel.webview.postMessage({ evt: 'pump_ready', rtaSupported, legacy: legacyPump });
+                        emitNative({ evt: 'pump_ready', rtaSupported, legacy: legacyPump });
                     }
                     const m = msg.text.match(/^bp (\d+) @ (.*)\.([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
                     if (m) {
@@ -774,6 +806,12 @@ function openDebuggerPanel(context, port, venvPython) {
                         panel.webview.postMessage({ evt: 'names', names: pe.names });
                     }
                     panel.webview.postMessage({ evt: 'bp_hit', ip: pe.ip });
+                    emitNative({ evt: 'bp_hit', ip: pe.ip, location: {
+                        path: pe.loc ? pe.loc.fsPath : null,
+                        line: pe.loc ? pe.loc.line1 : null,
+                        name: pe.loc ? pe.loc.fnKey : null
+                    }, localNames: pe.names });
+                    sendNativeCommand('call_stack');
                     panel.webview.postMessage({ evt: 'status', paused: true });
                     // forward the reply so locals table renders
                 }
@@ -854,6 +892,17 @@ function openDebuggerPanel(context, port, venvPython) {
                     msg.evt === 'sent' &&
                     msg.op === 'poke_global' &&
                     rtaSymRefreshActive;
+                if (msg.evt === 'bp_hit' || msg.evt === 'exception') {
+                    const loc = resolveBreakpointRecord(msg.fun, msg.ip);
+                    emitNative({ ...msg,
+                        location: loc ? { path: loc.fsPath, line: loc.line1, name: loc.fnKey } : null,
+                        localNames: loc ? (localNamesByFn.get(loc.fnKey) || []) : []
+                    });
+                    sendNativeCommand('call_stack');
+                } else if (msg.evt === 'step_line' || msg.evt === 'sent' ||
+                           (msg.evt === 'reply' && /^(?:frame=|depth=|stack=)/.test(msg.text || ''))) {
+                    emitNative(msg);
+                }
                 if (panel && !internalRtaSymbolReply && !internalRtaSymbolSend) {
                     panel.webview.postMessage(msg);
                 }
@@ -867,6 +916,7 @@ function openDebuggerPanel(context, port, venvPython) {
     });
     bridge.on('close', () => {
         if (panel) panel.webview.postMessage({ evt: 'closed' });
+        emitNative({ evt: 'closed' });
         bridge = null;
     });
 
@@ -1089,6 +1139,8 @@ function openDebuggerPanel(context, port, venvPython) {
             bridge = null;
         }
         panel = null;
+        emitNative({ evt: 'closed' });
+        nativeEventSink = null;
     });
 }
 
@@ -2683,4 +2735,4 @@ function dumpRtaTrace() {
     }
 }
 
-module.exports = { startDebugger };
+module.exports = { startDebugger, connectNativeDebugger, sendNativeCommand, disconnectNativeDebugger };
