@@ -83,7 +83,7 @@ except Exception:
 # 2. RAM
 print("---RAM---")
 if gc:
-    gc.collect()
+    # Read current heap state; do not silently run GC when opening Dashboard.
     print(gc.mem_alloc() if hasattr(gc, 'mem_alloc') else 0)
     print(gc.mem_free() if hasattr(gc, 'mem_free') else 0)
 else:
