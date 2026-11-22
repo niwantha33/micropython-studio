@@ -19,6 +19,13 @@ const { isSafeDeviceEntryName, resolveDeviceDrivePath } = require('./pathSafety'
 
 const execFileAsync = promisify(execFile);
 
+/** Serial operations must address the same port owned by the shared daemon. */
+function canUseSharedSerial(manager, targetPort) {
+    return Boolean(targetPort && manager.isConnected && !manager.isSuspended &&
+        !manager.isReconnecting && manager.portName === targetPort);
+}
+
+
 // All backend operations must be bounded and must never invoke a shell.
 function backendExec(python, args, options, callback) {
     if (typeof options === 'function') {
@@ -200,7 +207,7 @@ class DeviceFileExplorerProvider {
 
         const lsOp = async () => {
             const connectionManager = require('./connectionManager');
-            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            if (canUseSharedSerial(connectionManager, this._port)) {
                 try {
                     const stdout = await connectionManager.listDir(dirPath);
                     const items = this._parseListOutput(stdout, dirPath);
@@ -417,7 +424,7 @@ class DeviceFileExplorerProvider {
     _moveFileOnDevice(srcPath, destPath) {
         return new Promise((resolve, reject) => {
             const connectionManager = require('./connectionManager');
-            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            if (canUseSharedSerial(connectionManager, this._port)) {
                 wsQueue.run(() => connectionManager.renameFile(srcPath, destPath), 'Rename/Move', true).then(resolve, reject);
                 return;
             }
@@ -463,7 +470,7 @@ async function readDeviceFile(port, deviceFilePath) {
             try {
                 let content;
                 const connectionManager = require('./connectionManager');
-                if (connectionManager.isConnected && !connectionManager.isSuspended) {
+                if (canUseSharedSerial(connectionManager, port)) {
                     content = await wsQueue.run(() => connectionManager.catFile(deviceFilePath), 'Read File', true);
                 } else {
                     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
@@ -517,7 +524,7 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
     }
 
     const connectionManager = require('./connectionManager');
-    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+    if (canUseSharedSerial(connectionManager, port)) {
         try {
             await wsQueue.run(() => connectionManager.deleteFile(deviceFilePath, false), 'Delete File', true);
             vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
@@ -582,7 +589,7 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
     }
 
     const connectionManager = require('./connectionManager');
-    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+    if (canUseSharedSerial(connectionManager, port)) {
         try {
             await wsQueue.run(() => connectionManager.deleteFile(deviceFolderPath, true), 'Delete Folder', true);
             vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
@@ -636,7 +643,7 @@ async function renameDeviceFile(port, oldPath, provider) {
     const newPath = parent === '/' ? `/${newName}` : `${parent}/${newName}`;
 
     const connectionManager = require('./connectionManager');
-    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+    if (canUseSharedSerial(connectionManager, port)) {
         try {
             await wsQueue.run(() => connectionManager.renameFile(oldPath, newPath), 'Rename/Move', true);
             provider.refresh();
@@ -676,7 +683,7 @@ async function uploadToDeviceFolder(port, targetFolder, provider) {
     if (!files || files.length === 0) return;
 
     const connectionManager = require('./connectionManager');
-    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+    if (canUseSharedSerial(connectionManager, port)) {
         for (const file of files) {
             try {
                 const destPath = targetFolder === '/' ? `/${pathMod.basename(file.fsPath)}` : `${targetFolder}/${pathMod.basename(file.fsPath)}`;
@@ -727,7 +734,7 @@ async function newDeviceFolder(port, parentPath, provider) {
     const newPath = parentPath === '/' ? `/${folderName}` : `${parentPath}/${folderName}`;
 
     const connectionManager = require('./connectionManager');
-    if (connectionManager.isConnected && !connectionManager.isSuspended) {
+    if (canUseSharedSerial(connectionManager, port)) {
         try {
             await wsQueue.run(() => connectionManager.makeDir(newPath), 'Create Folder', true);
             provider.refresh();
