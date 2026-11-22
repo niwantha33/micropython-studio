@@ -23,6 +23,7 @@ const { openDeviceTerminal } = require('./deviceTerminal');
 const connectionManager = require('./connectionManager');
 const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive } = require('./circuitpyDrive');
 const { getConnectedDevices } = require('./runCommand');
+const { initializeSecretStorage, getDeviceSecret } = require('./deviceSecrets');
 const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
 const { registerNativeDebugger } = require('./nativeDebugger');
@@ -65,7 +66,7 @@ async function _buildRunPortOptions() {
     const savedCom = await getConfigValue(cfgPath, 'device', 'port');
     const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
     const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
-    const password = await getConfigValue(cfgPath, 'remote', 'webrepl_password');
+    const password = await getDeviceSecret(cfgPath, 'webrepl_password');
 
     if (enabled !== 'true' || !ip) return null;
 
@@ -416,7 +417,7 @@ function updateDeviceStatusBar() {
         const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
         const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : gRemoteDevicePort;
         deviceStatusBarItem.text = `${portLabel}`;
-        deviceStatusBarItem.tooltip = `Connected to ${gRemoteDevicePort}`;
+        deviceStatusBarItem.tooltip = `Connected to ${gRemoteDevicePort.startsWith('ws:') ? gRemoteDevicePort.split(',')[0] : gRemoteDevicePort}`;
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
         deviceStatusBarItem.text = '[OK] No Device';
@@ -484,6 +485,7 @@ async function sendCleanCommand(terminal, command) {
 }
 
 function activate(context) {
+    initializeSecretStorage(context);
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
     registerNativeDebugger(context, () => gRemoteDevicePort, () => getVenvPythonPath(getVenvPythonPathFolder()));
@@ -909,7 +911,7 @@ function activate(context) {
         // ── Path 2: Web Workflow (HTTP) ───────────────────────────────────────
         const cfgPath = path.join(path.dirname(localRoot), 'device.cfg');
         const wwIp = await getConfigValue(cfgPath, 'remote', 'webworkflow_ip').catch(() => '');
-        const wwPass = await getConfigValue(cfgPath, 'remote', 'webworkflow_password').catch(() => '');
+        const wwPass = await getDeviceSecret(cfgPath, 'webworkflow_password').catch(() => '');
         const wwPort = parseInt(await getConfigValue(cfgPath, 'remote', 'webworkflow_port').catch(() => '80') || '80', 10);
 
         if (wwIp && wwPass) {
