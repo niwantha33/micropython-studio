@@ -76,7 +76,8 @@ async function chooseDebugAdapter(configPath, replPort, options = {}) {
         ? options.devices
         : await getConnectedDevices();
     const seen = new Set();
-    const detected = (Array.isArray(devices) ? devices : []).filter(device => {
+    const enumerated = Array.isArray(devices) ? devices : [];
+    const detected = enumerated.filter(device => {
         const port = device && device.port;
         if (validateDebugPort(port, replPort)) return false;
         const key = port.trim().toLowerCase();
@@ -90,7 +91,7 @@ async function chooseDebugAdapter(configPath, replPort, options = {}) {
     // A nonempty enumeration containing only REPL means the debugger is
     // absent, not that serial discovery failed. Ask instead of trusting it.
     if (savedValid && !options.force &&
-        (devices.length === 0 || currentDevice)) {
+        (enumerated.length === 0 || currentDevice)) {
         // A successful match may canonicalize 'com5' to 'COM5'. Never change
         // the actual port identity or replace an unavailable saved selection.
         const selected = currentDevice ? currentDevice.port.trim() : saved;
