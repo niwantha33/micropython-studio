@@ -12,7 +12,7 @@ const fs = require('fs').promises;
 const net = require('net');
 const { getConnectedDevices } = require('./runCommand');
 const { getDeviceSecret } = require('./deviceSecrets');
-const { getConfigValue, updateCfgComponent } = require('./commonFxn');
+const { getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
 
 let outputChannel = null;
 
@@ -215,7 +215,7 @@ async function getValidDevicePort(resource) {
         }
 
         if (gRemoteDevicePort) {
-            console.log(`Selected device: ${gRemoteDevicePort}`);
+            console.log(`Selected device: ${redactDevicePort(gRemoteDevicePort)}`);
         } else {
             vscode.window.showWarningMessage('No matching device found. Using saved port from config.');
         }
