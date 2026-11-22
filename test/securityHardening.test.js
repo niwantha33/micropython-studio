@@ -107,6 +107,15 @@ suite('Security and reliability hardening', () => {
         assert.ok(!/shell:\s*true/.test(source));
     });
 
+    test('WebREPL webview cannot render untrusted filenames as HTML', () => {
+        const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'webreplBridge.js'), 'utf8');
+        assert.ok(bridge.includes("document.getElementById('file-status').textContent = msg.text;"));
+        assert.ok(bridge.includes("Buffer.byteLength(msg.name, 'utf8') > 64"));
+        assert.ok(bridge.includes("getAccum.length + sz > MAX_WEBREPL_FILE_BYTES"));
+        assert.ok(bridge.includes("!isSafeHost(ip)"));
+        assert.ok(!bridge.includes("document.getElementById('file-status').innerHTML = msg.html"));
+    });
+
     test('TCP REPL bridge is loopback-only unless remote exposure is explicitly permitted', () => {
         const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'rfc_server.py'), 'utf8');
         assert.ok(source.includes('host="127.0.0.1"'));
