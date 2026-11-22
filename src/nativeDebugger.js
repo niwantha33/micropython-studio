@@ -80,9 +80,12 @@ class NativeMicroPythonAdapter {
                 });
             }
         } else if (msg.evt === 'bp_hit' || msg.evt === 'step_line' || msg.evt === 'exception') {
-            // Pauses with no verified source mapping stay address-only; do not invent lines.
+            // A VM frame reply can produce step_line after bp_hit. Update location
+            // without emitting a second stopped event for the same pause.
+            const wasPaused = this.paused;
             if (msg.evt === 'step_line' && msg.file && Number.isInteger(msg.line) && msg.line > 0) {
-                this.location = { path: msg.file, line: msg.line, name: path.basename(msg.file, '.py') };
+                this.location = { path: msg.file, line: msg.line, name: msg.func || path.basename(msg.file, '.py') };
+                this.localNames = Array.isArray(msg.localNames) ? msg.localNames : [];
             } else if (msg.evt !== 'step_line') {
                 this.location = msg.location?.path && msg.location.line > 0 ? msg.location : null;
                 this.localNames = Array.isArray(msg.localNames) ? msg.localNames : [];
@@ -91,11 +94,12 @@ class NativeMicroPythonAdapter {
             this.locals = [];
             this.globals = [];
             this.frames = [];
-            this.sendEvent('stopped', {
+            if (!wasPaused) this.sendEvent('stopped', {
                 reason: msg.evt === 'exception' ? 'exception' : msg.evt === 'step_line' ? 'step' : 'breakpoint',
                 description: msg.evt === 'exception' ? String(msg.msg || 'Device exception') : undefined,
                 threadId: 1, allThreadsStopped: true
             });
+            else this.sendEvent('invalidated', { areas: ['variables', 'stackTrace'], threadId: 1 });
             if (msg.evt === 'step_line') {
                 sendNativeCommand('call_stack');
             }
@@ -110,7 +114,10 @@ class NativeMicroPythonAdapter {
             this.sendEvent('continued', { threadId: 1, allThreadsContinued: true });
         } else if (msg.evt === 'transport_lost' || msg.evt === 'error') {
             this.sendEvent('output', { category: 'stderr', output: String(msg.msg || 'Debug transport error') + '\n' });
-            if (msg.evt === 'transport_lost') this.terminate();
+            if (msg.evt === 'transport_lost' || !this.ready) {
+                this.terminate();
+                disconnectNativeDebugger();
+            }
         } else if (msg.evt === 'closed') {
             this.terminate();
         }
