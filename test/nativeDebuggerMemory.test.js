@@ -97,7 +97,8 @@ suite('Native Debug Adapter + Memory and GC analyzer', () => {
         assert.ok(!native.includes('flashFirmware('));
         assert.ok(!native.includes('spawn('));
         assert.ok(memory.includes('connectionManager.runCodeSilently(buildProbeScript(collect))'));
-        assert.ok(memory.includes('if (vscode.debug.activeDebugSession?.type'));
+        assert.ok(memory.includes("session?.type === 'micropython-studio'"));
+        assert.ok(memory.includes('await stopDebugSessionSafely(session)'));
         assert.ok(manifest.contributes.debuggers.some(d => d.type === 'micropython-studio'));
     });
 });
