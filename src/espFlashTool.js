@@ -45,7 +45,9 @@ function scanComPorts(context) {
             }
             try {
                 const parsed = JSON.parse(stdout);
-                resolve(Array.isArray(parsed) ? parsed : []);
+                resolve(Array.isArray(parsed) ? parsed.map(item => ({
+                    ...item, port: normalizeSerialPort(item.port)
+                })) : []);
             } catch (e) {
                 console.error('[ESP Flash Tool] Could not parse port list JSON:', e);
                 resolve([]);
