@@ -2,6 +2,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+const crypto = require('crypto');
 const vscode = require('vscode');
 
 const OLLAMA_HOST = '127.0.0.1';
@@ -499,7 +500,8 @@ device_firmware = ${firmware}
         const htmlPath = path.join(this._extensionUri.fsPath, 'resource', 'aiAssistant.html');
         let html = fs.readFileSync(htmlPath, 'utf8');
 
-        return html;
+        const nonce = crypto.randomBytes(16).toString('base64');
+        return html.replaceAll('__MPS_CSP_NONCE__', nonce);
     }
 
     updateViewContext(data) {
