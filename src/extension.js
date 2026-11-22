@@ -869,7 +869,7 @@ function activate(context) {
 
             if (currentTarget !== 'Host' && !isCircuitPython) {
                 // Run on MCU (MicroPython) uses the daemon.
-                if ((!connectionManager.isConnected || connectionManager.portName !== gRemoteDevicePort) &&
+                if ((!connectionManager.isConnected || !samePort(connectionManager.portName, gRemoteDevicePort)) &&
                     gRemoteDevicePort) {
                     if (connectionManager.isScriptRunning) {
                         throw new Error('Stop the running MCU script before changing serial ports.');
@@ -882,7 +882,7 @@ function activate(context) {
                 }
             }
 
-            if (connectionManager.isConnected && connectionManager.portName === runPort &&
+            if (connectionManager.isConnected && samePort(connectionManager.portName, runPort) &&
                 currentTarget === 'MCU' && !isCircuitPython) {
                 // If using the daemon for MCU run, get the code from the editor (or file) and run it!
                 let code = '';
@@ -893,6 +893,17 @@ function activate(context) {
                     code = fs.readFileSync(filePath, 'utf8');
                 }
                 
+                // The REPL terminal must exist BEFORE execution starts. Previously
+                // it was opened after the daemon acknowledged Run: short scripts
+                // could finish before a terminal subscribed to serial RX.
+                // Await the PTY opening and port connection, not just show().
+                try {
+                    await openDeviceTerminal(context, runPort);
+                } catch (error) {
+                    outputChannel.appendLine('[Run Command] Shell not ready: ' + error.message);
+                    vscode.window.showErrorMessage('Cannot open REPL before running: ' + error.message);
+                    return;
+                }
                 outputChannel.appendLine(`[Run Command] Streaming editor script to MCU via daemon's raw paste...`);
                 try {
                     await wsQueue.run(() => connectionManager.runInTerminal(code), 'Run MCU Script', true);
@@ -903,8 +914,6 @@ function activate(context) {
                     return;
                 }
                 
-                // Show the terminal if it's hidden
-                await vscode.commands.executeCommand('micropython-ide.openShell');
                 return;
             }
 
