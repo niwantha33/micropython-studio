@@ -20,6 +20,7 @@ const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigVa
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
+const { SIMPLE_PROFILES } = require('./flashProfiles');
 const { openDeviceDashboard } = require('./deviceDashboard');
 const { openDeviceTerminal } = require('./deviceTerminal');
 const connectionManager = require('./connectionManager');
@@ -1580,43 +1581,60 @@ function activate(context) {
         })
     );
 
-    // Flash firmware to device via mpflash or esptool
+    // Guided firmware update: the typical user only chooses the board family,
+    // a matching official .bin file, and confirms the selected COM adapter.
+    // Multi-image/partition flashing stays in the explicit Advanced route.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.flashFirmware', async () => {
-            const pick = await vscode.window.showQuickPick([
-                {
-                    label: '$(circuit-board) Raspberry Pi Pico / STM32 / Standard Board',
-                    description: 'Flash firmware via standard mpflash wizard',
-                    type: 'standard'
-                },
-                {
-                    label: '$(chip) ESP32 / ESP8266 (Espressif Board)',
-                    description: 'Flash firmware using the ESP Flash Download Tool (esptool)',
-                    type: 'esp'
-                }
-            ], {
-                placeHolder: 'Select your microcontroller type for flashing'
+            const items = [
+                { label: '$(cloud-download) Get official MicroPython firmware', detail: 'Browse board-specific downloads before changing your device', action: 'download' },
+                ...Object.entries(SIMPLE_PROFILES).map(([chip, profile]) => ({
+                    label: '$(chip) ' + profile.label + ' — Guided Flash',
+                    description: 'One official .bin file',
+                    detail: 'Uses the official MicroPython full-image address ' + profile.offset,
+                    action: 'simpleEsp',
+                    chip
+                })),
+                { label: '$(circuit-board) Pico / STM32 / other mpflash boards',
+                  detail: 'Use existing board-detection and version wizard', action: 'mpflash' },
+                { label: '$(settings-gear) Advanced ESP flash (multiple binaries)',
+                  detail: 'Custom offsets, partitions and erase controls for experienced users', action: 'advanced' }
+            ];
+            const selection = await vscode.window.showQuickPick(items, {
+                title: 'Flash MicroPython firmware — choose your board',
+                placeHolder: 'Select the exact chip or choose Advanced for custom images',
+                ignoreFocusOut: true
             });
-
-            if (!pick) return;
-
-            if (pick.type === 'standard') {
-                const terminal = getMpremoteTerminal();
-                const result = await flashFirmware(outputChannel, terminal);
-                if (result && gDeviceCodeDir) {
-                    // Record the flashed version in device.cfg
-                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
-                    await updateCfgComponent(cfgPath, 'device', 'last_flashed_version', result.version);
-                    await updateCfgComponent(cfgPath, 'device', 'last_flashed_board', result.board);
-                    // Update status bar tooltip to show firmware version
-                    if (deviceStatusBarItem) {
-                        deviceStatusBarItem.tooltip = `Connected to ${redactDevicePort(result.port)} — firmware ${result.version}`;
-                    }
-                }
-            } else {
-                const { openEspFlashTool } = require('./espFlashTool');
-                openEspFlashTool(context, outputChannel, gRemoteDevicePort);
+            if (!selection) return;
+            if (selection.action === 'download') {
+                await vscode.env.openExternal(vscode.Uri.parse('https://micropython.org/download/'));
+                return;
             }
+            if (selection.action === 'mpflash') {
+                const terminal = getMpremoteTerminal();
+                // mpflash runs asynchronously inside the terminal. Do not
+                // record last-flashed metadata until the device confirms it.
+                await flashFirmware(outputChannel, terminal);
+                return;
+            }
+            let filePath = '';
+            if (selection.action === 'simpleEsp') {
+                const file = await vscode.window.showOpenDialog({
+                    canSelectFiles: true,
+                    canSelectFolders: false,
+                    canSelectMany: false,
+                    openLabel: 'Use this firmware .bin',
+                    filters: { 'MicroPython firmware': ['bin'] }
+                });
+                if (!file?.length) return;
+                filePath = file[0].fsPath;
+            }
+            const { openEspFlashTool } = require('./espFlashTool');
+            await openEspFlashTool(context, outputChannel, gRemoteDevicePort, {
+                chipType: selection.chip || undefined,
+                firmwareFile: filePath,
+                advanced: selection.action === 'advanced'
+            });
         })
     );
 
