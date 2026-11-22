@@ -3,10 +3,9 @@
 const vscode = require('vscode');
 const path = require('path');
 const { findProjectRoot } = require('./refreshSettings');
-const { getConfigValue, updateCfgComponent } = require('./commonFxn');
-const { getConnectedDevices } = require('./runCommand');
-const { normalizeSerialPort, samePort, isSavedUsbPort } = require('./devicePortSelection');
-const { pickSerialAdapter } = require('./serialAdapterPicker');
+const { getConfigValue } = require('./commonFxn');
+const { normalizeSerialPort, isSavedUsbPort } = require('./devicePortSelection');
+const { chooseDebugAdapter } = require('./debugAdapterConfig');
 
 const DEBUG_TYPE = 'micropython-studio';
 
@@ -48,31 +47,11 @@ async function resolveReplPort(configPort, runtimePort, folder) {
 async function resolveDebugPort(folder, replPort, explicitPort = '', forcePicker = false) {
     const cfg = await findDebugCfgPath(folder);
     if (!cfg) throw new Error('No MicroPython project device.cfg found. Open or refresh your project.');
-    const repl = normalizeSerialPort(replPort);
-    const provided = normalizeSerialPort(explicitPort);
-    const saved = await getConfigValue(cfg, 'debug', 'port');
-    const candidate = normalizeSerialPort(provided || saved || '');
-    const devices = await getConnectedDevices().catch(() => []);
-    let selected;
-
-    if (!forcePicker && provided) {
-        selected = provided;
-    } else if (!forcePicker && candidate && devices.some(d => samePort(d.port, candidate))) {
-        selected = candidate;
-    } else {
-        selected = await pickSerialAdapter({
-            selected: candidate,
-            excludePort: repl,
-            purpose: 'Debugger (separate CDC)'
-        });
-    }
-    if (!selected) return null;
-    if (!isSavedUsbPort(selected) || selected === '-' || samePort(selected, repl)) {
-        throw new Error('Debug adapter must be a valid COM port different from the REPL USB port.');
-    }
-    selected = normalizeSerialPort(selected);
-    await updateCfgComponent(cfg, 'debug', 'port', selected);
-    return selected;
+    // Keep native and legacy debugging on the same confirmed CDC adapter.
+    return chooseDebugAdapter(cfg, normalizeSerialPort(replPort), {
+        requestedPort: normalizeSerialPort(explicitPort),
+        force: forcePicker
+    });
 }
 
 module.exports = { defaultAttachConfiguration, findDebugCfgPath, resolveReplPort, resolveDebugPort };

@@ -94,7 +94,7 @@
     "viewsWelcome": [
       {
         "view": "micropython-ide-launch-view",
-        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(hubot) Enter Private AI Assistance](command:micropython-ide.enterAiAssistance)\n\n──────────────────────────\n\n[$(bug) Start Debug](command:micropython-ide.startDebug)\n[$(cloud-download) Download Debug Firmware](command:micropython-ide.flashDebugFirmware)",
+        "contents": "Welcome to MicroPython Studio! 🚀\n\nGet started by setting up your environment and creating a project.\n\n[$(gear) Setup Environment](command:micropython-ide.setupEnvironment)\n[$(file-add) Create New Project](command:micropython-ide.createNewProject)\n[$(folder-opened) Open Existing Project](command:micropython-ide.openExistingProjectFolder)\n\n──────────────────────────\n\n[$(dashboard) Open Device Dashboard](command:micropython-ide.openDeviceDashboard)\n[$(refresh) Refresh Device Files](command:micropython-ide.refreshMcuFolder)\n[$(plug) Update Device Port](command:micropython-ide.updateDevicePort)\n[$(package) Install Package](command:micropython-ide.installPackage)\n[$(cloud-upload) Upload File to Device](command:micropython-ide.uploadFileToDevice)\n[$(cloud-upload) Upload Project to Device](command:micropython-ide.uploadProjectToDevice)\n\n──────────────────────────\n\n[$(flame) Flash Firmware to Device](command:micropython-ide.flashFirmware)\n[$(cloud-download) Download Firmware](command:micropython-ide.downloadFirmware)\n\n──────────────────────────\n\n[$(hubot) Enter Private AI Assistance](command:micropython-ide.enterAiAssistance)\n\n──────────────────────────\n\n[$(debug-alt) Start Debug](command:micropython-ide.startDebug)\n[$(plug) Configure Debug Adapter](command:micropython-ide.configureDebugAdapter)\n[$(cloud-download) Download Debug Firmware](command:micropython-ide.flashDebugFirmware)",
         "when": "true"
       }
     ],
@@ -152,17 +152,26 @@
       {
         "command": "micropython-ide.startDebug",
         "title": "MicroPython: Start Debug Session",
-        "category": "MicroPython Studio"
+        "category": "MicroPython Studio",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "micropython-ide.configureDebugAdapter",
+        "title": "MicroPython: Configure Debug Adapter (CDC)",
+        "category": "MicroPython Studio",
+        "icon": "$(plug)"
       },
       {
         "command": "micropython-ide.flashDebugFirmware",
         "title": "MicroPython: Download Debug Firmware",
-        "category": "MicroPython Studio"
+        "category": "MicroPython Studio",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "micropython-ide.updateDevicePort",
         "title": "MicroPython: Update Device Port",
-        "category": "MicroPython Studio"
+        "category": "MicroPython Studio",
+        "icon": "$(plug)"
       },
       {
         "command": "micropython-ide.refreshDeviceFiles",
@@ -286,12 +295,14 @@
       {
         "command": "micropython-ide.openMemoryAnalyzer",
         "title": "MicroPython: Memory & Garbage Collection Analyzer",
-        "category": "MicroPython Studio"
+        "category": "MicroPython Studio",
+        "icon": "$(pulse)"
       },
       {
         "command": "micropython-ide.openLegacyDebugPanel",
         "title": "MicroPython: Open Legacy Debug & RTA Panel",
-        "category": "MicroPython Studio"
+        "category": "MicroPython Studio",
+        "icon": "$(debug-console)"
       },
       {
         "command": "micropython-ide.configureNativeDebug",
@@ -331,6 +342,10 @@
         },
         {
           "command": "micropython-ide.startDebug",
+          "when": "true"
+        },
+        {
+          "command": "micropython-ide.configureDebugAdapter",
           "when": "true"
         },
         {

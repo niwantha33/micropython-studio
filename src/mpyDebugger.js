@@ -1206,7 +1206,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
 // Debugging never uploads boot.py, dbgref.py, trace_pump.py, or changes
 // a user's MicroPython filesystem. Those helpers must be frozen in the
 // matching board firmware. A legacy UF2 requires a firmware upgrade.
-async function startDebugger(context, gRemoteDevicePort, venvPython) {
+async function startDebugger(context, gRemoteDevicePort, venvPython, choosePort) {
     const replPort = gRemoteDevicePort && gRemoteDevicePort !== '-' ? String(gRemoteDevicePort).trim() : '';
     const pick = await vscode.window.showQuickPick([
         { label: '$(plug) Connect', id: 'connect' },
@@ -1222,7 +1222,9 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
         return;
     }
 
-    const portInput = await vscode.window.showInputBox({
+    const portInput = typeof choosePort === 'function'
+        ? await choosePort(replPort)
+        : await vscode.window.showInputBox({
         prompt: 'Debugger COM port (not REPL port)',
         placeHolder: 'e.g. COM13',
         validateInput: value => {
@@ -1235,6 +1237,10 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
         }
     });
     if (!portInput) return;
+    if (portInput.trim().toUpperCase() === replPort.toUpperCase()) {
+        vscode.window.showErrorMessage('Debugger CDC must be different from the REPL/upload port.');
+        return;
+    }
     openDebuggerPanel(context, portInput.trim(), venvPython);
 }
 
