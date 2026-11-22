@@ -135,6 +135,8 @@ class MpyDaemon:
         self._pending_program_input = b''
         self._program_state_lock = threading.Lock()
         self._run_worker = None
+        self._event_lock = threading.Lock()
+        self._program_cancel = threading.Event()
 
     def _rx_loop(self):
         while self.running:
@@ -276,8 +278,9 @@ class MpyDaemon:
         """Sends an event to the Node.js host over stdout."""
         msg = {"type": type_, **payload}
         # Print JSON separated by newline
-        sys.stdout.write(json.dumps(msg) + "\n")
-        sys.stdout.flush()
+        with self._event_lock:
+            sys.stdout.write(json.dumps(msg) + "\n")
+            sys.stdout.flush()
 
     def _try_reconnect(self, retries=50, delay=0.1) -> bool:
         """Tries to reopen the serial port after a transient disconnect (e.g. USB CDC reboot)."""
@@ -475,7 +478,7 @@ class MpyDaemon:
         buffer = self._read_buf
         self._read_buf = b""
         phase = 0  # stdout then stderr then final raw prompt
-        while self.running and not self.suspended:
+        while self.running and not self.suspended and not self._program_cancel.is_set():
             if not buffer:
                 buffer = self._rx_read(4096, timeout=0.05)
                 if not buffer:
@@ -499,9 +502,10 @@ class MpyDaemon:
 
     def _run_terminal_worker(self, code: str):
         try:
+            # Own the serial writer during raw-paste setup, then RELEASE it
+            # while the user program runs so Ctrl+C and explicit reset work.
             with self._lock:
                 self.in_raw_repl = True
-                # This interrupt is part of an explicit Run action, not Shell open.
                 self._paced_serial_write(b'\r\x02\r\x03')
                 time.sleep(0.1)
                 self.enter_raw_repl()
@@ -510,29 +514,32 @@ class MpyDaemon:
                     self._program_output_phase = True
                     pending = self._pending_program_input
                     self._pending_program_input = b""
-                if pending:
-                    self._paced_serial_write(pending)
-                self._stream_raw_execution()
+            if pending and not self._program_cancel.is_set():
+                self._paced_serial_write(pending)
+            self._stream_raw_execution()
         except Exception as exc:
-            self.send_event("error", {"message": "Script execution failed: " + str(exc)[:320]})
+            if not self._program_cancel.is_set():
+                self.send_event("error", {"message": "Script execution failed: " + str(exc)[:320]})
         finally:
             try:
                 with self._lock:
-                    # The raw REPL must be released for Shell and Dashboard.
-                    if self.serial and self.serial.is_open and not self.suspended:
+                    # Never send Ctrl+B while an explicit reset is underway.
+                    was_cancelled = self._program_cancel.is_set()
+                    if self.serial and self.serial.is_open and not self.suspended and not was_cancelled:
                         self.exit_raw_repl()
                     self.in_raw_repl = False
-                    self._program_running = False
-                    self._program_output_phase = False
-                    self._pending_program_input = b""
-                    self._flush_terminal_input()
+                    with self._program_state_lock:
+                        self._program_running = False
+                        self._program_output_phase = False
+                        self._pending_program_input = b""
+                    if not was_cancelled:
+                        self._flush_terminal_input()
             except Exception as exc:
                 self.send_event("error", {"message": "REPL recovery failed: " + str(exc)[:320]})
                 self.in_raw_repl = False
                 self._program_running = False
             self.send_event("run_finished", {})
-            # A visible friendly prompt after the raw session finishes.
-            if self.running and not self.suspended:
+            if self.running and not self.suspended and not self._program_cancel.is_set():
                 self._emit_terminal_bytes(b"\r\n>>> ")
 
     def process_command(self, cmd: dict):
@@ -609,6 +616,7 @@ class MpyDaemon:
             # command loop must remain responsive for interactive input/Ctrl+C.
             with self._program_state_lock:
                 self._program_running = True
+                self._program_cancel.clear()
                 self._program_output_phase = False
                 self._pending_program_input = b""
             self.send_event("run_started", {"id": request_id, "success": True})
@@ -622,9 +630,11 @@ class MpyDaemon:
             request_id = cmd.get("id")
             try:
                 with self._lock:
-                    if (self.suspended or self.in_raw_repl or self._program_running or
+                    if (self.suspended or
                             not self.serial or not self.serial.is_open):
                         raise RuntimeError("REPL port is busy or disconnected")
+                    # Cancel streaming run (if present) before changing DTR/RTS.
+                    self._program_cancel.set()
                     self._paced_serial_write(b'\r\x03\x03')
                     time.sleep(0.1)
                     self.serial.setRTS(True)
