@@ -8,6 +8,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { getBuildInfo } = require('./buildInfo');
 const { parseRtaNameReply } = require('./rtaNameParser');
+const { parseDeviceLiteral, evaluateCondition } = require('./safeCondition');
 
 const REQUIRED_PUMP_PROTOCOL = 5;
 const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
@@ -776,20 +777,21 @@ function openDebuggerPanel(context, port, venvPython) {
                             cur += c;
                         }
                         if (cur.trim()) parts.push(cur.trim());
-                        const args = {};
+                        const args = Object.create(null);
                         for (let i = 0; i < pe.names.length; i++) {
                             const idx = n - 1 - i;
-                            let v = (idx >= 0 && idx < parts.length) ? parts[idx] : 'null';
-                            v = v.replace(/\bNone\b/g, 'null').replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false');
-                            try { args[pe.names[i]] = eval('(' + v + ')'); } catch (_) { args[pe.names[i]] = v; }
+                            args[pe.names[i]] = parseDeviceLiteral(
+                                idx >= 0 && idx < parts.length ? parts[idx] : 'None'
+                            );
                         }
-                        let js = pe.cond
-                            .replace(/\band\b/g, '&&').replace(/\bor\b/g, '||').replace(/\bnot\b/g, '!')
-                            .replace(/\bNone\b/g, 'null').replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false');
                         try {
-                            const fn = new Function(...pe.names, 'return (' + js + ')');
-                            passed = !!fn(...pe.names.map(k => args[k]));
-                        } catch (e) { err = String(e); }
+                            passed = evaluateCondition(pe.cond, args);
+                        } catch (e) {
+                            // Unsupported or malformed conditions must PAUSE, never auto-resume.
+                            err = e instanceof Error ? e.message : 'Unsupported breakpoint condition';
+                        }
+                    } else {
+                        err = 'Invalid device frame data';
                     }
                     if (!passed) {
                         if (err) panel.webview.postMessage({ evt: 'error', msg: 'cond error: ' + err + ' → pausing' });
