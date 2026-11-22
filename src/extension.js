@@ -823,8 +823,14 @@ function activate(context) {
                 return;
             }
 
-            // Launch the advanced unified Device Terminal
-            await openDeviceTerminal(context, gRemoteDevicePort);
+            // Launch the advanced unified Device Terminal. Report a failed
+            // PTY or serial handshake instead of silently leaving a dead shell.
+            try {
+                await openDeviceTerminal(context, gRemoteDevicePort);
+            } catch (error) {
+                outputChannel.appendLine('[Shell] ' + error.message);
+                vscode.window.showErrorMessage('MicroPython Shell: ' + error.message);
+            }
         })
     );
 
