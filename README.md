@@ -69,8 +69,8 @@ On compatible **debugger-enabled firmware**, MicroPython Studio provides source 
 - **Firmware Tools**
   Download and flash firmware for supported targets, including debug firmware.
 
-- **QEMU Simulator**
-  Run code against an emulated MicroPython target when hardware is not nearby.
+- **QEMU Simulator (temporarily disabled in security-hardening preview)**
+  Requires verified, SHA-256-pinned QEMU and firmware artifacts before running on the host.
 
 - **Private AI Assistant**
   Use local Ollama models for code help and device-error investigation.
@@ -141,12 +141,24 @@ Firmware must match the exact board. See [board support and firmware status](htt
 
 ## Simulator
 
-The built-in simulator is useful when you want to test application logic before connecting a board.
+**Security qualification status:** Automatic QEMU simulator startup is temporarily disabled. The previous simulator downloaded executable binaries and firmware from mutable URLs without verified hashes. It now refuses to run until `resource/simulator-manifest.json` contains qualified release artifacts and approved SHA-256 checksums. Semihosting is disabled.
+
+After independently verified artifacts are published and approved, the intended workflow will be:
 
 - Start or stop it from the status bar.
 - Run code through the same VS Code workflow.
 - Use local `lib/` folders for dependencies.
 - The simulated filesystem is read-only, so direct uploads are blocked with a clear warning.
+
+---
+
+## Security and trusted-device guidance
+
+- MicroPython WebREPL (ws://) and CircuitPython Web Workflow (HTTP) are not encrypted by their standard on-device protocols. Use them only on trusted, isolated networks or with a properly authenticated secure tunnel. Do not reuse your Wi-Fi password for the device REPL.
+- Device passwords are stored using VS Code SecretStorage and are removed from legacy plaintext `device.cfg` entries on migration. Existing copies in git history, shared ZIP files or backups are **not** automatically erased: rotate any previously exposed password.
+- New projects create a `.gitignore` excluding `device.cfg` and CircuitPython `settings.toml`. Existing projects must apply equivalent rules manually; ignoring a file does not remove it from past git commits.
+- Native debugging runs code on your connected MCU; only attach boards and firmware you trust. Device-derived data and filenames are treated as untrusted by the extension.
+- Simulator execution is intentionally blocked until signed or checksum-pinned dependencies are verified. Do not bypass this integrity check.
 
 ---
 
@@ -170,7 +182,7 @@ Your source code stays on your machine.
 | MicroPython | Yes | Yes | `mip` | WebREPL | Supported targets |
 | CircuitPython | Yes | CIRCUITPY drive / Web Workflow | `circup` | Web Workflow | Limited |
 | Digi XBee | Yes | Project/library support | Bundled helpers | Device dependent | Device dependent |
-| Simulator | TCP REPL | Read-only target | Local `lib/` | Local only | Prototype/debug flow |
+| Simulator (temporarily disabled) | Planned TCP REPL | Planned read-only target | Local `lib/` | Local only | Requires verified QEMU/firmware manifest |
 
 ---
 
