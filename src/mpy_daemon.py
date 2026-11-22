@@ -154,21 +154,36 @@ class MpyDaemon:
             except Exception as e:
                 if not self.suspended:
                     err_str = str(e)
-                    is_transient = any(term in err_str for term in [
-                        "device does not recognize",
-                        "handle is invalid",
-                        "PermissionError",
-                        "SerialException",
-                        "OSError",
-                        "Bad command"
-                    ])
+                    is_transient = isinstance(e, OSError) or any(
+                        term.lower() in err_str.lower() for term in (
+                            "device does not recognize", "handle is invalid",
+                            "PermissionError", "SerialException",
+                            "OSError", "Bad command", "access is denied",
+                            "device not functioning"
+                        )
+                    )
                     if is_transient and self.running:
-                        if self._try_reconnect():
-                            # Reconnection is transport recovery, NOT permission
-                            # to interrupt whatever script is now running.
+                        self.send_event("reconnecting", {"port": self.port})
+                        try:
+                            reconnected = self._try_reconnect()
+                        except Exception:
+                            reconnected = False
+                        if reconnected:
+                            # Never send Ctrl+C or reset during recovery.
+                            # Old partial REPL responses must not leak into
+                            # the newly opened USB CDC session.
+                            with self._rx_lock:
+                                self._rx_queue.clear()
+                                self._read_buf = b""
                             self.send_event("connected", {"port": self.port})
                             continue
-                    time.sleep(0.1)
+                    # A zombie daemon must not tell the UI it is connected.
+                    self.send_event("error", {
+                        "message": "USB serial connection lost on " + self.port +
+                                   "; reconnect the device and reopen Shell."
+                    })
+                    self.running = False
+                    break
 
     def _rx_read(self, n: int, timeout: float = 0.0) -> bytes:
         start = time.time()
