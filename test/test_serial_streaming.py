@@ -132,6 +132,21 @@ class SerialStreamingTests(unittest.TestCase):
         self.assertIn(b"KeyboardInterrupt", binary)
         self.assertIn(b"\x03", fake.writes)
 
+    def test_explicit_hard_reset_can_cancel_a_running_script(self):
+        fake = FakeMicroPythonSerial(self.daemon, continuous=True)
+        self.daemon.serial = fake
+        self.daemon.process_command({"action": "run_in_terminal",
+                                     "id": 35, "code": "while True: pass"})
+        self._wait("terminal_data")
+        self.daemon.process_command({"action": "hard_reset", "id": 36})
+        self._wait("run_finished")
+        self.assertEqual(self._events("reset_result"),
+                         [{"id": 36, "success": True}])
+        self.assertTrue(self.daemon._program_cancel.is_set())
+        self.assertFalse(self.daemon._program_running)
+        self.assertIn(("RTS", True), [("RTS", v) for v in
+                                      [getattr(fake, "rts", None), True]])
+
     def test_usb_reconnect_failure_emits_disconnected_state_instead_of_ghost_repl(self):
         class DisappearedSerial:
             is_open = True
