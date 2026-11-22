@@ -20,10 +20,14 @@ function buildProbeScript(collect = false) {
             'try:',
             '    import time as _mps_time',
             '    _mps_start = _mps_time.ticks_us()',
-            '    _mps_gc.collect()',
-            '    _mps_gc_us = _mps_time.ticks_diff(_mps_time.ticks_us(), _mps_start)',
             'except Exception:',
-            '    _mps_gc.collect()',
+            '    _mps_start = -1',
+            '_mps_gc.collect()',
+            'if _mps_start >= 0:',
+            '    try:',
+            '        _mps_gc_us = _mps_time.ticks_diff(_mps_time.ticks_us(), _mps_start)',
+            '    except Exception:',
+            '        pass',
         );
     }
     lines.push(
@@ -51,7 +55,8 @@ function parseMemorySample(stdout, collected = false, now = Date.now()) {
         freeBefore: safe(freeBefore),
         allocated: safe(allocatedAfter),
         free: safe(freeAfter),
-        total: allocatedAfter >= 0 && freeAfter >= 0 ? allocatedAfter + freeAfter : null,
+        total: allocatedAfter >= 0 && freeAfter >= 0 &&
+            Number.isSafeInteger(allocatedAfter + freeAfter) ? allocatedAfter + freeAfter : null,
         gcTimeUs: collected ? safe(gcTimeUs) : null,
         threshold: safe(threshold),
         reclaimed: collected && allocatedBefore >= 0 && allocatedAfter >= 0
@@ -62,7 +67,9 @@ function parseMemorySample(stdout, collected = false, now = Date.now()) {
 function summarizeMemory(samples) {
     const valid = samples.filter(s => Number.isFinite(s.allocated));
     const latest = samples.length ? samples[samples.length - 1] : null;
-    const highWater = valid.length ? Math.max(...valid.map(s => s.allocated)) : null;
+    // Keep pre-collection peaks; GC must not hide the pressure that preceded it.
+    const observations = samples.flatMap(s => [s.allocatedBefore, s.allocated]).filter(Number.isFinite);
+    const highWater = observations.length ? Math.max(...observations) : null;
     const first = valid.length ? valid[0] : null;
     const last = valid.length ? valid[valid.length - 1] : null;
     return {
