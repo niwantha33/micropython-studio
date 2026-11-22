@@ -30,6 +30,11 @@ async function openDeviceTerminal(_context, devicePort) {
     if (activeTerminal && samePort(activePort, devicePort)) {
         activeTerminal.show();
         if (activeReady) await activeReady;
+        // Opening an existing Shell after a daemon crash must reconnect it,
+        // rather than showing a terminal with permanently dead input/output.
+        if (!connectionManager.isConnected) {
+            await connectionManager.connect(devicePort);
+        }
         if (connectionManager.isConnected && samePort(connectionManager.portName, devicePort)
             && connectionManager.isSuspended) {
             vscode.window.showInformationMessage('REPL is temporarily busy with a device operation. It will be available when the owner resumes it.');
