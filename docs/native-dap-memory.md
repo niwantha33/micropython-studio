@@ -25,6 +25,25 @@ Use the Studio command **Start Debug** (or F5), or add this to `.vscode/launch.j
 
 Choose the actual REPL and dedicated debugger COM ports for your board. The ports **must differ**. The board requires matching, debugger-enabled firmware with the frozen trace pump; CI-built test firmware must not be mistaken for an approved release.
 
+### Select and remember the debug adapter
+
+Use **MicroPython: Configure Debug Adapter (CDC)** or click **Debug: COM… / Adapter** in the Studio status bar. The picker uses a debugger icon for detected serial ports, a warning icon for an unavailable saved port, and an edit icon for manual entry. Confirm the correct *debug CDC*: Studio does not guess based on COM ordering or shared VID:PID. For example, if COM5 is the REPL interface, select COM13 for the debugger.
+
+Studio stores the selection in the current project’s `device.cfg`:
+
+```ini
+[device]
+port = "COM5"
+
+[debug]
+adapter_port = "COM13"
+```
+
+The REPL/upload port is not changed. **Start Debug** and F5 reuse the saved adapter after reopening VS Code. If different ports are detected, Studio prompts rather than silently switching. Cancelling leaves `device.cfg` unchanged. The legacy Debug/RTA panel uses the same selection. A non-empty `debugPort` in `launch.json` intentionally overrides and updates the saved adapter; leave it empty to use `device.cfg`.
+
+Serial-port detection does **not** prove that compatible frozen debugger firmware is installed. Choosing an adapter does not flash firmware or upload files.
+
+
 VS Code supports source breakpoints, stepping and read-only variable lookup. Breakpoints begin unverified and are confirmed by actual firmware slot replies. The existing debugger panel remains visible for specialised runtime tracing and detailed diagnostics. Firmware that does not provide source mapping may produce an address-only stack frame. Variable editing, arbitrary expression evaluation, restart and asynchronous VM halt are intentionally **not** claimed/supported.
 
 When switching to the separate classic debugger view, close the native session first.
