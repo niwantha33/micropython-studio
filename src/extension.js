@@ -15,7 +15,7 @@ const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort, findProjectRoot } = require('./refreshSettings');
 const { isSavedUsbPort, normalizeSerialPort } = require('./devicePortSelection');
-const { pickSerialAdapter } = require('./serialAdapterPicker');
+const { pickSerialAdapter, buildSerialAdapterItems, validateManualPort } = require('./serialAdapterPicker');
 const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
@@ -103,24 +103,32 @@ async function saveSelectedDevicePort(port) {
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
 
 /**
- * Build the list of selectable port options from device.cfg.
- * Always includes the USB COM port (if we have one) plus Wi-Fi if webrepl_enabled=true.
- * Returns null when there is no choice to offer (WebREPL not configured).
+ * Status-bar adapter picker is useful with or without WebREPL enabled.
+ * List all visible CDC devices, the saved offline adapter, and optional Wi-Fi.
  */
 async function _buildRunPortOptions() {
     const cfgPath = await getActiveDeviceConfigPath();
     const savedCom = await getConfigValue(cfgPath, 'device', 'port');
+    const devices = await getConnectedDevices();
+    const items = buildSerialAdapterItems(devices, savedCom);
     const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
     const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
-    const password = await getDeviceSecret(cfgPath, 'webrepl_password');
-
-    if (enabled !== 'true' || !ip) return null;
-
-    const items = [];
-    if (isSavedUsbPort(savedCom)) {
-        items.push({ label: `[OK] USB Serial Adapter (${normalizeSerialPort(savedCom)})`, port: normalizeSerialPort(savedCom) });
+    if (enabled === 'true' && ip) {
+        const password = await getDeviceSecret(cfgPath, 'webrepl_password');
+        if (password) {
+            items.push({
+                label: '$(radio-tower) Wi-Fi WebREPL (' + ip + ')',
+                description: 'Use configured wireless REPL',
+                port: 'ws:' + ip + ',' + password
+            });
+        }
     }
-    items.push({ label: `[OK] Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
+    items.push({
+        label: '$(edit) Enter USB adapter manually…',
+        description: 'When the desired COM port is not in the detected list',
+        manual: true,
+        savedCom: isSavedUsbPort(savedCom) ? normalizeSerialPort(savedCom) : ''
+    });
     return items;
 }
 
@@ -463,9 +471,12 @@ function updateDeviceStatusBar() {
 
     if (gRemoteDevicePort) {
         const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
-        const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : normalizeSerialPort(gRemoteDevicePort);
-        deviceStatusBarItem.text = `${portLabel}`;
-        deviceStatusBarItem.tooltip = `Connected to ${redactDevicePort(gRemoteDevicePort)}`;
+        const portLabel = wsMatch
+            ? '$(radio-tower) ' + wsMatch[1]
+            : '$(plug) ' + normalizeSerialPort(gRemoteDevicePort);
+        deviceStatusBarItem.text = portLabel;
+        deviceStatusBarItem.tooltip = 'Selected REPL adapter: ' +
+            redactDevicePort(gRemoteDevicePort) + ' — click to choose another COM adapter or transport';
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
         deviceStatusBarItem.text = '[OK] No Device';
@@ -1318,22 +1329,31 @@ function activate(context) {
     // Choose Run Transport (USB / Wi-Fi)
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.chooseRunPort', async () => {
-            if (!gRemoteDevicePort) {
-                vscode.window.showWarningMessage('No device connected. Refresh first.');
-                return;
-            }
-            const items = await _buildRunPortOptions();
-            if (!items) {
-                vscode.window.showInformationMessage(
-                    'WebREPL is not enabled. Only USB is available.'
-                );
+            let items;
+            try {
+                items = await _buildRunPortOptions();
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot list USB adapters: ' + error.message);
                 return;
             }
             const pick = await vscode.window.showQuickPick(items, {
-                placeHolder: 'Choose run transport'
+                title: 'Select REPL adapter / run transport',
+                placeHolder: 'USB Serial Adapter (COM5) or saved WebREPL',
+                ignoreFocusOut: true
             });
             if (!pick) return;
-            const newPort = /** @type {any} */ (pick).port;
+            let newPort = pick.port;
+            if (pick.manual) {
+                const entered = await vscode.window.showInputBox({
+                    title: 'Enter REPL USB serial port',
+                    value: pick.savedCom,
+                    prompt: 'Choose the REPL interface, not the debugger CDC',
+                    validateInput: validateManualPort,
+                    ignoreFocusOut: true
+                });
+                if (entered === undefined) return;
+                newPort = normalizeSerialPort(entered);
+            }
             try {
                 gRemoteDevicePort = await saveSelectedDevicePort(newPort);
             } catch (error) {
