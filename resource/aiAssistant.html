@@ -4,14 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Private AI Assistance</title>
-    <!-- Modern typography from Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Markdown and Code Highlighting Libraries -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- No remote scripts, fonts or styles: private AI stays entirely local. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
     
     <style>
         :root {
@@ -535,8 +530,7 @@
             return text.replace(/[&<>"']/g, function(m) { return map[m]; });
         }
 
-        // Local AI must still render text without access to CDNs.
-        // Remote Markdown/highlighter assets are optional enhancements only.
+        // Local-only Markdown and code rendering with no CDN dependencies.
         const marked = window.marked || {
             _renderer: null,
             use(options) { this._renderer = options.renderer; },
@@ -636,10 +630,12 @@
                         <div class="pulse"></div>
                         <div class="pulse"></div>
                     </div>
-                    <div class="thinking-status">${statusText}</div>
+                    <div class="thinking-status"></div>
                     <div class="thinking-timer">${timerText}</div>
                 </div>
             `;
+            // Ollama model names and streaming status are untrusted data.
+            currentAiMessageElement.querySelector('.thinking-status').textContent = String(statusText);
         }
 
         function startChatTimer() {
