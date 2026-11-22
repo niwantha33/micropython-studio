@@ -163,6 +163,10 @@ class MpyDaemon:
                         )
                     )
                     if is_transient and self.running:
+                        # A raw-REPL transaction cannot be safely continued
+                        # across USB disconnect/re-enumeration.
+                        if self._program_running:
+                            self._program_cancel.set()
                         self.send_event("reconnecting", {"port": self.port})
                         try:
                             reconnected = self._try_reconnect()
@@ -430,7 +434,12 @@ class MpyDaemon:
  
             i = 0
             while i < len(code_bytes):
+                stalled_since = time.monotonic()
                 while window_remain == 0:
+                    if time.monotonic() - stalled_since > 10.0:
+                        raise TimeoutError("Raw-paste flow-control stalled for 10 seconds")
+                    if self._program_cancel.is_set():
+                        raise RuntimeError("Run cancelled during USB recovery")
                     b = self._rx_read(1, timeout=0.01)
                     if b == b'\x01':
                         window_remain += window_size
