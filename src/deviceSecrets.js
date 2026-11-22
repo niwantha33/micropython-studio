@@ -73,6 +73,12 @@ async function setDeviceSecret(cfgPath, key, value) {
     // Clean up previously saved plaintext on successful secure storage.
     const legacy = await getConfigValue(cfgPath, 'remote', key);
     if (legacy) await updateCfgComponent(cfgPath, 'remote', key, '');
+    if (key === 'webrepl_password') {
+        const oldPort = await getConfigValue(cfgPath, 'device', 'port');
+        if (typeof oldPort === 'string' && /^ws:[^,]+,/.test(oldPort)) {
+            await updateCfgComponent(cfgPath, 'device', 'port', 'NOT_SET');
+        }
+    }
 }
 
 module.exports = { initializeSecretStorage, getDeviceSecret, setDeviceSecret };
