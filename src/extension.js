@@ -1554,14 +1554,18 @@ function activate(context) {
                 const configPath = await getActiveDeviceConfigPath();
                 const projectRoot = path.dirname(configPath);
                 const editorDoc = vscode.window.activeTextEditor?.document;
+                // Only canonical project entry-point locations qualify.
+                // An unrelated nested lib/main.py must never be uploaded over
+                // the device's root /main.py merely because it was active.
                 const candidates = [
-                    editorDoc?.uri.scheme === 'file' && path.basename(editorDoc.fileName) === 'main.py'
-                        ? editorDoc.fileName : null,
                     gDeviceCodeDir ? path.join(gDeviceCodeDir, 'main.py') : null,
-                    path.join(projectRoot, 'main', 'main.py')
+                    path.join(projectRoot, 'main', 'main.py'),
+                    path.join(projectRoot, 'main.py')
                 ].filter(Boolean);
+                const canonicalRoot = fs.realpathSync(projectRoot);
                 const localPath = candidates.find(candidate =>
-                    isInsideProject(projectRoot, candidate) && fs.existsSync(candidate));
+                    fs.existsSync(candidate) &&
+                    isInsideProject(canonicalRoot, fs.realpathSync(candidate)));
                 if (!localPath) {
                     vscode.window.showWarningMessage(
                         'No local main.py found. Open main/main.py in this MicroPython project first.'
