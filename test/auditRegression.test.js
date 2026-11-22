@@ -76,6 +76,9 @@ suite('Audit-driven security regression gates', () => {
     test('AI webview has no third-party scripts and status text cannot inject HTML', () => {
         const ai = fs.readFileSync(path.join(__dirname, '..', 'resource', 'aiAssistant.html'), 'utf8');
         assert.ok(ai.includes('Content-Security-Policy'));
+        assert.ok(ai.includes("script-src 'nonce-__MPS_CSP_NONCE__'"));
+        assert.ok(ai.includes('data-code-action="run"'));
+        assert.ok(!ai.includes('onclick='));
         assert.ok(ai.includes("querySelector('.thinking-status').textContent"));
         assert.ok(!/<script\s+src=["']https?:/i.test(ai));
         assert.ok(!/cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com/.test(ai));
