@@ -1,6 +1,7 @@
 const vscode = require("vscode");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { execFile } = require("child_process");
 const { runMpremote } = require("./runCommand");
 const wsQueue = require("./wsQueue");
@@ -166,7 +167,8 @@ except:
 `;
 
   const connectionManager = require("./connectionManager");
-  const tempScriptPath = path.join(workspaceFolder, "_dashboard_metrics.py");
+  const metricsTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mps-metrics-"));
+  const tempScriptPath = path.join(metricsTempDir, "metrics.py");
   try {
       let rawOutput = "";
       if (connectionManager.isConnected && !connectionManager.isSuspended) {
@@ -320,9 +322,7 @@ except:
     } catch (err) {
       console.error("Failed to gather metrics:", err);
     } finally {
-      if (fs.existsSync(tempScriptPath)) {
-        fs.unlinkSync(tempScriptPath);
-      }
+      fs.rmSync(metricsTempDir, { recursive: true, force: true });
     }
     return metrics;
   }, "Gather Metrics", true);
@@ -2167,7 +2167,11 @@ async function runDeviceScript(
       return result.stdout || "";
     }
 
-    const tempPath = path.join(workspaceRoot, tempName);
+    if (!/^[a-zA-Z_][a-zA-Z0-9_.-]{0,70}\.py$/.test(tempName) || tempName.includes("..")) {
+      throw new Error("Unsafe temporary script name.");
+    }
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mps-script-"));
+    const tempPath = path.join(tempDir, tempName);
     try {
       fs.writeFileSync(tempPath, scriptContent, "utf8");
       if (!devicePort) {
@@ -2197,7 +2201,7 @@ async function runDeviceScript(
         );
       });
     } finally {
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }, "Dashboard " + tempName, true);
 }
