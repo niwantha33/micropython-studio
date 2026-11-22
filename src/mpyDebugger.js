@@ -160,14 +160,89 @@ function createHeadlessDebuggerPanel() {
     };
 }
 
+/**
+ * Display the full original Studio debugger alongside VS Code native DAP,
+ * while keeping a single debug CDC bridge. Closing just this detail view
+ * must not disconnect the still-active DAP session.
+ */
+function createNativeDetailPanel(context, port) {
+    const session = createHeadlessDebuggerPanel();
+    let view = null;
+    let markup = getHtml(getBuildInfo(context.extensionPath, context.extensionMode));
+    let messageHandler = null;
+    let messageSubscription = null;
+    const result = {
+        nativeOnly: true,
+        onDidDispose: session.onDidDispose,
+        webview: {
+            postMessage(message) {
+                return view ? view.webview.postMessage(message) : Promise.resolve(false);
+            },
+            onDidReceiveMessage(handler) {
+                messageHandler = handler;
+                if (messageSubscription) messageSubscription.dispose();
+                if (view) messageSubscription = view.webview.onDidReceiveMessage(handler);
+                return { dispose() {
+                    if (messageSubscription) messageSubscription.dispose();
+                    messageSubscription = null;
+                    messageHandler = null;
+                } };
+            },
+            set html(value) {
+                markup = value;
+                if (view) view.webview.html = value;
+            },
+            get html() { return markup; }
+        },
+        reveal() {
+            if (view) { view.reveal(vscode.ViewColumn.Beside, true); return; }
+            view = vscode.window.createWebviewPanel(
+                'mpyDebugger',
+                `MPy Debugger Details (${port})`,
+                vscode.ViewColumn.Beside,
+                { enableScripts: true, retainContextWhenHidden: true }
+            );
+            view.webview.html = markup;
+            if (messageHandler) messageSubscription = view.webview.onDidReceiveMessage(messageHandler);
+            const currentView = view;
+            currentView.onDidDispose(() => {
+                if (view === currentView) {
+                    view = null;
+                    if (messageSubscription) messageSubscription.dispose();
+                    messageSubscription = null;
+                }
+            });
+        },
+        dispose() {
+            if (view) {
+                const currentView = view;
+                view = null;
+                currentView.dispose();
+            }
+            if (messageSubscription) messageSubscription.dispose();
+            messageSubscription = null;
+            session.dispose();
+        }
+    };
+    result.reveal();
+    return result;
+}
+
+function showDebuggerDetails() {
+    if (!panel) return false;
+    panel.reveal();
+    return true;
+}
+
 function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     if (panel) {
         panel.reveal();
         return;
     }
     if (nativeOnly) {
-        // Native VS Code Variables, Call Stack and Breakpoints are the UI.
-        panel = createHeadlessDebuggerPanel();
+        // The detailed original Studio view is preserved beside VS Code's
+        // native controls. Both share this ONE bridge/COM owner.
+        panel = createNativeDetailPanel(context, port);
     } else {
         panel = vscode.window.createWebviewPanel(
             'mpyDebugger',
@@ -2839,4 +2914,4 @@ function dumpRtaTrace() {
     }
 }
 
-module.exports = { startDebugger, connectNativeDebugger, sendNativeCommand, disconnectNativeDebugger };
+module.exports = { startDebugger, connectNativeDebugger, sendNativeCommand, disconnectNativeDebugger, showDebuggerDetails };
