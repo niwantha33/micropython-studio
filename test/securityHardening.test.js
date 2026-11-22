@@ -7,6 +7,7 @@ const path = require('path');
 const { runCommand } = require('../src/runCommand');
 const { getConfigValue, updateCfgComponent } = require('../src/commonFxn');
 const { initializeSecretStorage, getDeviceSecret, setDeviceSecret } = require('../src/deviceSecrets');
+const { isSafeDeviceEntryName, isSafeProjectName, resolveProjectDirectory } = require('../src/pathSafety');
 
 suite('Security and reliability hardening', () => {
     test('process runner passes shell metacharacters as literal argv', async () => {
@@ -62,6 +63,37 @@ suite('Security and reliability hardening', () => {
             assert.strictEqual(await getDeviceSecret(other, 'webrepl_password'), 'another-project');
             assert.strictEqual(await getDeviceSecret(config, 'webrepl_password'), 'new-password');
             await assert.rejects(getDeviceSecret(config, 'not_a_secret'), /Unsupported credential key/);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('rejects project traversal and unsafe device file names before any write', () => {
+        assert.strictEqual(isSafeProjectName('pico-sensor_1'), true);
+        for (const bad of ['..', '.', '../outside', 'hi/there', 'bad\\\\name', 'CON', 'COM1', 'NUL.txt', 'name.', 'name ', ' bad', 'x:evil']) {
+            assert.strictEqual(isSafeProjectName(bad), false, bad);
+            assert.throws(() => resolveProjectDirectory(os.tmpdir(), bad), /safe directory/);
+        }
+        assert.strictEqual(path.dirname(resolveProjectDirectory(os.tmpdir(), 'safe-project')), path.resolve(os.tmpdir()));
+        assert.strictEqual(isSafeDeviceEntryName('main.py'), true);
+        for (const name of ['..', '.', '/boot.py', '../boot.py', 'bad\\\\name', 'evil\u0000name', 'control\u0001']) {
+            assert.strictEqual(isSafeDeviceEntryName(name), false, JSON.stringify(name));
+        }
+    });
+
+    test('SecretStorage failure never erases plaintext credentials before migration', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mps-secret-fail-'));
+        const cfg = path.join(dir, 'device.cfg');
+        fs.writeFileSync(cfg, '[device]\\nport = "ws:10.0.0.1,only-copy"\\n[remote]\\nwebrepl_password = "only-copy"\\n');
+        initializeSecretStorage({ secrets: {
+            get: async () => null,
+            store: async () => { throw new Error('secure storage unavailable'); },
+            delete: async () => {}
+        } });
+        try {
+            await assert.rejects(getDeviceSecret(cfg, 'webrepl_password'), /secure storage unavailable/);
+            assert.strictEqual(await getConfigValue(cfg, 'remote', 'webrepl_password'), 'only-copy');
+            assert.strictEqual(await getConfigValue(cfg, 'device', 'port'), 'ws:10.0.0.1,only-copy');
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }
