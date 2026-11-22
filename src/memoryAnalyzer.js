@@ -138,7 +138,9 @@ class MemoryAnalyzer {
     async exportCsv() {
         if (!this.samples.length) { this.status('No samples to export.'); return; }
         const uri = await vscode.window.showSaveDialog({
-            defaultUri: vscode.Uri.file('micropython-memory.csv'),
+            defaultUri: vscode.workspace.workspaceFolders?.[0]
+                ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, 'micropython-memory.csv')
+                : undefined,
             filters: { CSV: ['csv'] }
         });
         if (!uri) return;
