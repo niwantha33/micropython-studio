@@ -8,7 +8,9 @@ const path = require('path');
 const {
     connectNativeDebugger, sendNativeCommand, disconnectNativeDebugger
 } = require('./mpyDebugger');
-const { parseDebuggerReply } = require('./nativeDebugParser');
+const { parseDebuggerReply, sanitizeTargetGlobals } = require('./nativeDebugParser');
+const { defaultAttachConfiguration, resolveReplPort, resolveDebugPort } = require('./debugProjectConfig');
+const { getBuildInfo } = require('./buildInfo');
 
 const DEBUG_TYPE = 'micropython-studio';
 
@@ -59,7 +61,16 @@ class NativeMicroPythonAdapter {
         if (this.terminated) return;
         if (msg.evt === 'pump_ready') {
             this.ready = true;
-            this.sendEvent('output', { category: 'console', output: 'MicroPython debug CDC ready (firmware verified handshake).\n' });
+            const build = getBuildInfo(this.context.extensionPath, this.context.extensionMode);
+            this.sendEvent('output', {
+                category: 'console',
+                output: 'MicroPython Studio ' + (build.version || 'development') +
+                    ' (commit ' + (build.commitShort || 'unknown') + ')\n' +
+                    'Attached to MicroPython debug CDC ' + this.config.debugPort +
+                    '. Breakpoints are armed; run your program on the separate REPL port ' +
+                    (this.config.replPort || '(not selected)') +
+                    '. Attach does not automatically execute main.py or functions.\n'
+            });
         } else if (msg.evt === 'breakpoints') {
             for (const item of msg.items || []) {
                 if (!item.fsPath || !Number.isInteger(item.line1)) continue;
@@ -91,9 +102,13 @@ class NativeMicroPythonAdapter {
                 this.localNames = Array.isArray(msg.localNames) ? msg.localNames : [];
             }
             this.paused = true;
-            this.locals = [];
-            this.globals = [];
-            this.frames = [];
+            // A follow-up step_line on an existing pause refines the source
+            // location; it must not erase locals/globals already received.
+            if (!wasPaused) {
+                this.locals = [];
+                this.globals = [];
+                this.frames = [];
+            }
             if (!wasPaused) this.sendEvent('stopped', {
                 reason: msg.evt === 'exception' ? 'exception' : msg.evt === 'step_line' ? 'step' : 'breakpoint',
                 description: msg.evt === 'exception' ? String(msg.msg || 'Device exception') : undefined,
@@ -106,12 +121,20 @@ class NativeMicroPythonAdapter {
         } else if (msg.evt === 'reply' && this.paused) {
             const parsed = parseDebuggerReply(msg.text, this.localNames);
             if (parsed?.kind === 'locals') this.locals = parsed.values;
-            if (parsed?.kind === 'globals') this.globals = parsed.values;
+            if (parsed?.kind === 'globals') {
+                const checked = sanitizeTargetGlobals(parsed.values);
+                this.globals = checked.values;
+                if (checked.diagnostic) {
+                    this.sendEvent('output', { category: 'stderr', output: checked.diagnostic + '\n' });
+                }
+            }
             if (parsed?.kind === 'stack') this.frames = parsed.frames;
             if (parsed) this.sendEvent('invalidated', { areas: ['variables', 'stackTrace'], threadId: 1 });
         } else if (msg.evt === 'sent' && ['continue', 'step', 'step_in', 'step_out'].includes(msg.op)) {
             this.paused = false;
             this.sendEvent('continued', { threadId: 1, allThreadsContinued: true });
+        } else if (msg.evt === 'stderr') {
+            this.sendEvent('output', { category: 'stderr', output: String(msg.text || '') });
         } else if (msg.evt === 'transport_lost' || msg.evt === 'error') {
             this.sendEvent('output', { category: 'stderr', output: String(msg.msg || 'Debug transport error') + '\n' });
             if (msg.evt === 'transport_lost' || !this.ready) {
@@ -219,10 +242,17 @@ class NativeMicroPythonAdapter {
                     break;
                 }
                 case 'scopes':
-                    this.respond(request, { scopes: [
-                        { name: 'Locals', variablesReference: 1, expensive: false },
-                        { name: 'Globals', variablesReference: 2, expensive: true }
-                    ] });
+                    // Firmware only exposes the current paused frame's
+                    // local values. Do not assign those values to other raw
+                    // VM stack frames as if they were their locals.
+                    if (!this.paused || (args.frameId && args.frameId !== 1)) {
+                        this.respond(request, { scopes: [] });
+                    } else {
+                        this.respond(request, { scopes: [
+                            { name: 'Locals', variablesReference: 1, expensive: false },
+                            { name: 'Globals', variablesReference: 2, expensive: true }
+                        ] });
+                    }
                     break;
                 case 'variables':
                     this.respond(request, { variables: args.variablesReference === 1 ? this.locals :
@@ -276,35 +306,37 @@ class NativeMicroPythonAdapter {
 function registerNativeDebugger(context, getReplPort, getPython) {
     const provider = {
         provideDebugConfigurations() {
-            return [{ name: 'MicroPython Studio: Native Debugger', type: DEBUG_TYPE,
-                request: 'launch', replPort: getReplPort() || '', debugPort: '' }];
+            return [defaultAttachConfiguration()];
         },
-        async resolveDebugConfiguration(_folder, config) {
+        async resolveDebugConfiguration(folder, config) {
             if (!config.type) config.type = DEBUG_TYPE;
-            if (!config.request) config.request = 'launch';
-            if (!config.name) config.name = 'MicroPython Studio: Native Debugger';
-            if (!config.replPort) config.replPort = getReplPort() || '';
-            const repl = String(config.replPort || '').trim();
-            if (!repl || repl === '-' || repl.startsWith('ws:')) {
-                vscode.window.showErrorMessage('Select the USB REPL/upload port first. Native debugging uses a separate debug CDC.');
+            if (!config.request) config.request = 'attach';
+            if (!config.name) config.name = 'MicroPython Studio: Attach to hardware';
+            try {
+                const repl = await resolveReplPort(config.replPort, getReplPort(), folder);
+                if (!repl) {
+                    vscode.window.showErrorMessage(
+                        'Select the MicroPython USB REPL port in device.cfg before attaching the debugger.'
+                    );
+                    return undefined;
+                }
+                const debugPort = await resolveDebugPort(folder, repl, config.debugPort);
+                if (!debugPort) return undefined;
+                config.replPort = repl;
+                config.debugPort = debugPort;
+                return config;
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot configure MicroPython Debug: ' + error.message);
                 return undefined;
             }
-            if (!config.debugPort) config.debugPort = await vscode.window.showInputBox({
-                prompt: 'MicroPython debugger CDC port (different from REPL)',
-                placeHolder: 'e.g. COM13'
-            });
-            const debugPort = String(config.debugPort || '').trim();
-            if (!debugPort) return undefined;
-            if (debugPort.toUpperCase() === repl.toUpperCase()) {
-                vscode.window.showErrorMessage('Debugger CDC must be different from the REPL/upload COM port.');
-                return undefined;
-            }
-            config.replPort = repl;
-            config.debugPort = debugPort;
-            return config;
         }
     };
+    // Initial generates launch.json defaults. Dynamic makes the MicroPython
+    // debugger appear in VS Code Run and Debug even without launch.json.
     context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, provider));
+    context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider(
+        DEBUG_TYPE, provider, vscode.DebugConfigurationProviderTriggerKind.Dynamic
+    ));
     context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory(DEBUG_TYPE, {
         createDebugAdapterDescriptor(session) {
             return new vscode.DebugAdapterInlineImplementation(

@@ -66,4 +66,27 @@ function parseDebuggerReply(text, localNames = []) {
     return null;
 }
 
-module.exports = { splitReprEntries, parseDebuggerReply };
+/**
+ * Firmware versions which cannot inspect the paused user frame may fall back
+ * to trace_pump.globals(). Those are debugger control variables, not user
+ * variables. Never display them as though they came from the program.
+ */
+function sanitizeTargetGlobals(values) {
+    if (!Array.isArray(values)) return { values: [], diagnostic: 'Device globals reply is invalid.' };
+    const names = new Set(values.map(value => value.name));
+    const markers = ['PUMP_PROTOCOL', 'PUMP_BUILD', '_running', 'bytes_in', 'continues', 'cmds'];
+    const markerCount = markers.filter(name => names.has(name)).length;
+    if (markerCount >= 2 || (names.has('PUMP_PROTOCOL') && names.has('_thread'))) {
+        return {
+            values: [{
+                name: '[unavailable]',
+                value: 'Firmware returned trace_pump internals, not paused user globals. A firmware-side scope fix is required.',
+                variablesReference: 0
+            }],
+            diagnostic: 'Debugger firmware returned trace_pump globals; user Globals cannot be trusted.'
+        };
+    }
+    return { values, diagnostic: null };
+}
+
+module.exports = { splitReprEntries, parseDebuggerReply, sanitizeTargetGlobals };
