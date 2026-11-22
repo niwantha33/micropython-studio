@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { chooseDebugAdapter, findDebugConfigPath, validateDebugPort } = require('../src/debugAdapterConfig');
+const { chooseDebugAdapter, findDebugConfigPath, findPotentialDebugPorts, validateDebugPort } = require('../src/debugAdapterConfig');
 const { getConfigValue } = require('../src/commonFxn');
 
 suite('MicroPython debugger adapter selection and persistence', () => {
@@ -24,6 +24,20 @@ suite('MicroPython debugger adapter selection and persistence', () => {
 
     teardown(() => {
         fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    test('possible dual CDC detection requires matching board serial AND VID:PID', () => {
+        assert.deepStrictEqual(findPotentialDebugPorts('COM5', dualCdc), [dualCdc[1]]);
+        assert.deepStrictEqual(findPotentialDebugPorts('COM5', [
+            dualCdc[0], { port: 'COM13', serial: 'different-board', vidpid: '2E8A:0005' }
+        ]), []);
+        assert.deepStrictEqual(findPotentialDebugPorts('COM5', [
+            { port: 'COM5', serial: 'None', vidpid: '2E8A:0005' },
+            { port: 'COM13', serial: 'None', vidpid: '2E8A:0005' }
+        ]), []);
+        assert.deepStrictEqual(findPotentialDebugPorts('COM5', [
+            dualCdc[0], { port: 'COM13', serial: 'board-1', vidpid: '0000:0000' }
+        ]), []);
     });
 
     test('selects dedicated CDC, shows icons, and only updates [debug] in exact project file', async () => {
