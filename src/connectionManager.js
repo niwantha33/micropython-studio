@@ -724,14 +724,27 @@ except Exception as e:
      * Writes user terminal input to the device
      */
     async write(data) {
-        if (!this.isConnected || !this.daemonProcess) return;
-        
-        const b64 = Buffer.isBuffer(data) ? data.toString('base64') : Buffer.from(data).toString('base64');
-        const cmd = {
-            action: 'terminal_input',
-            data: b64
-        };
-        this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n');
+        if (!this.isConnected || !this.daemonProcess ||
+            this.isSuspended || this.isReconnecting) {
+            throw new Error('REPL is not connected or USB is temporarily unavailable.');
+        }
+        const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        if (bytes.length > 4096) {
+            throw new Error('REPL paste is too large for one operation. Paste in smaller chunks.');
+        }
+        const cmd = { action: 'terminal_input', data: bytes.toString('base64') };
+        // Resolve only when Node has actually queued the IPC frame, not
+        // before a write failure could be reported.
+        return new Promise((resolve, reject) => {
+            try {
+                this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n', err => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            } catch (err) {
+                reject(err);
+            }
+        });
     }
 
     /**
