@@ -140,24 +140,6 @@ class DeviceOperationQueue {
 
       const useDirect = runDirectIfConnected && connectionManager.isConnected && !connectionManager.isSuspended;
 
-      if (connectionManager.isReconnecting) {
-        throw new Error('USB serial transport is reconnecting. Wait for REPL recovery before ' + label + '.');
-      }
-
-      // Never let file operations or telemetry steal the serial stream from a
-      // running user script. An explicit user hard-reset can still cancel it.
-      if ((connectionManager.isScriptRunning || connectionManager._runStartPending) &&
-          label !== 'Hard Reset (shared REPL)') {
-        throw new Error('MCU script is running on the REPL. Press Stop before ' + label + '.');
-      }
-
-      // A paused serial daemon has given the COM port to another operation.
-      // Waiting for our own parent-PID suspended_lock would always time out;
-      // never reopen the port while another transfer may still be using it.
-      if (connectionManager.isConnected && connectionManager.isSuspended) {
-        throw new Error(`REPL on ${port || 'device'} is suspended by another device operation. Wait for that operation to finish, then retry. If it failed, reconnect the device from the IDE.`);
-      }
-
       // If the port is locked by another process (e.g. terminal run session), wait for it to release
       if (!useDirect && port) {
         let lockChecked = false;
