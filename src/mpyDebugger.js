@@ -171,17 +171,36 @@ function createNativeDetailPanel(context, port) {
     let markup = getHtml(getBuildInfo(context.extensionPath, context.extensionMode));
     let messageHandler = null;
     let messageSubscription = null;
+    // Bounded replay retains recent target events when the Details view is
+    // closed, avoiding a blank advanced analyzer on reopen.
+    const recentEvents = [];
     const result = {
         nativeOnly: true,
         onDidDispose: session.onDidDispose,
         webview: {
             postMessage(message) {
+                if (message && typeof message === 'object' && message.evt &&
+                    JSON.stringify(message).length <= 4096) {
+                    recentEvents.push(message);
+                    if (recentEvents.length > 200) recentEvents.shift();
+                }
                 return view ? view.webview.postMessage(message) : Promise.resolve(false);
+            },
+            replayHistory() {
+                if (!view) return;
+                for (const message of recentEvents) {
+                    view.webview.postMessage(message);
+                }
             },
             onDidReceiveMessage(handler) {
                 messageHandler = handler;
                 if (messageSubscription) messageSubscription.dispose();
-                if (view) messageSubscription = view.webview.onDidReceiveMessage(handler);
+                if (view) {
+                    messageSubscription = view.webview.onDidReceiveMessage(handler);
+                    // Initial HTML loads only after its message handler is
+                    // installed, so ready and later UI requests cannot race it.
+                    view.webview.html = markup;
+                }
                 return { dispose() {
                     if (messageSubscription) messageSubscription.dispose();
                     messageSubscription = null;
@@ -202,8 +221,10 @@ function createNativeDetailPanel(context, port) {
                 vscode.ViewColumn.Beside,
                 { enableScripts: true, retainContextWhenHidden: true }
             );
-            view.webview.html = markup;
-            if (messageHandler) messageSubscription = view.webview.onDidReceiveMessage(messageHandler);
+            if (messageHandler) {
+                messageSubscription = view.webview.onDidReceiveMessage(messageHandler);
+                view.webview.html = markup;
+            }
             const currentView = view;
             currentView.onDidDispose(() => {
                 if (view === currentView) {
@@ -308,6 +329,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     let rtaSupported = null;
     let startupTimer = null;
     let targetBreakpointList = [];
+    let detailsPaused = false;
 
     function getBreakpointInfo(bp) {
         if (!(bp instanceof vscode.SourceBreakpoint)) return null;
@@ -831,6 +853,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                 if (msg.evt === 'step_line') {
                     highlightLine(msg.file, msg.line, lastActionWasStepIn);
                     lastActionWasStepIn = false;
+                    detailsPaused = true;
                     panel.webview.postMessage({ evt: 'status', paused: true });
                     try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
                     try { bridge.stdin.write(JSON.stringify({ op: 'globals' }) + '\n'); } catch (e) {}
@@ -856,12 +879,14 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                         });
                     }
                     lastActionWasStepIn = false;
+                    detailsPaused = true;
                     panel.webview.postMessage({ evt: 'status', paused: true });
                     try { bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n'); } catch (e) {}
                     try { bridge.stdin.write(JSON.stringify({ op: 'globals' }) + '\n'); } catch (e) {}
                 }
                 if (msg.evt === 'exception') {
                     panel.webview.postMessage({ evt: 'error', msg: `Exception: ${msg.msg} at ip=0x${msg.ip.toString(16)}`, ip: msg.ip });
+                    detailsPaused = true;
                     panel.webview.postMessage({ evt: 'status', paused: true });
                     const loc = resolveBreakpointRecord(msg.fun, msg.ip);
                     if (loc) {
@@ -929,6 +954,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                         name: pe.loc ? pe.loc.fnKey : null
                     }, localNames: pe.names });
                     sendNativeCommand('call_stack');
+                    detailsPaused = true;
                     panel.webview.postMessage({ evt: 'status', paused: true });
                     // forward the reply so locals table renders
                 }
@@ -936,6 +962,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                     if (msg.op === 'step_in') lastActionWasStepIn = true;
                     else lastActionWasStepIn = false;
                     clearHighlight();
+                    detailsPaused = false;
                     panel.webview.postMessage({ evt: 'status', paused: false });
                 }
                 if (msg.evt === 'reply' && typeof msg.text === 'string') {
@@ -1056,6 +1083,22 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
 
     panel.webview.onDidReceiveMessage((msg) => {
         if (!bridge) return;
+        if (msg.op === 'ready') {
+            if (typeof panel.webview.replayHistory === 'function') {
+                panel.webview.replayHistory();
+            }
+            postBreakpointSnapshot();
+            if (sessionReady) {
+                panel.webview.postMessage({ evt: 'pump_ready', rtaSupported, legacy: legacyPump });
+                panel.webview.postMessage({ evt: 'status', paused: detailsPaused });
+                if (detailsPaused) {
+                    sendNativeCommand('locals');
+                    sendNativeCommand('globals');
+                    sendNativeCommand('call_stack');
+                }
+            }
+            return;
+        }
         if (msg.op === 'set_bp_here') {
             let ed = vscode.window.activeTextEditor;
             if (!ed || !ed.document.fileName.endsWith('.py')) {
@@ -2836,6 +2879,7 @@ function bindDebuggerControls() {
   }
 }
 bindDebuggerControls();
+vscode.postMessage({ op: 'ready' });
 
 </script>
 </body></html>`;
