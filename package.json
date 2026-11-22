@@ -58,9 +58,6 @@
     "Programming Languages",
     "Debuggers"
   ],
-  "activationEvents": [
-    "onStartupFinished"
-  ],
   "main": "./src/extension.js",
   "contributes": {
     "viewsContainers": {
