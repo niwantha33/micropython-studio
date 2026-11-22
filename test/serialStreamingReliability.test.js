@@ -96,6 +96,46 @@ suite('Single-owner serial stream across Studio features', () => {
         }
     });
 
+    test('USB reconnecting blocks operations and updates status', async () => {
+        const before = {
+            connecting: connectionManager.isReconnecting,
+            connected: connectionManager.isConnected,
+            suspended: connectionManager.isSuspended,
+            port: connectionManager.portName,
+        };
+        try {
+            connectionManager.portName = 'COM999';
+            connectionManager.isConnected = true;
+            connectionManager.isSuspended = false;
+            connectionManager._handleDaemonMessage({ type: 'reconnecting', port: 'COM999' },
+                () => {}, () => {}, true);
+            assert.strictEqual(connectionManager.isReconnecting, true);
+            await assert.rejects(
+                wsQueue.run(async () => {}, 'Read File', true),
+                /USB serial transport is reconnecting/
+            );
+            connectionManager._handleDaemonMessage({ type: 'connected', port: 'COM999' },
+                () => {}, () => {}, true);
+            assert.strictEqual(connectionManager.isReconnecting, false);
+        } finally {
+            connectionManager.isReconnecting = before.connecting;
+            connectionManager.isConnected = before.connected;
+            connectionManager.isSuspended = before.suspended;
+            connectionManager.portName = before.port;
+        }
+    });
+
+    test('file explorer and dashboard must not use serial daemon for wrong target port', () => {
+        const explorer = fs.readFileSync(path.join(root, 'src', 'deviceFileExplorer.js'), 'utf8');
+        const dashboard = fs.readFileSync(path.join(root, 'src', 'deviceDashboard.js'), 'utf8');
+        const matches = explorer.match(/if \(canUseSharedSerial\(connectionManager,/g) || [];
+        assert.strictEqual(matches.length, 8);
+        assert.ok(explorer.includes('manager.portName === targetPort'));
+        assert.ok(dashboard.includes('connectionManager.portName === devicePort'));
+        assert.ok(extension.includes('connectionManager.portName === runPort'));
+        assert.ok(terminal.includes('await connectionManager.connect(devicePort)'));
+    });
+
     test('Stop does not silently reboot or compete for port ownership', () => {
         const stop = extension.slice(extension.indexOf('// Stop must interrupt the MCU'),
             extension.indexOf('    async function cpUploadFiles'));
