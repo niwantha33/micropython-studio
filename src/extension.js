@@ -7,14 +7,14 @@
  */
 
 const vscode = require('vscode');
-const { exec, spawn } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs'); // Added fs import
 const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
-const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent } = require('./commonFxn');
+const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
@@ -23,11 +23,12 @@ const { openDeviceTerminal } = require('./deviceTerminal');
 const connectionManager = require('./connectionManager');
 const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFromCircuitPyDrive } = require('./circuitpyDrive');
 const { getConnectedDevices } = require('./runCommand');
+const { initializeSecretStorage, getDeviceSecret } = require('./deviceSecrets');
 const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
 const { registerNativeDebugger } = require('./nativeDebugger');
 const { MemoryAnalyzer } = require('./memoryAnalyzer');
-const { openWebReplTerminal } = require('./webrepl_bridge.py');
+const { openWebReplTerminal } = require('./webreplBridge.js');
 const { startSimulator, stopSimulator } = require('./simulator');
 
 // Firmware downloads are now deliberate browser actions to board-specific CI artifacts.
@@ -65,7 +66,7 @@ async function _buildRunPortOptions() {
     const savedCom = await getConfigValue(cfgPath, 'device', 'port');
     const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
     const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
-    const password = await getConfigValue(cfgPath, 'remote', 'webrepl_password');
+    const password = await getDeviceSecret(cfgPath, 'webrepl_password');
 
     if (enabled !== 'true' || !ip) return null;
 
@@ -135,6 +136,7 @@ function runPythonProcess(exe, args, onComplete) {
                 }
             }
         }
+        aiAssistanceProvider?.recordDeviceOutput(fullOutput);
         _notifyAiOnError(fullOutput, args);
         channel.appendLine(code === 0 ? '[SUCCESS] Task complete.' :
             `[ERROR] Task failed${code === null ? ' (connection or process error)' : ' with exit code ' + code}.`);
@@ -152,7 +154,7 @@ function runPythonProcess(exe, args, onComplete) {
 function _parseArgContext(args) {
     const ctx = {};
     for (let i = 0; i < args.length; i++) {
-        if (args[i] === '--port' && args[i + 1]) ctx.port = args[i + 1];
+        if (args[i] === '--port' && args[i + 1]) ctx.port = redactDevicePort(args[i + 1]);
         if (args[i] === '--file' && args[i + 1]) ctx.file = path.basename(args[i + 1]);
     }
     return ctx;
@@ -240,6 +242,7 @@ async function _spawnAsync(exe, args) {
                 finish(null);
             });
         });
+        aiAssistanceProvider?.recordDeviceOutput(fullOutput);
         _notifyAiOnError(fullOutput, args);
     } catch (err) {
         channel.appendLine(`[ERROR] Cannot start device operation: ${err.message}`);
@@ -385,9 +388,9 @@ function isFileInProjectFolder(filePath, projectFolder) {
  * Check if Python is available on the system.
  */
 function checkPythonAvailability() {
-    exec('python --version', (err) => {
+    execFile('python', ['--version'], { timeout: 5000, windowsHide: true }, (err) => {
         if (err) {
-            exec('python3 --version', (err2) => {
+            execFile('python3', ['--version'], { timeout: 5000, windowsHide: true }, (err2) => {
                 if (err2) {
                     vscode.window.showWarningMessage(
                         '[ERROR] Python not found in PATH. MicroPython Studio requires Python 3.7+.'
@@ -416,7 +419,7 @@ function updateDeviceStatusBar() {
         const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
         const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : gRemoteDevicePort;
         deviceStatusBarItem.text = `${portLabel}`;
-        deviceStatusBarItem.tooltip = `Connected to ${gRemoteDevicePort}`;
+        deviceStatusBarItem.tooltip = `Connected to ${redactDevicePort(gRemoteDevicePort)}`;
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
         deviceStatusBarItem.text = '[OK] No Device';
@@ -484,6 +487,7 @@ async function sendCleanCommand(terminal, command) {
 }
 
 function activate(context) {
+    initializeSecretStorage(context);
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
     registerNativeDebugger(context, () => gRemoteDevicePort, () => getVenvPythonPath(getVenvPythonPathFolder()));
@@ -708,7 +712,7 @@ function activate(context) {
                         }
                     }
 
-                    console.log('Device port:', gRemoteDevicePort, 'Code dir:', gDeviceCodeDir, 'Firmware:', gDeviceFirmware);
+                    console.log('Device port:', redactDevicePort(gRemoteDevicePort), 'Code dir:', gDeviceCodeDir, 'Firmware:', gDeviceFirmware);
                 }
             );
         })
@@ -757,7 +761,7 @@ function activate(context) {
             outputChannel.appendLine(`[Run Command] Initiating execution process...`);
             outputChannel.appendLine(`[Run Command] Target File: ${filePath}`);
             outputChannel.appendLine(`[Run Command] Selected Target: ${currentTarget}`);
-            outputChannel.appendLine(`[Run Command] Selected Port: ${runPort}`);
+            outputChannel.appendLine(`[Run Command] Selected Port: ${redactDevicePort(runPort)}`);
             outputChannel.appendLine(`[Run Command] Firmware Mode: ${gDeviceFirmware}`);
 
             // ── CircuitPython: mpremote mount not supported — use mpremote run ──────
@@ -769,10 +773,10 @@ function activate(context) {
             if (currentTarget !== 'Host' && !isCircuitPython) {
                 // Run on MCU (MicroPython) uses the daemon.
                 if (!connectionManager.isConnected && gRemoteDevicePort) {
-                    outputChannel.appendLine(`[Run Command] Connecting daemon process to port ${gRemoteDevicePort}...`);
+                    outputChannel.appendLine(`[Run Command] Connecting daemon process to port ${redactDevicePort(gRemoteDevicePort)}...`);
                     await connectionManager.connect(gRemoteDevicePort);
                 } else if (connectionManager.isConnected && connectionManager.isSuspended) {
-                    outputChannel.appendLine(`[Run Command] Resuming daemon process on port ${gRemoteDevicePort}...`);
+                    outputChannel.appendLine(`[Run Command] Resuming daemon process on port ${redactDevicePort(gRemoteDevicePort)}...`);
                     await connectionManager.resume();
                 }
             }
@@ -806,7 +810,7 @@ function activate(context) {
                     '--file', filePath,
                     '--no-reset'
                 ];
-                outputChannel.appendLine(`[Run Command] CircuitPython: Queueing backend run on ${runPort}`);
+                outputChannel.appendLine(`[Run Command] CircuitPython: Queueing backend run on ${redactDevicePort(runPort)}`);
                 await wsQueue.run(() => _spawnAsync(venvPython, cpArgs), 'Run CircuitPython Script');
                 return;
             }
@@ -835,7 +839,7 @@ function activate(context) {
                     '--folder', gDeviceCodeDir,
                     '--file', filePath
                 ];
-                outputChannel.appendLine(`[Run Command] Host Target (Mount): Queueing backend run on ${runPort}`);
+                outputChannel.appendLine(`[Run Command] Host Target (Mount): Queueing backend run on ${redactDevicePort(runPort)}`);
             } else {
                 // Run on MCU — send file directly to device and run it (mpremote run <file>)
                 // Always used for: .mpy bytecode, wireless (ws:) connections, MCU target mode
@@ -846,9 +850,9 @@ function activate(context) {
                     '--port', runPort,
                     '--file', filePath
                 ];
-                outputChannel.appendLine(`[Run Command] MCU Target (CLI Run): Queueing backend run on ${runPort}`);
+                outputChannel.appendLine(`[Run Command] MCU Target (CLI Run): Queueing backend run on ${redactDevicePort(runPort)}`);
             }
-            console.log(runArgs);
+            // Do not log raw backend arguments: wireless ports contain WebREPL passwords.
 
             await wsQueue.run(() => _spawnAsync(venvPython, runArgs), `Run ${currentTarget} Script`);
         })
@@ -909,7 +913,7 @@ function activate(context) {
         // ── Path 2: Web Workflow (HTTP) ───────────────────────────────────────
         const cfgPath = path.join(path.dirname(localRoot), 'device.cfg');
         const wwIp = await getConfigValue(cfgPath, 'remote', 'webworkflow_ip').catch(() => '');
-        const wwPass = await getConfigValue(cfgPath, 'remote', 'webworkflow_password').catch(() => '');
+        const wwPass = await getDeviceSecret(cfgPath, 'webworkflow_password').catch(() => '');
         const wwPort = parseInt(await getConfigValue(cfgPath, 'remote', 'webworkflow_port').catch(() => '80') || '80', 10);
 
         if (wwIp && wwPass) {
@@ -988,7 +992,7 @@ function activate(context) {
             const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const hrArgs = [scriptPath, '--python', venvPython, 'hard_reset', '--port', gRemoteDevicePort];
 
-            vscode.window.showInformationMessage(`Sending hard reset to ${gRemoteDevicePort}...`);
+            vscode.window.showInformationMessage(`Sending hard reset to ${redactDevicePort(gRemoteDevicePort)}...`);
             try {
                 await wsQueue.run(() => _spawnAsync(venvPython, hrArgs));
             } catch (e) {
@@ -1417,7 +1421,7 @@ function activate(context) {
                     const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
                     deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
                 }
-                vscode.window.showInformationMessage(`Device port set to: ${port}`);
+                vscode.window.showInformationMessage(`Device port set to: ${redactDevicePort(port)}`);
             }
         })
     );
@@ -1443,7 +1447,8 @@ function activate(context) {
             outputChannel.show(true);
             outputChannel.appendLine(`Compiling: ${path.basename(filePath)} → ${path.basename(outputFile)}`);
 
-            exec(`"${venvPython}" -m mpy_cross "${filePath}"`, (error, stdout, stderr) => {
+            execFile(venvPython, ['-m', 'mpy_cross', filePath],
+                { timeout: 60000, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
                 if (error) {
                     outputChannel.appendLine(`[ERROR] ${stderr || error.message}`);
                     vscode.window.showErrorMessage(`Compile failed: ${stderr || error.message}`);
@@ -1558,7 +1563,7 @@ function activate(context) {
                     await updateCfgComponent(cfgPath, 'device', 'last_flashed_board', result.board);
                     // Update status bar tooltip to show firmware version
                     if (deviceStatusBarItem) {
-                        deviceStatusBarItem.tooltip = `Connected to ${result.port} — firmware ${result.version}`;
+                        deviceStatusBarItem.tooltip = `Connected to ${redactDevicePort(result.port)} — firmware ${result.version}`;
                     }
                 }
             } else {
@@ -1667,7 +1672,8 @@ function activate(context) {
             outputChannel.show(true);
             outputChannel.appendLine(`Generating flowchart: ${path.basename(filePath)} → ${path.basename(outputFile)}`);
 
-            exec(`"${code2flowExe}" "${filePath}" --output "${outputFile}"`, (error, stdout, stderr) => {
+            execFile(code2flowExe, [filePath, '--output', outputFile],
+                { timeout: 60000, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
                 if (error) {
                     outputChannel.appendLine(`[ERROR] ${stderr || error.message}`);
                     vscode.window.showErrorMessage(`Flowchart generation failed: ${stderr || error.message}`);

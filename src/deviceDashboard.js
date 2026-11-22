@@ -1,6 +1,7 @@
 const vscode = require("vscode");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { execFile } = require("child_process");
 const { runMpremote } = require("./runCommand");
 const wsQueue = require("./wsQueue");
@@ -10,11 +11,14 @@ const { buildSessionWebReplScript, parseSessionWebReplResult, buildWebReplStatus
 const { buildWifiScanScript, parseWifiScanOutput } = require("./wifiScan");
 
 const { scanWorkspacePins } = require("./pinScanner");
+const crypto = require("crypto");
+const { getDeviceSecret, setDeviceSecret } = require("./deviceSecrets");
 const {
   updateCfgComponent,
   getVenvPythonPath,
   getVenvPythonPathFolder,
   getConfigValue,
+  redactDevicePort,
 } = require("./commonFxn");
 
 /**
@@ -163,7 +167,8 @@ except:
 `;
 
   const connectionManager = require("./connectionManager");
-  const tempScriptPath = path.join(workspaceFolder, "_dashboard_metrics.py");
+  const metricsTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mps-metrics-"));
+  const tempScriptPath = path.join(metricsTempDir, "metrics.py");
   try {
       let rawOutput = "";
       if (connectionManager.isConnected && !connectionManager.isSuspended) {
@@ -214,7 +219,7 @@ except:
               );
             });
           } else {
-            const mpArgs = ["run", `"${tempScriptPath}"`];
+            const mpArgs = ["run", tempScriptPath];
             rawOutput = await runMpremote(outputChannel, mpArgs);
           }
       }
@@ -317,9 +322,7 @@ except:
     } catch (err) {
       console.error("Failed to gather metrics:", err);
     } finally {
-      if (fs.existsSync(tempScriptPath)) {
-        fs.unlinkSync(tempScriptPath);
-      }
+      fs.rmSync(metricsTempDir, { recursive: true, force: true });
     }
     return metrics;
   }, "Gather Metrics", true);
@@ -452,7 +455,7 @@ function createPinoutHtml(pinoutKey) {
   if (!data) {
     const options = Object.entries(PINOUT_DATA)
       .map(([key, board]) => `<option value="${key}">${board.name}</option>`).join('');
-    return `<div class="pinout-header">🧷 Pinout <select id="pinoutBoardSelect" onchange="switchPinout(this.value)">
+    return `<div class="pinout-header">🧷 Pinout <select id="pinoutBoardSelect" data-pinout-change="true">
       <option value="" selected>Choose exact board</option>${options}</select></div>
       <div class="pinout-note">No verified pinout is available for this device.
       Choose the actual carrier board; do not use a generic MCU diagram for wiring.</div>`;
@@ -464,7 +467,7 @@ function createPinoutHtml(pinoutKey) {
     ? '<div class="pinout-note">BOARD-SPECIFIC REFERENCE ONLY — check the actual PCB pin labels and schematic. ' + safeNote + '</div>'
     : '<div class="pinout-note">' + safeNote + '</div>';
   if (!data.left.length && !data.right.length) {
-    return `<div class="pinout-header">🧷 Pinout <select id="pinoutBoardSelect" onchange="switchPinout(this.value)">
+    return `<div class="pinout-header">🧷 Pinout <select id="pinoutBoardSelect" data-pinout-change="true">
       ${Object.entries(PINOUT_DATA).map(([k, v]) => `<option value="${k}" ${k === pinoutKey ? 'selected' : ''}>${v.name}</option>`).join('')}
       </select></div>${warning}<div class="pinout-note">No GPIO mapping is displayed until this carrier is verified.</div>`;
   }
@@ -504,11 +507,11 @@ function createPinoutHtml(pinoutKey) {
         <div class="pinout-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
             <span style="font-size:13px;font-weight:600;color:var(--text-main);">🧷 Pinout</span>
             <div style="display:flex;align-items:center;gap:8px;">
-                <button id="scanPinsBtn" class="btn-scan-pins" onclick="scanProjectPins()">
+                <button id="scanPinsBtn" class="btn-scan-pins" data-pinout-scan="true">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                     Scan Pins
                 </button>
-                <select id="pinoutBoardSelect" onchange="switchPinout(this.value)"
+                <select id="pinoutBoardSelect" data-pinout-change="true"
                     style="background:#1e1e2e;color:#e2e8f0;border:1px solid rgba(99,102,241,0.3);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;">
                     ${boardOptions}
                 </select>
@@ -545,11 +548,19 @@ function createPinoutHtml(pinoutKey) {
 /**
  * Generates the full HTML for the Webview
  */
+function escapeDashboardHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[ch]));
+}
+
 function getWebviewContent(metrics) {
+  const nonce = crypto.randomBytes(16).toString("base64");
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Device Dashboard</title>
     <style>
@@ -1459,11 +1470,11 @@ function getWebviewContent(metrics) {
             <div class="info-grid">
                 <div class="info-item">
                     <span class="info-label">Firmware</span>
-                    <span class="info-val">${metrics.firmware}</span>
+                    <span class="info-val">${escapeDashboardHtml(metrics.firmware)}</span>
                 </div>
                 <div class="info-item">
                     <span class="info-label">Version</span>
-                    <span class="info-val">v${metrics.version}</span>
+                    <span class="info-val">v${escapeDashboardHtml(metrics.version)}</span>
                 </div>
                 <div class="info-item">
                     <span class="info-label">CPU Clock</span>
@@ -1503,8 +1514,8 @@ function getWebviewContent(metrics) {
                   metrics.wifi.connected
                     ? `<div class="wifi-status-badge connected"><span class="wifi-dot"></span> Connected</div>
                        <div class="wifi-info-row">
-                           <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">${metrics.wifi.ssid || "—"}</span></div>
-                           <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp">${metrics.wifi.ip}</span></div>
+                           <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">${escapeDashboardHtml(metrics.wifi.ssid || "—")}</span></div>
+                           <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp">${escapeDashboardHtml(metrics.wifi.ip)}</span></div>
                        </div>`
                     : `<div class="wifi-status-badge disconnected"><span class="wifi-dot"></span> Not Connected</div>`
                 }
@@ -1513,7 +1524,7 @@ function getWebviewContent(metrics) {
                     ? `
                 <div class="boot-log-row boot-log-${metrics.bootLog.status}" id="bootLogRow">
                     <span class="boot-log-icon">${metrics.bootLog.status === "ok" ? "✅" : metrics.bootLog.status === "timeout" ? "⚠️" : "❌"}</span>
-                    <span class="boot-log-text">Last boot: ${metrics.bootLog.detail}</span>
+                    <span class="boot-log-text">Last boot: ${escapeDashboardHtml(metrics.bootLog.detail)}</span>
                     <button class="btn btn-danger btn-sm" id="disableRemoteBtn" style="margin-left:auto">🔒 Disable Remote Access</button>
                 </div>`
                     : ""
@@ -1540,7 +1551,7 @@ function getWebviewContent(metrics) {
                         <div class="toggle-label">🌐 Web Workflow (CircuitPython Wi-Fi)</div>
                         <div class="toggle-sub">Configure Wi-Fi + API access via <code>settings.toml</code> on the CIRCUITPY drive</div>
                     </div>
-                    <button class="btn-sm btn-accent" id="webWorkflowToggleBtn" onclick="toggleWebWorkflowForm()">Configure</button>
+                    <button class="btn-sm btn-accent" id="webWorkflowToggleBtn" id="webWorkflowToggleFormBtn">Configure</button>
                 </div>
                 <div id="webWorkflowForm" style="display:none;margin-top:14px">
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
@@ -1565,11 +1576,11 @@ function getWebviewContent(metrics) {
                         ⚠️ CIRCUITPY drive must be mounted (USB). After saving, reset the board to apply.
                     </div>
                     <div style="display:flex;gap:8px">
-                        <button class="btn-sm btn-accent" onclick="saveWebWorkflow()">💾 Save to settings.toml</button>
-                        <button class="btn-sm" onclick="detectWebWorkflowIp()" style="margin-left:6px;">🔍 Detect IP</button>
+                        <button class="btn-sm btn-accent" id="webWorkflowSaveBtn">💾 Save to settings.toml</button>
+                        <button class="btn-sm" id="webWorkflowDetectBtn" style="margin-left:6px;">🔍 Detect IP</button>
                         <div style="margin-top:6px;font-size:11px;color:#94a3b8;">⚠️ Stop running code first (press <b>Stop</b> or <b>Ctrl+C</b> in REPL) — CircuitPython locks the drive while code is active.</div>
                         <div style="font-size:11px;color:#94a3b8;margin-top:2px;">After saving, power-cycle the board, then click <b>Detect IP</b> to read the assigned address.</div>
-                        <button class="btn-sm" onclick="document.getElementById('webWorkflowForm').style.display='none'">Cancel</button>
+                        <button class="btn-sm" id="webWorkflowCancelBtn">Cancel</button>
                     </div>
                     <div id="webWorkflowStatus" style="margin-top:8px;font-size:12px"></div>
                 </div>
@@ -1579,8 +1590,8 @@ function getWebviewContent(metrics) {
                 <div class="webrepl-ip-box" style="margin-top:12px">
                     <div style="flex:1">
                         <div class="webrepl-ip-label">🌐 Web Workflow IP</div>
-                        <div class="webrepl-ip-val">${metrics.wifi.ip}</div>
-                        <div style="font-size:11px;color:#94a3b8;margin-top:4px">Access at http://${metrics.wifi.ip}/edit/</div>
+                        <div class="webrepl-ip-val">${escapeDashboardHtml(metrics.wifi.ip)}</div>
+                        <div style="font-size:11px;color:#94a3b8;margin-top:4px">Access at http://${escapeDashboardHtml(metrics.wifi.ip)}/edit/</div>
                     </div>
                 </div>`
                     : ""
@@ -1609,7 +1620,7 @@ function getWebviewContent(metrics) {
             <div class="webrepl-ip-box" id="webReplActiveBox">
                 <div style="flex:1">
                     <div class="webrepl-ip-label">WebREPL · Session status</div>
-                    <div class="webrepl-ip-val">${metrics.bootLog.ip}</div>
+                    <div class="webrepl-ip-val">${escapeDashboardHtml(metrics.bootLog.ip)}</div>
                     <div style="font-size:11px;color:#94a3b8;margin-top:4px">Existing boot configuration unchanged</div>
                 </div>
                 <div style="display:flex;flex-direction:column;gap:6px">
@@ -1629,7 +1640,7 @@ function getWebviewContent(metrics) {
 
     </div>
 
-    <script>
+    <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
 
         // ── Refresh button ──────────────────────────────────────────────────
@@ -1930,14 +1941,17 @@ function getWebviewContent(metrics) {
             if (msg.command === 'wifiConnectDone') {
                 const status = document.getElementById('connectStatus');
                 if (msg.success) {
-                    status.innerHTML = \`<div style="color:#10b981;font-weight:600">✅ Connected!  IP: \${msg.ip}</div>\`;
+                    status.style.color = '#10b981';
+                    status.textContent = '✅ Connected! IP: ' + String(msg.ip || '');
                     // Update the status area at the top of the card
                     document.getElementById('wifiStatusArea').innerHTML = \`
                         <div class="wifi-status-badge connected"><span class="wifi-dot"></span> Connected</div>
                         <div class="wifi-info-row">
-                            <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">\${msg.ssid}</span></div>
-                            <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp">\${msg.ip}</span></div>
+                            <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval" id="connectedSsid"></span></div>
+                            <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp"></span></div>
                         </div>\`;
+                    document.getElementById('connectedSsid').textContent = String(msg.ssid || '');
+                    document.getElementById('currentIp').textContent = String(msg.ip || '');
                     // Show WebREPL toggle if not already there
                     if (!document.getElementById('webReplArea')) {
                         const toggle = document.createElement('div');
@@ -1999,7 +2013,7 @@ function getWebviewContent(metrics) {
                     <div class="webrepl-ip-box">
                         <div style="flex:1">
                             <div class="webrepl-ip-label">WebREPL · Listening</div>
-                            <div class="webrepl-ip-val">\${msg.ip}</div>
+                            <div class="webrepl-ip-val" id="webReplListeningIp"></div>
                             <div style="font-size:11px;color:#10b981;margin-top:4px">Listener active — boot.py unchanged</div>
                         </div>
                         <div style="display:flex;flex-direction:column;gap:6px">
@@ -2007,6 +2021,7 @@ function getWebviewContent(metrics) {
                             <button class="btn btn-danger btn-sm" id="disableRemoteBtnInBox">Stop WebREPL</button>
                         </div>
                     </div>\`;
+                document.getElementById('webReplListeningIp').textContent = String(msg.ip || '');
 
                 document.getElementById('switchWirelessBtn').addEventListener('click', () => {
                     vscode.postMessage({ command: 'switchToWireless', ip: msg.ip });
@@ -2030,17 +2045,19 @@ function getWebviewContent(metrics) {
                 const statusEl = document.getElementById('webWorkflowStatus');
                 if (statusEl) {
                     const col = msg.ip ? '#10b981' : '#f59e0b';
-                    statusEl.innerHTML = '<span style="color:' + col + '">' + msg.message + '</span>';
+                    statusEl.style.color = col;
+                    statusEl.textContent = String(msg.message || '');
                 }
             }
 
             if (msg.command === 'webWorkflowSaved') {
                 const statusEl = document.getElementById('webWorkflowStatus');
                 if (statusEl) {
-                    statusEl.innerHTML = msg.success
-                        ? '<span style="color:#10b981">' + msg.message + '</span>'
-                        : '<span style="color:#ef4444">' + msg.message + '</span>' +
-                          (!msg.success ? '<br><span style="color:#94a3b8;font-size:11px;">Tip: Press Stop / Ctrl+C in the REPL to unlock the drive, then try again.</span>' : '');
+                    statusEl.style.color = msg.success ? '#10b981' : '#ef4444';
+                    statusEl.textContent = String(msg.message || '');
+                    if (!msg.success) {
+                        statusEl.appendChild(document.createTextNode(' Tip: Press Stop / Ctrl+C in the REPL to unlock the drive, then try again.'));
+                    }
                 }
             }
 
@@ -2058,7 +2075,10 @@ function getWebviewContent(metrics) {
 
             if (msg.command === 'wifiConnectError') {
                 const status = document.getElementById('connectStatus');
-                if (status) status.innerHTML = \`<div style="color:#ef4444">\${msg.message}</div>\`;
+                if (status) {
+                    status.style.color = '#ef4444';
+                    status.textContent = String(msg.message || 'Wi-Fi connection failed');
+                }
             }
         });
 
@@ -2078,11 +2098,30 @@ function getWebviewContent(metrics) {
         const switchWirelessBtnStatic = document.getElementById('switchWirelessBtnStatic');
         if (switchWirelessBtnStatic) {
             switchWirelessBtnStatic.addEventListener('click', () => {
-                const ip = '${metrics.bootLog.ip}';
+                const ip = document.querySelector('#webReplActiveBox .webrepl-ip-val')?.textContent?.trim() || '';
                 vscode.postMessage({ command: 'switchToWireless', ip });
                 switchWirelessBtnStatic.textContent = '✅ Switched';
                 switchWirelessBtnStatic.disabled = true;
             });
+        }
+
+        // Bind controls through listeners: inline event handlers are forbidden by CSP.
+        document.addEventListener('change', event => {
+            const target = event.target.closest('[data-pinout-change]');
+            if (target) switchPinout(target.value);
+        });
+        document.addEventListener('click', event => {
+            if (event.target.closest('[data-pinout-scan]')) scanProjectPins();
+        });
+        const controls = [
+            ['webWorkflowToggleFormBtn', toggleWebWorkflowForm],
+            ['webWorkflowSaveBtn', saveWebWorkflow],
+            ['webWorkflowDetectBtn', detectWebWorkflowIp],
+            ['webWorkflowCancelBtn', () => { document.getElementById('webWorkflowForm').style.display = 'none'; }]
+        ];
+        for (const [id, handler] of controls) {
+            const element = document.getElementById(id);
+            if (element) element.addEventListener('click', handler);
         }
     </script>
 </body>
@@ -2128,11 +2167,15 @@ async function runDeviceScript(
       return result.stdout || "";
     }
 
-    const tempPath = path.join(workspaceRoot, tempName);
+    if (!/^[a-zA-Z_][a-zA-Z0-9_.-]{0,70}\.py$/.test(tempName) || tempName.includes("..")) {
+      throw new Error("Unsafe temporary script name.");
+    }
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mps-script-"));
+    const tempPath = path.join(tempDir, tempName);
     try {
       fs.writeFileSync(tempPath, scriptContent, "utf8");
       if (!devicePort) {
-        return await runMpremote(outputChannel, ["run", `"${tempPath}"`]);
+        return await runMpremote(outputChannel, ["run", tempPath]);
       }
       const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
       const subpro = path.join(__dirname, "mps_backend.py");
@@ -2158,7 +2201,7 @@ async function runDeviceScript(
         );
       });
     } finally {
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }, "Dashboard " + tempName, true);
 }
@@ -2241,11 +2284,11 @@ async function openDeviceDashboard(
   const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
   // Loading screen
-  panel.webview.html = `<!DOCTYPE html><html><head><style>
+  panel.webview.html = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';"><style>
         body{background:#1a1a24;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:20px}
         .loader{border:4px solid rgba(255,255,255,0.1);border-top-color:#3b82f6;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite}
         @keyframes spin{to{transform:rotate(360deg)}}
-    </style></head><body><div class="loader"></div><div>Fetching telemetry from ${currentDevicePort}…</div></body></html>`;
+    </style></head><body><div class="loader"></div><div>Fetching telemetry from ${escapeDashboardHtml(redactDevicePort(currentDevicePort))}…</div></body></html>`;
 
   const updateDashboard = async () => {
     try {
@@ -2268,7 +2311,7 @@ async function openDeviceDashboard(
       const errMsg = err instanceof Error ? err.message : String(err);
       panel.webview.html =
         '<body style="background:#1a1a24;color:#ef4444;padding:32px"><h2>Error</h2><p>' +
-        errMsg +
+        escapeDashboardHtml(errMsg) +
         "</p></body>";
     }
   };
@@ -2448,16 +2491,11 @@ print('OK')
           )
         );
 
-        // Also persist Web Workflow credentials into device.cfg [remote] section
+        // Keep non-secret Web Workflow settings in device.cfg; password goes to SecretStorage.
         if (result.ok) {
           const cfgPath = path.join(workspaceRoot, "device.cfg");
           await updateCfgComponent(cfgPath, "remote", "webworkflow_ip", "");
-          await updateCfgComponent(
-            cfgPath,
-            "remote",
-            "webworkflow_password",
-            message.apiPassword,
-          );
+          await setDeviceSecret(cfgPath, "webworkflow_password", message.apiPassword);
           await updateCfgComponent(
             cfgPath,
             "remote",
@@ -2503,7 +2541,7 @@ print('OK')
 
           const running = status.state === "RUNNING";
           const savedSecret = running
-            ? await getConfigValue(cfgPath, "remote", "webrepl_password") : null;
+            ? await getDeviceSecret(cfgPath, "webrepl_password") : null;
           const secret = await vscode.window.showInputBox({
             prompt: running
               ? "WebREPL is already running. Enter its EXISTING password (no restart)."
@@ -2533,7 +2571,7 @@ print('OK')
           // the WebREPL Console (a listening port alone isn't authentication).
           await updateCfgComponent(cfgPath, "remote", "webrepl_enabled", "true");
           await updateCfgComponent(cfgPath, "remote", "webrepl_ip", ip);
-          await updateCfgComponent(cfgPath, "remote", "webrepl_password", secret);
+          await setDeviceSecret(cfgPath, "webrepl_password", secret);
           panel.webview.postMessage({ command: "webReplEnabled", ip, alreadyRunning: running });
           outputChannel.appendLine("[WebREPL] " +
             (running ? "Existing listener detected at " : "Listener started at ") +
@@ -2606,7 +2644,7 @@ print('OK')
         // Never hardcode credentials or show them in a tab title.
         const cfgPath = path.join(workspaceRoot, "device.cfg");
         const savedIp = await getConfigValue(cfgPath, "remote", "webrepl_ip");
-        const savedSecret = await getConfigValue(cfgPath, "remote", "webrepl_password");
+        const savedSecret = await getDeviceSecret(cfgPath, "webrepl_password");
         const enabled = await getConfigValue(cfgPath, "remote", "webrepl_enabled");
         if (enabled !== "true" || !savedIp || !savedSecret || savedIp !== message.ip) {
           panel.webview.postMessage({

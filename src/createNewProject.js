@@ -9,9 +9,10 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs').promises;
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const { getVenvPythonPathFolder, getVenvPythonPath, getMicropythonStudioPath } = require('./commonFxn');
 const { runCommand } = require('./runCommand');
+const { isSafeProjectName, resolveProjectDirectory } = require('./pathSafety');
 const {
     languageOption, mcuOptions_MP,
     rpBoards_MP, espBoards_MP, stmBoards_MP,
@@ -78,7 +79,7 @@ async function findCircuitPythonDrive() {
  */
 async function buildProjectConfig(configDict, folderUri) {
     configDict.parentPath = folderUri[0].fsPath;
-    configDict.projectDir = path.join(configDict.parentPath, configDict.projectName);
+    configDict.projectDir = resolveProjectDirectory(configDict.parentPath, configDict.projectName);
     // CircuitPython: deviceCodeDir is the device drive, resolved later in createNewProject
     // MicroPython: deviceCodeDir is the local main/ folder
     configDict.deviceCodeDir = path.join(configDict.projectDir, 'main');
@@ -100,7 +101,7 @@ async function selectMcuAndBoard() {
         placeHolder: 'e.g. my-micropython-project',
         validateInput: value => {
             if (!value) return 'Project name is required';
-            if (/[<>:"/\\|?*]/.test(value)) return 'Project name contains invalid characters';
+            if (!isSafeProjectName(value)) return 'Project name must be a single safe folder name (no reserved names or traversal).';
             return null;
         }
     });
@@ -157,9 +158,8 @@ async function detectAndSelectDevice(config) {
     const venvPython = customPython || getVenvPythonPath(venvFolder);
 
     return new Promise((resolve) => {
-        const command = `"${venvPython}" -m mpremote connect list`;
-
-        exec(command, async (error, stdout) => {
+        execFile(venvPython, ['-m', 'mpremote', 'connect', 'list'],
+            { timeout: 15000, maxBuffer: 1024 * 1024, windowsHide: true }, async (error, stdout) => {
             if (error) {
                 vscode.window.showWarningMessage(
                     'Could not detect devices. You can configure the port later in device.cfg.'
@@ -328,6 +328,25 @@ async function createNewProject(context) {
             `virtualPython = "${venvPython}"`
         ].join('\n');
         await fs.writeFile(path.join(config.projectDir, 'device.cfg'), deviceCfgContent, 'utf8');
+        // Keep project-local paths, device IDs and any legacy credentials out of
+        // source control. Never overwrite a user's existing ignore rules.
+        const ignoreRules = [
+            '# Local board configuration may contain sensitive connection metadata.',
+            'device.cfg',
+            'settings.toml',
+            '**/settings.toml',
+            '.venv/',
+            '__pycache__/',
+            '*.pyc',
+            '.mps-*.tmp',
+            ''
+        ].join('\n');
+        try {
+            await fs.writeFile(path.join(config.projectDir, '.gitignore'), ignoreRules, { flag: 'wx' });
+        } catch (ignoreError) {
+            if (ignoreError.code !== 'EEXIST') throw ignoreError;
+        }
+
 
         // Site-packages path for the venv (platform-aware)
         const sitePackagesPath = process.platform === 'win32'

@@ -4,14 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Private AI Assistance</title>
-    <!-- Modern typography from Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Markdown and Code Highlighting Libraries -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- No remote scripts, fonts or styles: private AI stays entirely local. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-__MPS_CSP_NONCE__'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
     
     <style>
         :root {
@@ -491,7 +486,7 @@
         </div>
     </div>
 
-    <script>
+    <script nonce="__MPS_CSP_NONCE__">
         const vscode = acquireVsCodeApi();
         const chatContainer = document.getElementById('chat-container');
         const userInput = document.getElementById('user-input');
@@ -535,8 +530,7 @@
             return text.replace(/[&<>"']/g, function(m) { return map[m]; });
         }
 
-        // Local AI must still render text without access to CDNs.
-        // Remote Markdown/highlighter assets are optional enhancements only.
+        // Local-only Markdown and code rendering with no CDN dependencies.
         const marked = window.marked || {
             _renderer: null,
             use(options) { this._renderer = options.renderer; },
@@ -578,7 +572,7 @@
                         ? hljs.highlight(code, { language }).value 
                         : hljs.highlightAuto(code).value;
 
-                    return `<div class="code-block-container"><pre><div class="code-header"><span>${escapeHtml(language)}</span><div class="code-actions"><button class="action-btn" onclick="handleAction('copy', this)" title="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button><button class="action-btn" onclick="handleAction('insert', this)" title="Insert into editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Insert</span></button><button class="action-btn" onclick="handleAction('run', this)" title="Run on device"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span></button><button class="action-btn" onclick="handleAction('new', this)" title="New file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg><span>New</span></button></div></div><code class="hljs language-${language}">${highlighted}</code><textarea style="display:none" class="raw-code">${escapeHtml(code)}</textarea></pre></div>`;
+                    return `<div class="code-block-container"><pre><div class="code-header"><span>${escapeHtml(language)}</span><div class="code-actions"><button class="action-btn" data-code-action="copy" title="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button><button class="action-btn" data-code-action="insert" title="Insert into editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Insert</span></button><button class="action-btn" data-code-action="run" title="Run on device"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span></button><button class="action-btn" data-code-action="new" title="New file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg><span>New</span></button></div></div><code class="hljs language-${language}">${highlighted}</code><textarea style="display:none" class="raw-code">${escapeHtml(code)}</textarea></pre></div>`;
                 }
             }
         });
@@ -636,10 +630,12 @@
                         <div class="pulse"></div>
                         <div class="pulse"></div>
                     </div>
-                    <div class="thinking-status">${statusText}</div>
+                    <div class="thinking-status"></div>
                     <div class="thinking-timer">${timerText}</div>
                 </div>
             `;
+            // Ollama model names and streaming status are untrusted data.
+            currentAiMessageElement.querySelector('.thinking-status').textContent = String(statusText);
         }
 
         function startChatTimer() {
@@ -707,6 +703,14 @@
                 btn.style.color = '';
             }, 1000);
         };
+
+        // Delegate code actions instead of unsafe inline HTML event handlers.
+        document.addEventListener('click', event => {
+            const btn = event.target.closest('button[data-code-action]');
+            if (!btn) return;
+            const action = btn.dataset.codeAction;
+            if (['copy', 'insert', 'run', 'new'].includes(action)) window.handleAction(action, btn);
+        });
 
         function scrollToBottom() {
             chatContainer.scrollTop = chatContainer.scrollHeight;

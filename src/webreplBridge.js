@@ -2,6 +2,15 @@ const vscode = require('vscode');
 const path = require('path');
 const { WebReplClient } = require('./webreplClient');
 const { getConfigValue } = require('./commonFxn');
+const { getDeviceSecret } = require('./deviceSecrets');
+const { isSafeDeviceEntryName } = require('./pathSafety');
+
+const MAX_WEBREPL_FILE_BYTES = 16 * 1024 * 1024;
+function isSafeHost(host) {
+    return typeof host === 'string' && host.length > 0 && host.length <= 253 &&
+        /^[a-zA-Z0-9.-]+$/.test(host) && !host.startsWith('.') &&
+        !host.endsWith('.') && !host.includes('..');
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -28,7 +37,7 @@ async function resolveWebReplCredentials(devicePort) {
 
     const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
     const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
-    const password = await getConfigValue(cfgPath, 'remote', 'webrepl_password');
+    const password = await getDeviceSecret(cfgPath, 'webrepl_password');
 
     if (enabled === 'true' && ip) return { ip, password: password || '' };
     return null;
@@ -46,6 +55,14 @@ async function openWebReplTerminal(context, devicePort) {
     }
 
     const { ip, password } = creds;
+    if (!isSafeHost(ip)) {
+        vscode.window.showErrorMessage('Invalid WebREPL hostname/address in device configuration.');
+        return;
+    }
+    if (!password) {
+        vscode.window.showErrorMessage('WebREPL password missing. Reconfigure via USB first.');
+        return;
+    }
 
     const panel = vscode.window.createWebviewPanel(
         'webReplTerminal',
@@ -105,13 +122,14 @@ async function openWebReplTerminal(context, devicePort) {
         // Reserved 4 bytes at offset 12‑15
         rec.writeUInt32LE(0, 12);
         // Name length
-        rec.writeUInt16LE(name.length, 16);
-        // Name
-        Buffer.from(name).copy(rec, 18);
+        const nameBytes = Buffer.from(name, 'utf8');
+        rec.writeUInt16LE(nameBytes.length, 16);
+        // Name (maximum 64 UTF-8 bytes in WebREPL protocol)
+        nameBytes.copy(rec, 18);
         client.send(rec);
     }
-    function statusMsg(html) {
-        panel.webview.postMessage({ type: 'fileStatus', html });
+    function statusMsg(text) {
+        panel.webview.postMessage({ type: 'fileStatus', text: String(text).slice(0, 512) });
     }
 
     client.onConnect = () => {
@@ -153,15 +171,15 @@ async function openWebReplTerminal(context, devicePort) {
                             await client.sendAsync(putData.slice(off, end));
                             // Give the device time to process
                             await new Promise(r => setTimeout(r, 100));
-                            statusMsg(`Sending <b>${putName}</b>… ${end}/${putData.length} bytes`);
+                            statusMsg(`Sending ${putName}… ${end}/${putData.length} bytes`);
                         }
                         binaryState = 12;
                     } catch (err) {
-                        statusMsg(`<span style="color:#f44">Upload error: ${err.message}</span>`);
+                        statusMsg(`Upload error: ${err.message}`);
                         binaryState = 0;
                     }
                 } else {
-                    statusMsg(`<span style="color:#f44">Failed to start sending ${putName}</span>`);
+                    statusMsg(`Failed to start sending ${putName}`);
                     binaryState = 0;
                 }
 
@@ -172,9 +190,9 @@ async function openWebReplTerminal(context, devicePort) {
                 incomingBuf = incomingBuf.slice(resp.len);
 
                 if (resp.code === 0) {
-                    statusMsg(`Sent <b>${putName}</b>, ${putData.length} bytes`);
+                    statusMsg(`Sent ${putName}, ${putData.length} bytes`);
                 } else {
-                    statusMsg(`<span style="color:#f44">Send failed: ${putName}</span>`);
+                    statusMsg(`Send failed: ${putName}`);
                 }
                 binaryState = 0;
 
@@ -188,7 +206,7 @@ async function openWebReplTerminal(context, devicePort) {
                     binaryState = 22;
                     client.send(Buffer.from([0])); // ack: send next chunk
                 } else {
-                    statusMsg(`<span style="color:#f44">File not found: ${getName}</span>`);
+                    statusMsg(`File not found: ${getName}`);
                     binaryState = 0;
                 }
 
@@ -202,11 +220,19 @@ async function openWebReplTerminal(context, devicePort) {
                     binaryState = 23;
                 } else {
                     if (incomingBuf.length < 2 + sz) return; // Wait for full chunk
+                    if (getAccum.length + sz > MAX_WEBREPL_FILE_BYTES) {
+                        statusMsg('Download stopped: file exceeds the safety limit.');
+                        getAccum = [];
+                        incomingBuf = Buffer.alloc(0);
+                        binaryState = 0;
+                        client.disconnect();
+                        return;
+                    }
                     const chunk = incomingBuf.slice(2, 2 + sz);
                     for (let i = 0; i < chunk.length; i++) getAccum.push(chunk[i]);
                     incomingBuf = incomingBuf.slice(2 + sz);
 
-                    statusMsg(`Getting <b>${getName}</b>… ${getAccum.length} bytes`);
+                    statusMsg(`Getting ${getName}… ${getAccum.length} bytes`);
                     client.send(Buffer.from([0])); // ack next chunk
                     // Loop to next chunk or final status
                 }
@@ -218,14 +244,14 @@ async function openWebReplTerminal(context, devicePort) {
                 incomingBuf = incomingBuf.slice(resp.len);
 
                 if (resp.code === 0) {
-                    statusMsg(`Got <b>${getName}</b>, ${getAccum.length} bytes`);
+                    statusMsg(`Got ${getName}, ${getAccum.length} bytes`);
                     panel.webview.postMessage({
                         type: 'fileData',
                         name: getName,
                         bytes: getAccum
                     });
                 } else {
-                    statusMsg(`<span style="color:#f44">Get failed: ${getName}</span>`);
+                    statusMsg(`Get failed: ${getName}`);
                 }
                 binaryState = 0;
             }
@@ -233,6 +259,12 @@ async function openWebReplTerminal(context, devicePort) {
     }
 
     client.onData = (buf) => {
+        if (incomingBuf.length + buf.length > MAX_WEBREPL_FILE_BYTES + 65536) {
+            incomingBuf = Buffer.alloc(0);
+            statusMsg('WebREPL transfer stopped: receive buffer exceeded safety limit.');
+            client.disconnect();
+            return;
+        }
         incomingBuf = Buffer.concat([incomingBuf, buf]);
         processIncoming();
     };
@@ -264,20 +296,30 @@ async function openWebReplTerminal(context, devicePort) {
         if (client.state !== 'connected') return;
         if (msg.type === 'input') {
             if (binaryState !== 0) return; // ignore keystrokes during file transfer
+            if (!Array.isArray(msg.data) || msg.data.length > 8192) return;
             client.sendText(Buffer.from(msg.data));
         } else if (msg.type === 'putFile') {
             if (binaryState !== 0) return;
+            if (!isSafeDeviceEntryName(msg.name) || Buffer.byteLength(msg.name, 'utf8') > 64 ||
+                !Array.isArray(msg.bytes) || msg.bytes.length > MAX_WEBREPL_FILE_BYTES) {
+                statusMsg('Upload rejected: invalid filename or file too large.');
+                return;
+            }
             putName = msg.name;
             putData = Buffer.from(msg.bytes);
             binaryState = 11;
-            statusMsg(`Sending <b>${putName}</b>…`);
+            statusMsg(`Sending ${putName}…`);
             sendWaHeader(1, putName, putData.length);
         } else if (msg.type === 'getFile') {
             if (binaryState !== 0) return;
+            if (!isSafeDeviceEntryName(msg.name) || Buffer.byteLength(msg.name, 'utf8') > 64) {
+                statusMsg('Download rejected: invalid filename.');
+                return;
+            }
             getName = msg.name;
             getAccum = [];
             binaryState = 21;
-            statusMsg(`Getting <b>${getName}</b>…`);
+            statusMsg(`Getting ${getName}…`);
             sendWaHeader(2, getName);
         }
     });
@@ -429,7 +471,7 @@ window.addEventListener('message', function(event) {
             }
         }
     } else if (msg.type === 'fileStatus') {
-        document.getElementById('file-status').innerHTML = msg.html;
+        document.getElementById('file-status').textContent = msg.text;
     } else if (msg.type === 'fileData') {
         saveAs(new Blob([new Uint8Array(msg.bytes)], {type:'application/octet-stream'}), msg.name);
     }

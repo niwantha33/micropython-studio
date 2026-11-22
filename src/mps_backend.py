@@ -1881,9 +1881,8 @@ def run_mpremote(python_exe, args_list, timeout=60):
         captured = "".join(output_lines)
         parsed = parse_mpremote_output(captured)
         # Build a human-readable summary for the AI
-        # At the end of run_mpremote, write captured output to a known file
-        with open(os.path.join(tempfile.gettempdir(), 'mpremote-output.txt'), 'w', encoding='utf-8') as f:
-            f.write(''.join(output_lines))
+        # Output is returned to the VS Code extension over the existing process
+        # pipes. Never write REPL output to a predictable global /tmp filename.
         device_summary = ""
         if parsed["error"]:
             device_summary += f"Error: {parsed['error']}\n"

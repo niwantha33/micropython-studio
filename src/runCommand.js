@@ -1,165 +1,153 @@
 /**
- * runCommand.js
- * Process spawning and mpremote command execution
+ * Safe subprocess execution for environment setup and MicroPython tools.
+ * Argument arrays are passed directly to the OS: never interpolate user-controlled
+ * device names, local paths or script content into a shell command.
  * @license MIT
- * @version 2.0
- * @author  Niwantha Meepage
  */
+'use strict';
 
-const { exec, spawn } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 
-/**
- * Run a command as a child process with output piped to a VS Code OutputChannel.
- *
- * @param {vscode.OutputChannel} outputChannel - VS Code output channel for logging
- * @param {string} command - Executable to run
- * @param {string[]} args - Command arguments
- * @param {string} cwd - Working directory
- * @returns {Promise<void>}
- */
+const PROCESS_TIMEOUT_MS = 10 * 60 * 1000;
+const MPREMOTE_TIMEOUT_MS = 30 * 1000;
+const MAX_OUTPUT_BYTES = 1024 * 1024;
+
+function assertArguments(command, args) {
+    if (typeof command !== 'string' || !command.trim() ||
+        !Array.isArray(args) || args.some(arg => typeof arg !== 'string')) {
+        throw new TypeError('Expected an executable path and an array of string arguments.');
+    }
+}
+
+/** Run a CLI tool without a command shell and stream bounded output to VS Code. */
 function runCommand(outputChannel, command, args, cwd) {
     return new Promise((resolve, reject) => {
-        outputChannel.appendLine(`Running: ${command} ${args.join(' ')}`);
-
-        const proc = spawn(command, args, {
-            cwd,
-            shell: true,
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
-
-        proc.stdout.on('data', (data) => {
-            outputChannel.append(data.toString());
-        });
-
-        proc.stderr.on('data', (data) => {
-            outputChannel.append(data.toString());
-        });
-
-        proc.on('close', (code) => {
-            if (code === 0) {
-                outputChannel.appendLine('Command completed successfully');
-                resolve();
-            } else {
-                outputChannel.appendLine(`Command failed with code ${code}`);
-                reject(new Error(`Process exited with code ${code}`));
-            }
-        });
-
-        proc.on('error', (error) => {
-            outputChannel.appendLine(`Command error: ${error.message}`);
-            reject(error);
-        });
-    });
-}
-
-/**
- * Run an mpremote command using the virtual environment Python.
- *
- * @param {vscode.OutputChannel} outputChannel - VS Code output channel
- * @param {string[]} args - Arguments to pass to `python -m mpremote`
- * @returns {Promise<string>} stdout from the command
- */
-function runMpremote(outputChannel, args) {
-    return new Promise((resolve, reject) => {
-        const venvFolder = getVenvPythonPathFolder();
-        const venvPython = getVenvPythonPath(venvFolder);
-
-        // Validate Python executable exists
-        if (!venvPython || !fs.existsSync(venvPython)) {
-            const errorMsg = `Python executable not found: ${venvPython}. Run "Setup Environment" first.`;
-            console.error(errorMsg);
-            outputChannel.appendLine(`Error: ${errorMsg}`);
-            return reject(new Error(errorMsg));
+        try {
+            assertArguments(command, args);
+        } catch (err) {
+            reject(err);
+            return;
         }
 
-        // Build command with proper quoting for paths with spaces
-        const command = `"${venvPython}" -m mpremote ${args.map(arg =>
-            arg.includes(' ') ? `"${arg}"` : arg
-        ).join(' ')}`;
+        // Do not log arguments; these may contain credentials or private paths.
+        outputChannel.appendLine('Running: ' + command + ' (' + args.length + ' arguments)');
+        let proc;
+        try {
+            proc = spawn(command, args, {
+                cwd,
+                shell: false,
+                windowsHide: true,
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+        } catch (err) {
+            reject(err);
+            return;
+        }
 
-        outputChannel.appendLine(`Executing: mpremote ${args.join(' ')}`);
-
-        let child = null;
-        const timeout = setTimeout(() => {
-            if (child) child.kill();
-            const errorMsg = 'mpremote command timed out after 30 seconds';
-            outputChannel.appendLine(`Error: ${errorMsg}`);
-            reject(new Error(errorMsg));
-        }, 30000);
-
-        child = exec(command, { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-            clearTimeout(timeout);
-
-            if (error) {
-                outputChannel.appendLine(`mpremote error: ${error.message}`);
-
-                if (stderr && (stderr.includes('No device found') || stderr.includes('could not open port'))) {
-                    reject(new Error(`Device connection error: ${stderr.trim()}`));
-                } else {
-                    reject(new Error(`Command failed: ${error.message}`));
-                }
+        let finished = false;
+        let outputBytes = 0;
+        const settle = (error) => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            if (error) reject(error);
+            else resolve();
+        };
+        const timer = setTimeout(() => {
+            proc.kill();
+            settle(new Error('Command timed out after 10 minutes'));
+        }, PROCESS_TIMEOUT_MS);
+        const relay = (data) => {
+            if (finished) return;
+            outputBytes += data.length;
+            if (outputBytes > 8 * MAX_OUTPUT_BYTES) {
+                proc.kill();
+                settle(new Error('Command exceeded the output limit'));
                 return;
             }
+            outputChannel.append(data.toString());
+        };
 
-            // Log warnings from stderr (non-fatal)
-            if (stderr && stderr.trim()) {
-                const ignorePatterns = ['No device found', 'could not open port', 'Warning:'];
-                const relevantStderr = stderr.split('\n')
-                    .filter(line => line.trim() && !ignorePatterns.some(p => line.includes(p)))
-                    .join('\n');
-
-                if (relevantStderr) {
-                    outputChannel.appendLine(`Warning: ${stderr.trim()}`);
-                }
-            }
-
-            if (stdout && stdout.trim()) {
-                outputChannel.appendLine(`Output:\n${stdout.trim()}`);
-                resolve(stdout.trim());
+        proc.stdout.on('data', relay);
+        proc.stderr.on('data', relay);
+        proc.on('error', (err) => {
+            outputChannel.appendLine('Command failed: ' + err.message);
+            settle(err);
+        });
+        proc.on('close', (code, signal) => {
+            if (code === 0) {
+                outputChannel.appendLine('Command completed successfully');
+                settle();
             } else {
-                outputChannel.appendLine('Command executed successfully (no output)');
-                resolve('');
+                const reason = signal ? 'signal ' + signal : 'exit code ' + code;
+                outputChannel.appendLine('Command failed: ' + reason);
+                settle(new Error('Process failed: ' + reason));
             }
         });
     });
 }
 
-/**
- * Get list of connected MicroPython devices via mpremote.
- *
- * @returns {Promise<Array<{port: string, vidpid: string}>>}
- */
+/** Execute python -m mpremote with literal arguments and a hard timeout. */
+function runMpremote(outputChannel, args) {
+    return new Promise((resolve, reject) => {
+        const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+        if (!venvPython || !fs.existsSync(venvPython)) {
+            reject(new Error('Python executable not found. Run "Setup Environment" first.'));
+            return;
+        }
+        try {
+            assertArguments(venvPython, args);
+        } catch (err) {
+            reject(err);
+            return;
+        }
+        outputChannel.appendLine('Executing: mpremote (' + args.length + ' arguments)');
+        execFile(venvPython, ['-m', 'mpremote', ...args], {
+            timeout: MPREMOTE_TIMEOUT_MS,
+            maxBuffer: MAX_OUTPUT_BYTES,
+            windowsHide: true
+        }, (error, stdout, stderr) => {
+            if (error) {
+                const connectionError = /No device found|could not open port/i.test(stderr || '');
+                reject(new Error(connectionError
+                    ? 'Device connection error: ' + String(stderr).trim().slice(0, 500)
+                    : 'mpremote failed: ' + error.message));
+                return;
+            }
+            if (stderr && stderr.trim()) {
+                outputChannel.appendLine('mpremote warning: ' + stderr.trim().slice(0, 1000));
+            }
+            const result = stdout ? stdout.trim() : '';
+            if (result) outputChannel.appendLine('Output:\n' + result);
+            resolve(result);
+        });
+    });
+}
+
+/** List connected devices; an absent/unavailable mpremote means no devices. */
 async function getConnectedDevices() {
-    const venvFolder = getVenvPythonPathFolder();
-    const venvPython = getVenvPythonPath(venvFolder);
+    const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+    if (!venvPython || !fs.existsSync(venvPython)) return [];
 
     return new Promise((resolve) => {
-        const command = `"${venvPython}" -m mpremote connect list`;
-
-        exec(command, (error, stdout) => {
-            if (error) {
+        execFile(venvPython, ['-m', 'mpremote', 'connect', 'list'], {
+            timeout: 10000,
+            maxBuffer: MAX_OUTPUT_BYTES,
+            windowsHide: true
+        }, (error, stdout) => {
+            if (error || !stdout) {
                 resolve([]);
                 return;
             }
-
-            const lines = stdout.trim().split('\n').filter(Boolean);
-            const devices = lines.map(line => {
-                const parts = line.trim().split(/\s+/);
-                const port = parts[0];
-                const serial = parts[1] || 'None';
-                const vidpid = parts[2] || '0000:0000';
+            const devices = stdout.split(/\r?\n/).filter(Boolean).map(line => {
+                const [port, serial = 'None', vidpid = '0000:0000'] = line.trim().split(/\s+/);
                 return { port, serial, vidpid };
-            });
-
+            }).filter(item => item.port);
             resolve(devices);
         });
     });
 }
 
-module.exports = {
-    runCommand,
-    runMpremote,
-    getConnectedDevices
-};
+module.exports = { runCommand, runMpremote, getConnectedDevices };

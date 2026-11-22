@@ -7,7 +7,7 @@
  */
 
 const vscode = require('vscode');
-const { exec, spawn } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
@@ -31,7 +31,8 @@ function scanComPorts(context) {
             return;
         }
 
-        exec(`"${venvPython}" "${scanScript}"`, (error, stdout) => {
+        execFile(venvPython, [scanScript],
+            { timeout: 15000, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout) => {
             if (error) {
                 console.error('[ESP Flash Tool] Port scan failed:', error);
                 resolve([]);

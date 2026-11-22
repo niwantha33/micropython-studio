@@ -123,7 +123,7 @@ suite('WebREPL terminal handshake, authentication and lifecycle', function() {
         } finally { client.disconnect(); await new Promise(r=>srv.close(r)); }
     });
     test('UI waits for ready and supports real reconnect instead of webview reload', () => {
-        const text=fs.readFileSync(path.join(__dirname,'..','src','webrepl_bridge.py'),'utf8');
+        const text=fs.readFileSync(path.join(__dirname,'..','src','webreplBridge.js'),'utf8');
         assert.ok(text.includes("if (msg.type === 'ready')"));
         assert.ok(text.includes("if (msg.type === 'reconnect')"));
         assert.ok(text.includes("vscodeApi.postMessage({ type: 'ready' })"));

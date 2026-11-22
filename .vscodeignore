@@ -53,3 +53,12 @@ tmp/**
 
 # Frozen debugger firmware contains these Python sources; never bundle/upload them
 src/debugger_files/**
+
+# Development-only audit reports, debug logs and published website pages
+debug_log.txt
+AUDIT_REPORT.md
+README_COMPLETE_FIX.md
+todo.md
+/*.html
+docs/**
+.github/**

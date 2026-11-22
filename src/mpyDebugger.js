@@ -5,9 +5,11 @@
 
 const vscode = require('vscode');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { getBuildInfo } = require('./buildInfo');
 const { parseRtaNameReply } = require('./rtaNameParser');
+const { parseDeviceLiteral, evaluateCondition } = require('./safeCondition');
 
 const REQUIRED_PUMP_PROTOCOL = 5;
 const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
@@ -776,20 +778,21 @@ function openDebuggerPanel(context, port, venvPython) {
                             cur += c;
                         }
                         if (cur.trim()) parts.push(cur.trim());
-                        const args = {};
+                        const args = Object.create(null);
                         for (let i = 0; i < pe.names.length; i++) {
                             const idx = n - 1 - i;
-                            let v = (idx >= 0 && idx < parts.length) ? parts[idx] : 'null';
-                            v = v.replace(/\bNone\b/g, 'null').replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false');
-                            try { args[pe.names[i]] = eval('(' + v + ')'); } catch (_) { args[pe.names[i]] = v; }
+                            args[pe.names[i]] = parseDeviceLiteral(
+                                idx >= 0 && idx < parts.length ? parts[idx] : 'None'
+                            );
                         }
-                        let js = pe.cond
-                            .replace(/\band\b/g, '&&').replace(/\bor\b/g, '||').replace(/\bnot\b/g, '!')
-                            .replace(/\bNone\b/g, 'null').replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false');
                         try {
-                            const fn = new Function(...pe.names, 'return (' + js + ')');
-                            passed = !!fn(...pe.names.map(k => args[k]));
-                        } catch (e) { err = String(e); }
+                            passed = evaluateCondition(pe.cond, args);
+                        } catch (e) {
+                            // Unsupported or malformed conditions must PAUSE, never auto-resume.
+                            err = e instanceof Error ? e.message : 'Unsupported breakpoint condition';
+                        }
+                    } else {
+                        err = 'Invalid device frame data';
                     }
                     if (!passed) {
                         if (err) panel.webview.postMessage({ evt: 'error', msg: 'cond error: ' + err + ' → pausing' });
@@ -1195,12 +1198,14 @@ function getHtml(buildInfo) {
     const buildDate = rawBuildDate === 'development'
         ? 'development'
         : rawBuildDate.replace('T', ' ').replace(/\.\d{3}Z$/, 'Z');
+    const nonce = crypto.randomBytes(16).toString('base64');
     const safeVersion = String(buildInfo?.version || 'unknown').replace(/[^0-9A-Za-z._+-]/g, '');
     const safeCommit = String(buildInfo?.commitShort || 'unknown').replace(/[^0-9A-Za-z._-]/g, '');
     const safeBuildDate = buildDate.replace(/[^0-9A-Za-z:._+\- Z]/g, '');
     return `<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <style>
 :root {
   --bg-app: #0f111a;
@@ -1872,8 +1877,8 @@ td.v:focus, td.vg:focus {
       <span id="rta-live-badge" class="rta-live-badge">OFF</span>
     </div>
     <div class="rta-viewer-actions">
-      <button class="btn btn-action" style="padding:4px 8px" onclick="send('rta_resolve_names')" title="Refresh asyncio task and function names">Refresh Names</button>
-      <button class="btn btn-clear" style="padding:4px 8px" onclick="resetRtaProfiler()" title="Clear local RTA statistics">Reset Stats</button>
+      <button class="btn btn-action" style="padding:4px 8px" id="rtaRefreshNamesBtn" title="Refresh asyncio task and function names">Refresh Names</button>
+      <button class="btn btn-clear" style="padding:4px 8px" id="rtaResetStatsBtn" title="Clear local RTA statistics">Reset Stats</button>
     </div>
   </div>
   <div class="rta-kpis">
@@ -1909,7 +1914,7 @@ td.v:focus, td.vg:focus {
   <div class="panel-terminal" id="debug-console">
     <div class="panel-terminal-header">
       <span>DEBUG CONSOLE / PORT LOG</span>
-      <button class="btn btn-clear" style="padding: 2px 6px; font-size: 10px;" onclick="document.getElementById('log').innerHTML=''">Clear Log</button>
+      <button class="btn btn-clear" style="padding: 2px 6px; font-size: 10px;" id="clearDebugLogBtn">Clear Log</button>
     </div>
     <div id="log"></div>
   </div>
@@ -1919,8 +1924,8 @@ td.v:focus, td.vg:focus {
       <div class="panel-card-header-row">
         <h3>Breakpoints <span id="bp-count" style="color:#64748b">(0)</span></h3>
         <div class="bp-toolbar">
-          <button class="btn btn-action" style="padding:3px 7px;font-size:10px" onclick="refreshBreakpoints()">Refresh</button>
-          <button class="btn btn-clear" style="padding:3px 7px;font-size:10px" onclick="clearAllBreakpoints()">Clear All</button>
+          <button class="btn btn-action" style="padding:3px 7px;font-size:10px" id="refreshBreakpointsBtn">Refresh</button>
+          <button class="btn btn-clear" style="padding:3px 7px;font-size:10px" id="clearAllBreakpointsBtn">Clear All</button>
         </div>
       </div>
       <div id="breakpoints-body" class="panel-card-body">(waiting for debugger)</div>
@@ -1947,13 +1952,13 @@ td.v:focus, td.vg:focus {
         <input type="text" id="poke-global-name" class="input-field" placeholder="Variable Name">
         <input type="text" id="poke-global-expr" class="input-field" placeholder="Expression (e.g. 42)">
         <input type="number" id="poke-global-depth" class="input-field" placeholder="Depth" value="0" title="Stack Frame Depth">
-        <button class="btn btn-action" onclick="pokeGlobal()">Poke</button>
+        <button class="btn btn-action" id="pokeGlobalBtn">Poke</button>
       </div>
     </div>
   </div>
 </div>
 
-<script>
+<script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 
 // Global HTML Escaper
@@ -2117,16 +2122,16 @@ function renderBreakpoints(items) {
     '</tr></thead><tbody>';
 
   currentBreakpoints.forEach((bp, i) => {
-    const stateClass = String(bp.state || 'NOT SET').toLowerCase().replace(/\s+/g, '-');
+    const stateClass = String(bp.state || 'NOT SET').toLowerCase().replace(/[^a-z0-9_-]/g, '-');
     const slots = (bp.slots && bp.slots.length) ? bp.slots.map(x => 'S' + x).join(',') : '—';
     const ip = (bp.ip === null || bp.ip === undefined) ? '—' : ('0x' + Number(bp.ip).toString(16).padStart(4, '0'));
     const condition = bp.condition ? escapeHtml(bp.condition) : '—';
     const onCell = bp.targetOnly
       ? '<span style="color:#64748b">—</span>'
-      : '<input type="checkbox" ' + (bp.enabled ? 'checked' : '') + ' onchange="toggleBreakpoint(' + i + ',this.checked)" title="Enable / disable breakpoint">';
+      : '<input type="checkbox" ' + (bp.enabled ? 'checked' : '') + ' data-breakpoint-action="toggle" data-bp-index="' + i + '" title="Enable / disable breakpoint">';
     const locationCell = bp.targetOnly
       ? '<span style="color:#fb7185">(target only)</span>'
-      : '<a class="bp-location" onclick="gotoBreakpoint(' + i + ');return false">' + escapeHtml(bp.file) + ':' + bp.line1 + '</a>';
+      : '<a class="bp-location" data-breakpoint-action="goto" data-bp-index="' + i + '">' + escapeHtml(bp.file) + ':' + bp.line1 + '</a>';
     html += '<tr>' +
       '<td>' + onCell + '</td>' +
       '<td>' + locationCell + '</td>' +
@@ -2135,7 +2140,7 @@ function renderBreakpoints(items) {
       '<td>' + ip + '</td>' +
       '<td title="' + condition + '">' + condition + '</td>' +
       '<td><span class="bp-state ' + stateClass + '">' + escapeHtml(bp.state || 'NOT SET') + '</span></td>' +
-      '<td><button class="btn btn-clear bp-remove" onclick="removeBreakpoint(' + i + ')">Remove</button></td>' +
+      '<td><button class="btn btn-clear bp-remove" data-breakpoint-action="remove" data-bp-index="' + i + '">Remove</button></td>' +
       '</tr>';
   });
 
@@ -2375,7 +2380,7 @@ function renderRtaProfiler() {
     html += '<tr>' +
       '<td><span class="rta-state"><span class="rta-state-dot ' + stateClass + '"></span>' + stateText + '</span></td>' +
       '<td class="rta-name-cell" title="' + escapeHtml(p.name + ' · fun=0x' + (Number(p.fun) >>> 0).toString(16).padStart(8, '0')) + '">' + escapeHtml(p.name) + '</td>' +
-      '<td><span class="rta-kind ' + p.kind + '">' + kindLabel + '</span></td>' +
+      '<td><span class="rta-kind ' + escapeHtml(String(p.kind || 'unknown').replace(/[^a-z0-9_-]/g, '')) + '">' + kindLabel + '</span></td>' +
       '<td>' + p.calls + '</td>' +
       '<td><div class="rta-load"><div class="rta-load-track"><div class="rta-load-fill" style="width:' + Math.min(100, pct).toFixed(1) + '%"></div></div><span class="rta-load-text">' + pct.toFixed(1) + '%</span></div></td>' +
       '<td>' + formatRtaTime(p.totalInclusive) + '</td>' +
@@ -2476,7 +2481,7 @@ window.addEventListener('message', (e) => {
       if (str.endsWith("}")) {
         str = str.slice(0, -1);
       }
-      const g_dict = {};
+      const g_dict = Object.create(null);
       const re = /['"]([^'"]+)['"]\\s*:\\s*('(?:[^'\\\\]|\\\\.)*'|"(?:[^"\\\\]|\\\\.)*"|[^\\s,{}]+)/g;
       let match;
       while ((match = re.exec(str)) !== null) {
@@ -2491,7 +2496,7 @@ window.addEventListener('message', (e) => {
       const keys = Object.keys(g_dict).sort();
       keys.forEach(k => {
         const val = g_dict[k];
-        html += '<tr><td class="k">' + k + '</td><td class="vg" contenteditable="true" data-name="' + k + '" data-val="' + val.replace(/"/g, '&quot;') + '">' + escapeHtml(val) + '</td></tr>';
+        html += '<tr><td class="k">' + escapeHtml(k) + '</td><td class="vg" contenteditable="true" data-name="' + escapeHtml(k) + '" data-val="' + escapeHtml(val) + '">' + escapeHtml(val) + '</td></tr>';
       });
       html += '</table>';
       document.getElementById('globals-body').innerHTML = keys.length ? html : '(empty)';
@@ -2508,7 +2513,7 @@ window.addEventListener('message', (e) => {
       frames.forEach((f, i) => {
         const rec = funNames[f.fun];
         if (rec) {
-          html += '<tr><td class="k">#' + i + '</td><td><a href="#" data-fun="' + f.fun + '" style="color:#88c0ff;text-decoration:underline">' + rec.name + '</a> <span style="color:#888">ip=0x' + f.ip.toString(16).padStart(4,'0') + '</span></td></tr>';
+          html += '<tr><td class="k">#' + i + '</td><td><a href="#" data-fun="' + f.fun + '" style="color:#88c0ff;text-decoration:underline">' + escapeHtml(rec.name) + '</a> <span style="color:#888">ip=0x' + f.ip.toString(16).padStart(4,'0') + '</span></td></tr>';
         } else {
           html += '<tr><td class="k">#' + i + '</td><td><span style="color:#888">fun=0x' + parseInt(f.fun).toString(16) + ' ip=0x' + f.ip.toString(16).padStart(4,'0') + '</span></td></tr>';
         }
@@ -2545,9 +2550,9 @@ window.addEventListener('message', (e) => {
       for (let i = 0; i < currentNames.length; i++) {
         const idx = n - 1 - i;
         const val = (idx >= 0 && idx < state.length) ? state[idx] : '?';
-        html += '<tr><td class="k">' + currentNames[i] + '</td><td class="v" contenteditable="true" data-slot="' + i + '" data-val="' + val.replace(/"/g, '&quot;') + '">' + escapeHtml(val) + '</td></tr>';
+        html += '<tr><td class="k">' + escapeHtml(currentNames[i]) + '</td><td class="v" contenteditable="true" data-slot="' + i + '" data-val="' + escapeHtml(val) + '">' + escapeHtml(val) + '</td></tr>';
       }
-      html += '<tr><td class="k">raw</td><td style="color:#888">[' + lm[2] + ']</td></tr>';
+      html += '<tr><td class="k">raw</td><td style="color:#888">[' + escapeHtml(lm[2]) + ']</td></tr>';
       html += '</table>';
       document.getElementById('locals-body').innerHTML = html;
     }
@@ -2669,6 +2674,43 @@ document.getElementById('poke-global-name').addEventListener('keydown', (e) => {
 document.getElementById('poke-global-expr').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') pokeGlobal();
 });
+
+function bindDebuggerControls() {
+  const actions = [
+    ['rtaRefreshNamesBtn', () => send('rta_resolve_names')],
+    ['rtaResetStatsBtn', () => resetRtaProfiler()],
+    ['clearDebugLogBtn', () => { document.getElementById('log').textContent = ''; }],
+    ['refreshBreakpointsBtn', () => refreshBreakpoints()],
+    ['clearAllBreakpointsBtn', () => clearAllBreakpoints()],
+    ['pokeGlobalBtn', () => pokeGlobal()]
+  ];
+  for (const [id, action] of actions) {
+    const element = document.getElementById(id);
+    if (element) element.addEventListener('click', action);
+  }
+  const table = document.getElementById('breakpoints-body');
+  if (table) {
+    table.addEventListener('change', event => {
+      const target = event.target.closest('[data-breakpoint-action="toggle"]');
+      if (!target) return;
+      const index = Number(target.dataset.bpIndex);
+      if (Number.isInteger(index) && index >= 0 && index < currentBreakpoints.length) {
+        toggleBreakpoint(index, target.checked);
+      }
+    });
+    table.addEventListener('click', event => {
+      const target = event.target.closest('[data-breakpoint-action]');
+      if (!target || target.dataset.breakpointAction === 'toggle') return;
+      const index = Number(target.dataset.bpIndex);
+      if (!Number.isInteger(index) || index < 0 || index >= currentBreakpoints.length) return;
+      event.preventDefault();
+      if (target.dataset.breakpointAction === 'goto') gotoBreakpoint(index);
+      if (target.dataset.breakpointAction === 'remove') removeBreakpoint(index);
+    });
+  }
+}
+bindDebuggerControls();
+
 </script>
 </body></html>`;
 }

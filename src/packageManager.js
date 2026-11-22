@@ -1,7 +1,8 @@
 const vscode = require('vscode');
 const https = require('https');
 const path = require('path');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
+const { getDeviceSecret } = require('./deviceSecrets');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 const wsQueue = require('./wsQueue');
 
@@ -251,7 +252,7 @@ async function openCircuitPythonPackageManager(deviceCodeDir, runProcess, findDr
         const cfgPath = path.join(path.dirname(deviceCodeDir), 'device.cfg');
         try {
             wwIp   = await getConfig(cfgPath, 'remote', 'webworkflow_ip')   || '';
-            wwPass = await getConfig(cfgPath, 'remote', 'webworkflow_password') || '';
+            wwPass = await getDeviceSecret(cfgPath, 'webworkflow_password') || '';
             wwPort = await getConfig(cfgPath, 'remote', 'webworkflow_port')  || '80';
         } catch (_) {}
     }
@@ -283,7 +284,11 @@ async function openCircuitPythonPackageManager(deviceCodeDir, runProcess, findDr
         
         // Ensure circup is installed 
         const venvPython = getVenvPythonPath(venvFolder);
-        await new Promise(r => exec(`"${venvPython}" -m pip install circup`, () => r()));
+        await new Promise((resolve, reject) => {
+            execFile(venvPython, ['-m', 'pip', 'install', 'circup'], {
+                timeout: 120000, maxBuffer: 1024 * 1024, windowsHide: true
+            }, error => error ? reject(error) : resolve());
+        });
         
         return await fetchCircuitPythonPackageIndex();
     });

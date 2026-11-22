@@ -2,8 +2,8 @@ const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+const crypto = require('crypto');
 const vscode = require('vscode');
-const os = require('os');
 
 const OLLAMA_HOST = '127.0.0.1';
 const OLLAMA_PORT = 11434;
@@ -21,6 +21,7 @@ class AiAssistanceProvider {
         this._models = [];
         this._chatBusy = false;
         this._installationBusy = false;
+        this._lastDeviceOutput = '';
     }
 
     resolveWebviewView(webviewView) {
@@ -301,6 +302,11 @@ class AiAssistanceProvider {
         }
     }
 
+    /** Device output never passes through a shared or predictable temp file. */
+    recordDeviceOutput(output) {
+        this._lastDeviceOutput = String(output || '').slice(-64000);
+    }
+
     async _runChat(message) {
         // -------------------------------
         // 1. FILE CONTEXT (current editor)
@@ -333,14 +339,8 @@ class AiAssistanceProvider {
         // -------------------------------
         // 3. DEVICE OUTPUT (read fresh each call)
         // -------------------------------
-        let deviceOutput = '';
-        const tmpFile = path.join(os.tmpdir(), 'mpremote-output.txt');
-        try {
-            if (fs.existsSync(tmpFile)) {
-                deviceOutput = fs.readFileSync(tmpFile, 'utf-8').trim();
-                fs.unlinkSync(tmpFile);
-            }
-        } catch { /* ignore read errors */ }
+        const deviceOutput = this._lastDeviceOutput;
+        this._lastDeviceOutput = '';
 
         // -------------------------------
         // 4. HISTORY MANAGEMENT (keep light for speed)
@@ -500,7 +500,8 @@ device_firmware = ${firmware}
         const htmlPath = path.join(this._extensionUri.fsPath, 'resource', 'aiAssistant.html');
         let html = fs.readFileSync(htmlPath, 'utf8');
 
-        return html;
+        const nonce = crypto.randomBytes(16).toString('base64');
+        return html.replaceAll('__MPS_CSP_NONCE__', nonce);
     }
 
     updateViewContext(data) {
