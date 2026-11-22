@@ -340,7 +340,7 @@ async function createNewProject(context) {
             '*.pyc',
             '.mps-*.tmp',
             ''
-        ].join('\\n');
+        ].join('\n');
         try {
             await fs.writeFile(path.join(config.projectDir, '.gitignore'), ignoreRules, { flag: 'wx' });
         } catch (ignoreError) {
