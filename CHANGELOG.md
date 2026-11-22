@@ -4,6 +4,20 @@ All notable changes to the "micropython-studio" extension will be documented in 
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [Unreleased] — Native debugging and Memory/GC candidate
+
+### Added
+- Native VS Code Debug Adapter Protocol support through the existing firmware-first debugger bridge, with standard debugger panes and read-only expression lookup.
+- Explicit Memory & Garbage Collection Analyzer with pre/post GC counters, on-demand measurement and CSV export.
+- Firmware/board support qualification guide and focused regression tests.
+
+### Fixed
+- Device Dashboard no longer triggers an unsolicited garbage collection before displaying heap metrics.
+- Removed unregistered placeholder debug adapter that required an undeclared package.
+- Updated Start Debug workflow and obsolete status-bar wording.
+
+> Hardware acceptance and CI are required before a release. No new board or firmware is approved by this change.
+
 ## [0.9.1] - 2026-04-23
 
 ### Fixed
