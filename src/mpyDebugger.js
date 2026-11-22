@@ -1068,6 +1068,12 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                         msg: 'RTA event rate exceeded 5000/s; tracing stopped to protect VS Code. Use a shorter capture.'
                     });
                 }
+                if (rtaLimitTriggered &&
+                    (msg.evt === 'rta_entry' || msg.evt === 'rta_exit')) {
+                    // The target may still be draining queued trace frames.
+                    // Do not flood the webview while RTA shutdown completes.
+                    continue;
+                }
                 if (msg.evt === 'rta_entry') {
                     addRtaEvent({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
