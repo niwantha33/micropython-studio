@@ -1949,7 +1949,7 @@ function getWebviewContent(metrics) {
                         <div class="wifi-info-row">
                             <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval" id="connectedSsid"></span></div>
                             <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp"></span></div>
-                        </div>`;
+                        </div>\`;
                     document.getElementById('connectedSsid').textContent = String(msg.ssid || '');
                     document.getElementById('currentIp').textContent = String(msg.ip || '');
                     // Show WebREPL toggle if not already there
@@ -2020,7 +2020,7 @@ function getWebviewContent(metrics) {
                             <button class="btn btn-warning" id="switchWirelessBtn">⚡ Switch to Wireless</button>
                             <button class="btn btn-danger btn-sm" id="disableRemoteBtnInBox">Stop WebREPL</button>
                         </div>
-                    </div>`;
+                    </div>\`;
                 document.getElementById('webReplListeningIp').textContent = String(msg.ip || '');
 
                 document.getElementById('switchWirelessBtn').addEventListener('click', () => {
