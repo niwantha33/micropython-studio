@@ -81,7 +81,7 @@ def _release_lock_if_owned(lock_path: str):
     try:
         with open(lock_path, 'r', encoding='utf-8') as lock_file:
             owner = lock_file.read().strip()
-        if owner in (f'{os.getpid()}:cli', f'{os.getpid()}:cli_run'):
+        if owner == f'{os.getpid()}:cli':
             os.unlink(lock_path)
     except OSError:
         pass
