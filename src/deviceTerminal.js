@@ -29,6 +29,14 @@ async function openDeviceTerminal(_context, devicePort) {
         if (connectionManager.isConnected && connectionManager.portName === devicePort
             && connectionManager.isSuspended) {
             vscode.window.showInformationMessage('REPL is temporarily busy with a device operation. It will be available when the owner resumes it.');
+        } else if (!connectionManager.isConnected) {
+            // Keep one terminal per port but allow explicit Shell clicks to
+            // recover a disconnected USB daemon without closing the tab.
+            try {
+                await connectionManager.connect(devicePort);
+            } catch (err) {
+                vscode.window.showErrorMessage('Cannot reconnect REPL: ' + err.message);
+            }
         }
         return;
     }
