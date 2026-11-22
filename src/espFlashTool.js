@@ -11,7 +11,7 @@ const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
-const { SIMPLE_PROFILES, getSimpleFlashProfile, prepareSimpleFirmwareRows } = require('./flashProfiles');
+const { getSimpleFlashProfile, prepareSimpleFirmwareRows } = require('./flashProfiles');
 const { normalizeSerialPort, samePort, isSavedUsbPort } = require('./devicePortSelection');
 const wsQueue = require('./wsQueue');
 const connectionManager = require('./connectionManager');
@@ -238,21 +238,22 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
         // value or an unrelated debugger CDC interface.
         const selectedPort = normalizeSerialPort(settings.port);
         if (!isSavedUsbPort(selectedPort)) {
-            sendLog('[ERROR] Flashing requires an actual USB serial port, not WebREPL.\\n');
+            sendLog('[ERROR] Flashing requires an actual USB serial port, not WebREPL.\n');
             return;
         }
         if (connectionManager.isConnected && !samePort(connectionManager.portName, selectedPort)) {
-            sendLog('[ERROR] Another serial adapter is active in the REPL. Select the project USB adapter before flashing.\\n');
+            sendLog('[ERROR] Another serial adapter is active in the REPL. Select the project USB adapter before flashing.\n');
             return;
         }
         if (!settings.advanced) {
             const profile = getSimpleFlashProfile(settings.chipType);
             if (!profile) {
-                sendLog('[ERROR] No verified single-image offset for this chip. Use Advanced Mode.\\n');
+                sendLog('[ERROR] No verified single-image offset for this chip. Use Advanced Mode.\n');
                 return;
             }
         }
         const args = ['-m', 'esptool'];
+        const logDetails = [];
 
         // Add serial port connection parameters
         if (settings.port) {
@@ -298,7 +299,6 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
 
             // Parse rows of binaries
             let filesAdded = 0;
-            const logDetails = [];
             
             if (settings.advanced) {
                 // Advanced mode: parse all enabled rows
