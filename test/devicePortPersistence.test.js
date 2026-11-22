@@ -76,6 +76,44 @@ suite('device.cfg selected port persistence', () => {
         }
     });
 
+    test('refresh uses saved COM5 even when dual-CDC filtering would choose COM3', async () => {
+        const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mps-port-refresh-'));
+        const code = path.join(temp, 'main');
+        const config = path.join(temp, 'device.cfg');
+        const runCmd = require('../src/runCommand');
+        const originalDetector = runCmd.getConnectedDevices;
+        const refreshModule = require.resolve('../src/refreshSettings');
+        const originalCache = require.cache[refreshModule];
+        try {
+            fs.mkdirSync(code);
+            fs.writeFileSync(config, [
+                '[device]',
+                'port = "COM5"',
+                'deviceId = "2E8A:0005"',
+                'device_firmware = "MicroPython"',
+                '',
+                '[filePath]',
+                'deviceCodeDir = "' + code.replaceAll('\\', '\\\\') + '"'
+            ].join('\n'));
+            // Inject the exact dual-CDC enumeration order that previously
+            // caused the explicit COM5 preference to snap back to COM3.
+            runCmd.getConnectedDevices = async () => dualCdc;
+            delete require.cache[refreshModule];
+            const { getValidDevicePort } = require('../src/refreshSettings');
+            const [selected, codeDir, firmware, configPath] = await getValidDevicePort({ fsPath: code });
+            assert.strictEqual(selected, 'COM5');
+            assert.strictEqual(codeDir, code);
+            assert.strictEqual(firmware, 'MicroPython');
+            assert.strictEqual(configPath, config);
+            assert.strictEqual(await getConfigValue(config, 'device', 'port'), 'COM5');
+        } finally {
+            runCmd.getConnectedDevices = originalDetector;
+            delete require.cache[refreshModule];
+            if (originalCache) require.cache[refreshModule] = originalCache;
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
+    });
+
     test('all port selection handlers use one canonical configuration path', () => {
         const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.js'), 'utf8');
         const refresh = fs.readFileSync(path.join(__dirname, '..', 'src', 'refreshSettings.js'), 'utf8');
