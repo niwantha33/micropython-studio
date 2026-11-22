@@ -140,6 +140,13 @@ class DeviceOperationQueue {
 
       const useDirect = runDirectIfConnected && connectionManager.isConnected && !connectionManager.isSuspended;
 
+      // Never let file operations or telemetry steal the serial stream from a
+      // running user script. An explicit user hard-reset can still cancel it.
+      if ((connectionManager.isScriptRunning || connectionManager._runStartPending) &&
+          label !== 'Hard Reset (shared REPL)') {
+        throw new Error('MCU script is running on the REPL. Press Stop before ' + label + '.');
+      }
+
       // A paused serial daemon has given the COM port to another operation.
       // Waiting for our own parent-PID suspended_lock would always time out;
       // never reopen the port while another transfer may still be using it.
