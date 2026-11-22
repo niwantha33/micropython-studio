@@ -159,6 +159,7 @@ async function getValidDevicePort(resource) {
 
     const savedPort = await getConfigValue(configPath, 'device', 'port');
     const devId = await getConfigValue(configPath, 'device', 'deviceId');
+    const preferredTransport = await getConfigValue(configPath, 'device', 'run_transport');
 
     const devicesRaw = await getConnectedDevices();
     const logMsg = (message) => {
@@ -203,33 +204,29 @@ async function getValidDevicePort(resource) {
         }
     }
 
-    // ── WebREPL auto-connect — try BEFORE falling back to saved COM port ─────
-    // If no live USB device was matched, probe for a WebREPL board on Wi-Fi.
-    // This must run before the savedPort fallback so that a stale "COM7" in
-    // device.cfg doesn't mask a live wireless device.
-    if (!gRemoteDevicePort) {
-        const webReplEnabled  = await getConfigValue(configPath, 'remote', 'webrepl_enabled');
-        const webReplIp       = await getConfigValue(configPath, 'remote', 'webrepl_ip');
-        const webReplPassword = await getDeviceSecret(configPath, 'webrepl_password');
-
-        if (webReplEnabled === 'true' && webReplIp) {
-            const reachable = await checkWebReplReachable(webReplIp);
-            if (reachable && webReplPassword) {
-                gRemoteDevicePort = `ws:${webReplIp},${webReplPassword}`;
-                vscode.window.showInformationMessage(
-                    `📡 No USB device found — auto-connected wirelessly to ${webReplIp}`
-                );
-            } else {
-                vscode.window.showWarningMessage(
-                    `No USB device found. Wireless board ${webReplIp} is unreachable or its password is missing. ` +
-                    `Connect by USB to configure WebREPL.`
-                );
-            }
+    // Respect the explicitly selected transport across refresh as well.
+    // USB [device] port stays saved separately and never stores Wi-Fi secrets.
+    const preferWifi = preferredTransport === 'webrepl';
+    if (preferWifi || !gRemoteDevicePort) {
+        const enabled = await getConfigValue(configPath, 'remote', 'webrepl_enabled');
+        const ip = await getConfigValue(configPath, 'remote', 'webrepl_ip');
+        const password = await getDeviceSecret(configPath, 'webrepl_password');
+        if (enabled === 'true' && ip && password && await checkWebReplReachable(ip)) {
+            gRemoteDevicePort = `ws:${ip},${password}`;
+            logMsg('[Port Detection] Using configured WebREPL transport ' + ip);
+        } else if (preferWifi) {
+            // Do not silently select USB when the user explicitly chose Wi-Fi.
+            gRemoteDevicePort = null;
+            vscode.window.showWarningMessage(
+                'Saved WebREPL transport is unavailable. Select USB or repair the Wi-Fi connection.'
+            );
         }
     }
 
-    // Do not resurrect NOT_SET as a usable serial port.
-    if (!gRemoteDevicePort && isSavedUsbPort(savedPort)) gRemoteDevicePort = savedPort.trim();
+    // Never convert NOT_SET or an unavailable explicit selection to a guessed COM.
+    if (!preferWifi && !gRemoteDevicePort && isSavedUsbPort(savedPort)) {
+        gRemoteDevicePort = savedPort.trim();
+    }
 
     deviceCodeDir = await getConfigValue(configPath, 'filePath', 'deviceCodeDir');
     const deviceFirmware = await getConfigValue(configPath, 'device', 'device_firmware');
@@ -237,4 +234,4 @@ async function getValidDevicePort(resource) {
     return [gRemoteDevicePort, deviceCodeDir, deviceFirmware || 'MicroPython', configPath];
 }
 
-module.exports = { getValidDevicePort };
+module.exports = { getValidDevicePort, findProjectRoot };
