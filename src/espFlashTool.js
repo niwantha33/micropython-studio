@@ -11,7 +11,7 @@ const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
-const { getSimpleFlashProfile, prepareSimpleFirmwareRows } = require('./flashProfiles');
+const { SIMPLE_PROFILES, getSimpleFlashProfile, prepareSimpleFirmwareRows } = require('./flashProfiles');
 const { normalizeSerialPort, samePort } = require('./devicePortSelection');
 const wsQueue = require('./wsQueue');
 const connectionManager = require('./connectionManager');
@@ -356,16 +356,20 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
 /**
  * Return Webview HTML content.
  */
+function escapeFlashHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 function getWebviewContent(ports, initialSettings) {
     // Generate COM ports options HTML
     const portOptions = ports.map(p => {
-        const isSelected = p.port === initialSettings.port ? 'selected' : '';
+        const isSelected = samePort(p.port, initialSettings.port) ? 'selected' : '';
         const displayLabel = p.vendor ? `${p.port} (${p.vendor})` : `${p.port} - ${p.desc}`;
-        return `<option value="${p.port}" ${isSelected}>${displayLabel}</option>`;
+        return `<option value="${escapeFlashHtml(p.port)}" ${isSelected}>${escapeFlashHtml(displayLabel)}</option>`;
     }).join('');
 
     // Fallback if no ports found
-    const finalPortOptions = portOptions || (initialSettings.port ? `<option value="${initialSettings.port}" selected>${initialSettings.port}</option>` : '<option value="">No ports detected</option>');
+    const finalPortOptions = portOptions || (initialSettings.port ? `<option value="${escapeFlashHtml(initialSettings.port)}" selected>${escapeFlashHtml(initialSettings.port)}</option>` : '<option value="">No ports detected</option>');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -740,8 +744,8 @@ function getWebviewContent(ports, initialSettings) {
 
     <header class="header">
         <div>
-            <h1>ESP Flash Download Tool</h1>
-            <div class="header-subtitle">Write MicroPython firmware and binaries using esptool</div>
+            <h1>Flash MicroPython Firmware</h1>
+            <div class="header-subtitle">Guided firmware update — advanced binary layout is optional</div>
         </div>
         <div class="checkbox-container">
             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.85rem; user-select: none;">
@@ -752,17 +756,21 @@ function getWebviewContent(ports, initialSettings) {
     </header>
 
     <div class="container">
+        <div class="card full-width" style="padding:14px 18px">
+            <div style="font-weight:600;font-size:13px">1. Select official firmware (.bin)  →  2. Confirm chip &amp; COM adapter  →  3. Flash Firmware</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:7px">Back up your files first. Download the exact board firmware from micropython.org/download. No erase or write occurs until you confirm.</div>
+        </div>
         <!-- Binary Files table -->
         <div class="card full-width">
             <h2>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
-                Download Path Config
+                Firmware file
             </h2>
             <div class="binary-row-grid">
                 <!-- Row 1 -->
                 <div class="binary-row ${initialSettings.advanced ? '' : 'simple-view'}" id="row-wrap-0">
                     <input type="checkbox" id="check-0" class="advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" ${initialSettings.rows[0].enabled ? 'checked' : ''} onchange="saveConfig()">
-                    <input type="text" class="file-path" id="path-0" value="${initialSettings.rows[0].path}" placeholder="Select MicroPython bin file..." onchange="saveConfig()">
+                    <input type="text" class="file-path" id="path-0" value="${escapeFlashHtml(initialSettings.rows[0].path)}" placeholder="Select MicroPython bin file..." onchange="saveConfig()">
                     <button class="btn btn-sm" onclick="browseFile(0)">Browse...</button>
                     <input type="text" class="offset advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="offset-0" value="${initialSettings.rows[0].offset}" placeholder="0x1000" onchange="saveConfig()">
                 </div>
@@ -794,7 +802,7 @@ function getWebviewContent(ports, initialSettings) {
         <div class="card">
             <h2>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M12 6v6l4 2"/></svg>
-                Device &amp; Port Config
+                Board &amp; USB Adapter
             </h2>
             <div class="form-grid">
                 <div class="form-item" style="grid-column: span 2;">
@@ -897,9 +905,9 @@ function getWebviewContent(ports, initialSettings) {
             </div>
             
             <div class="actions-bar">
-                <button class="btn btn-warning" id="btn-erase" onclick="eraseFlash()">Erase Flash</button>
+                <button class="btn btn-warning advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="btn-erase" onclick="eraseFlash()">Erase Flash</button>
                 <button class="btn btn-danger" id="btn-stop" onclick="stopProcess()" disabled>STOP</button>
-                <button class="btn btn-primary" id="btn-start" onclick="startFlash()">START</button>
+                <button class="btn btn-primary" id="btn-start" onclick="startFlash()">Flash Firmware</button>
             </div>
         </div>
     </div>
@@ -1001,7 +1009,8 @@ function getWebviewContent(ports, initialSettings) {
             const currentOffset = offsetInput.value.trim();
             const standardOffsets = ['', '0x0', '0x1000', '0x2000'];
 
-            if (standardOffsets.includes(currentOffset)) {
+            if (!document.getElementById('advanced-toggle').checked ||
+                standardOffsets.includes(currentOffset)) {
                 if (chip === 'esp32' || chip === 'esp32s2') {
                     offsetInput.value = '0x1000';
                 } else if (chip === 'esp32p4' || chip === 'esp32c5') {
