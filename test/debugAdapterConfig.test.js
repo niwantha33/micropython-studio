@@ -142,4 +142,22 @@ suite('MicroPython debugger adapter selection and persistence', () => {
         assert.strictEqual(selected, '/dev/ttyACM1');
         assert.strictEqual(await getConfigValue(cfg, 'debug', 'adapter_port'), '/dev/ttyACM1');
     });
+
+    test('migrates a previously saved native adapter only after valid reuse', async () => {
+        fs.appendFileSync(cfg, '[debug]\nport = "COM13"\n');
+        const result = await chooseDebugAdapter(cfg, 'COM5', {
+            devices: dualCdc,
+            showQuickPick: () => { throw new Error('existing detected port must not prompt'); }
+        });
+        assert.strictEqual(result, 'COM13');
+        assert.strictEqual(await getConfigValue(cfg, 'debug', 'adapter_port'), 'COM13');
+        assert.strictEqual(await getConfigValue(cfg, 'debug', 'port'), 'COM13');
+    });
+
+    test('native debugger and legacy path use the shared saved adapter', async () => {
+        const { resolveDebugPort } = require('../src/debugProjectConfig');
+        fs.appendFileSync(cfg, '[debug]\nadapter_port = "COM13"\n');
+        const selected = await resolveDebugPort({ uri: { fsPath: code } }, 'COM5');
+        assert.strictEqual(selected, 'COM13');
+    });
 });

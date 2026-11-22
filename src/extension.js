@@ -28,6 +28,7 @@ const { initializeSecretStorage, getDeviceSecret } = require('./deviceSecrets');
 const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
 const { registerNativeDebugger } = require('./nativeDebugger');
+const { resolveReplPort } = require('./debugProjectConfig');
 const { chooseDebugAdapter, findPotentialDebugPorts } = require('./debugAdapterConfig');
 const { MemoryAnalyzer } = require('./memoryAnalyzer');
 const { openWebReplTerminal } = require('./webreplBridge.js');
@@ -101,41 +102,37 @@ async function saveSelectedDevicePort(port) {
     return selected;
 }
 
-/** Keep debugger CDC visible and separate from the REPL connection indicator. */
+/** Keep debugger CDC visible separately from the REPL status. */
 async function updateDebugAdapterStatusBar() {
     if (!debugAdapterStatusBarItem) return;
     let saved = '';
     try {
         const configPath = await getActiveDeviceConfigPath();
-        saved = await getConfigValue(configPath, 'debug', 'adapter_port') || '';
-    } catch (_) { /* No active MicroPython project yet. */ }
+        saved = await getConfigValue(configPath, 'debug', 'adapter_port') ||
+            await getConfigValue(configPath, 'debug', 'port') || '';
+    } catch (_) { /* No active project yet. */ }
     debugAdapterStatusBarItem.text = saved
-        ? '$(debug-alt) Debug: ' + saved
-        : '$(debug-alt) Adapter';
+        ? '$(debug-alt) Debug: ' + saved : '$(debug-alt) Adapter';
     debugAdapterStatusBarItem.tooltip = saved
         ? 'Debugger CDC: ' + saved + ' (separate from REPL). Click to configure.'
-        : 'Configure dedicated debugger CDC port and save it in device.cfg.';
+        : 'Configure dedicated debugger CDC port in device.cfg.';
 }
 
-/**
- * Detect a possible second CDC only by matching the actual board serial and
- * VID:PID. Ask once per project; do not claim firmware support or seize COM.
- * The user must confirm the interface before any config change.
- */
+/** Suggest a possible dual CDC only after checking both serial and VID:PID. */
 async function offerDebugAdapterSetupOnDetection() {
     const configPath = gDeviceConfigPath;
     const replPort = gRemoteDevicePort;
     if (!configPath || !replPort || /^wss?:/i.test(replPort) ||
         gDeviceFirmware !== 'MicroPython' || promptedDebugProjects.has(configPath)) return;
     try {
-        const saved = await getConfigValue(configPath, 'debug', 'adapter_port');
+        const saved = await getConfigValue(configPath, 'debug', 'adapter_port') ||
+            await getConfigValue(configPath, 'debug', 'port');
         if (saved) return;
         const devices = await getConnectedDevices();
-        const candidates = findPotentialDebugPorts(replPort, devices);
-        if (!candidates.length) return;
+        if (!findPotentialDebugPorts(replPort, devices).length) return;
         promptedDebugProjects.add(configPath);
         const action = await vscode.window.showInformationMessage(
-            'A second USB serial interface was detected on the same board. Is it your MicroPython debug CDC? Configure the debugger adapter (no firmware changes)?',
+            'A possible second USB serial interface was detected on this board. Configure it as the debugger CDC? No firmware or device files will change.',
             'Configure Adapter', 'Later'
         );
         if (action !== 'Configure Adapter') return;
@@ -1458,17 +1455,59 @@ function activate(context) {
         vscode.commands.registerCommand('micropython-ide.startDebug', async () => {
             await vscode.debug.startDebugging(vscode.workspace.workspaceFolders?.[0], {
                 type: 'micropython-studio',
-                request: 'launch',
-                name: 'MicroPython Studio: Native Debugger',
-                replPort: gRemoteDevicePort || ''
+                request: 'attach',
+                name: 'MicroPython Studio: Attach to hardware',
+                replPort: ''
             });
+        }),
+        vscode.commands.registerCommand('micropython-ide.configureNativeDebug', async () => {
+            const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!folder) {
+                vscode.window.showWarningMessage('Open a MicroPython project before configuring debugging.');
+                return;
+            }
+            const root = await findProjectRoot(folder);
+            if (!root) {
+                vscode.window.showErrorMessage('No device.cfg found for this project.');
+                return;
+            }
+            const vscodeDir = path.join(root, '.vscode');
+            const launchPath = path.join(vscodeDir, 'launch.json');
+            try {
+                if (!fs.existsSync(launchPath)) {
+                    fs.mkdirSync(vscodeDir, { recursive: true });
+                    const launch = {
+                        version: '0.2.0',
+                        configurations: [{
+                            type: 'micropython-studio',
+                            request: 'attach',
+                            name: 'MicroPython Studio: Attach to hardware',
+                            replPort: '',
+                            debugPort: ''
+                        }]
+                    };
+                    fs.writeFileSync(launchPath, JSON.stringify(launch, null, 2) + '\n', {
+                        encoding: 'utf8', flag: 'wx'
+                    });
+                } else {
+                    // Existing launch.json may be JSONC. Never overwrite
+                    // another debugger's configurations or comments.
+                    vscode.window.showInformationMessage(
+                        'Existing launch.json preserved. Use Add Configuration to add the MicroPython Studio attach profile.'
+                    );
+                }
+                const doc = await vscode.workspace.openTextDocument(launchPath);
+                await vscode.window.showTextDocument(doc);
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot configure MicroPython debugging: ' + error.message);
+            }
         }),
         vscode.commands.registerCommand('micropython-ide.openLegacyDebugPanel', async () => {
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
             try {
                 const cfgPath = await getActiveDeviceConfigPath();
-                const replPort = gRemoteDevicePort ||
-                    await getConfigValue(cfgPath, 'device', 'port');
+                const folder = vscode.workspace.workspaceFolders?.[0];
+                const replPort = await resolveReplPort('', gRemoteDevicePort, folder);
                 await startDebugger(context, replPort, venvPython, async repl => {
                     const port = await chooseDebugAdapter(cfgPath, repl);
                     if (port) await updateDebugAdapterStatusBar();
@@ -1481,10 +1520,10 @@ function activate(context) {
         vscode.commands.registerCommand('micropython-ide.configureDebugAdapter', async () => {
             try {
                 const cfgPath = await getActiveDeviceConfigPath();
-                const replPort = gRemoteDevicePort ||
-                    await getConfigValue(cfgPath, 'device', 'port');
+                const folder = vscode.workspace.workspaceFolders?.[0];
+                const replPort = await resolveReplPort('', gRemoteDevicePort, folder);
                 if (!replPort || /^wss?:/i.test(replPort)) {
-                    vscode.window.showWarningMessage('Select a USB REPL/upload port first, then choose its separate debugger CDC.');
+                    vscode.window.showWarningMessage('Select a USB REPL/upload port first, then its dedicated debugger CDC.');
                     return;
                 }
                 const port = await chooseDebugAdapter(cfgPath, replPort, { force: true });
@@ -2002,12 +2041,11 @@ function createStatusBar(context) {
     // 6.5 Start MPy Debugger Button
     const startDebugButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.5);
     startDebugButton.text = '$(debug-alt) Start Debug';
-    startDebugButton.tooltip = 'Start native VS Code debugger using board-matched frozen firmware (no helper upload)';
+    startDebugButton.tooltip = 'Attach native VS Code debugger via dedicated USB CDC (does not auto-run main.py)';
     startDebugButton.command = 'micropython-ide.startDebug';
     startDebugButton.show();
     context.subscriptions.push(startDebugButton);
 
-    // Select or change dedicated debugger CDC without affecting USB REPL.
     debugAdapterStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.4);
     debugAdapterStatusBarItem.command = 'micropython-ide.configureDebugAdapter';
     debugAdapterStatusBarItem.text = '$(debug-alt) Adapter';

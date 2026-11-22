@@ -401,6 +401,28 @@ async function createNewProject(context) {
             JSON.stringify(settings, null, 2)
         );
 
+        // MicroPython's native debug adapter must be visible in VS Code Run
+        // and Debug rather than leaving users with only the generic Python
+        // (desktop) configurations. It is an ATTACH workflow: the user runs
+        // MicroPython code on the REPL after breakpoints are installed.
+        if (!isCircuitPython) {
+            const nativeLaunch = {
+                version: '0.2.0',
+                configurations: [{
+                    type: 'micropython-studio',
+                    request: 'attach',
+                    name: 'MicroPython Studio: Attach to hardware',
+                    replPort: '',
+                    debugPort: ''
+                }]
+            };
+            await fs.writeFile(
+                path.join(config.settingsDir, 'launch.json'),
+                JSON.stringify(nativeLaunch, null, 2) + '\n',
+                { encoding: 'utf8', flag: 'wx' }
+            );
+        }
+
         // Create .code-workspace file
         const workspacePath = path.join(config.parentPath, `${config.projectName}.code-workspace`);
         const studioLabel = isCircuitPython ? 'CircuitPython' : 'MicroPython';

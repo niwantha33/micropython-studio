@@ -7,14 +7,15 @@ const vscode = require('vscode');
 const { getConnectedDevices } = require('./runCommand');
 const { getConfigValue, updateCfgComponent } = require('./commonFxn');
 const { findProjectRoot } = require('./refreshSettings');
-const { isSavedUsbPort, samePort } = require('./devicePortSelection');
+const { isSavedUsbPort, samePort, normalizeSerialPort } = require('./devicePortSelection');
+const { validateManualPort } = require('./serialAdapterPicker');
 
 const DEBUG_SECTION = 'debug';
 const DEBUG_PORT_KEY = 'adapter_port';
 
 function validateDebugPort(value, replPort) {
     const port = typeof value === 'string' ? value.trim() : '';
-    if (!isSavedUsbPort(port) || port.length > 256 ||
+    if (!isSavedUsbPort(port) || validateManualPort(port) !== null || port.length > 256 ||
         /[\x00-\x1f\x7f]/.test(port) || /^tcp:/i.test(port)) {
         return 'Enter a dedicated serial debug adapter port (e.g. COM13 or /dev/ttyACM1).';
     }
@@ -58,15 +59,19 @@ async function chooseDebugAdapter(configPath, replPort, options = {}) {
     const replError = validateDebugPort(replPort, '');
     if (replError) throw new Error('Select a USB REPL/upload port before configuring debugging.');
 
-    const saved = (await getConfigValue(configPath, DEBUG_SECTION, DEBUG_PORT_KEY) || '').trim();
-    const requested = (options.requestedPort || '').trim();
+    const primarySaved = (await getConfigValue(configPath, DEBUG_SECTION, DEBUG_PORT_KEY) || '').trim();
+    // Older native attach sessions wrote [debug] port. Read it until the
+    // confirmed selection has been migrated to [debug] adapter_port.
+    const legacySaved = primarySaved ? '' : (await getConfigValue(configPath, DEBUG_SECTION, 'port') || '').trim();
+    const saved = primarySaved || legacySaved;
+    const requested = normalizeSerialPort(options.requestedPort || '');
 
     // Explicit launch.json configuration is an intentional choice. Persist it
     // so the Run button, legacy debugger, and next VS Code session agree.
     if (requested) {
         const error = validateDebugPort(requested, replPort);
         if (error) throw new Error(error);
-        if (requested !== saved) {
+        if (requested !== primarySaved) {
             await updateCfgComponent(configPath, DEBUG_SECTION, DEBUG_PORT_KEY, requested);
         }
         return requested;
@@ -74,7 +79,7 @@ async function chooseDebugAdapter(configPath, replPort, options = {}) {
 
     const devices = Array.isArray(options.devices)
         ? options.devices
-        : await getConnectedDevices();
+        : await getConnectedDevices().catch(() => []);
     const seen = new Set();
     const enumerated = Array.isArray(devices) ? devices : [];
     const detected = enumerated.filter(device => {
@@ -94,8 +99,8 @@ async function chooseDebugAdapter(configPath, replPort, options = {}) {
         (enumerated.length === 0 || currentDevice)) {
         // A successful match may canonicalize 'com5' to 'COM5'. Never change
         // the actual port identity or replace an unavailable saved selection.
-        const selected = currentDevice ? currentDevice.port.trim() : saved;
-        if (selected !== saved) {
+        const selected = normalizeSerialPort(currentDevice ? currentDevice.port.trim() : saved);
+        if (selected !== primarySaved) {
             await updateCfgComponent(configPath, DEBUG_SECTION, DEBUG_PORT_KEY, selected);
         }
         return selected;
@@ -143,10 +148,10 @@ async function chooseDebugAdapter(configPath, replPort, options = {}) {
         });
     }
     if (!selected) return null;
-    selected = selected.trim();
+    selected = normalizeSerialPort(selected);
     const error = validateDebugPort(selected, replPort);
     if (error) throw new Error(error);
-    if (selected !== saved) {
+    if (selected !== primarySaved) {
         await updateCfgComponent(configPath, DEBUG_SECTION, DEBUG_PORT_KEY, selected);
     }
     return selected;

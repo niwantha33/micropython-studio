@@ -303,6 +303,11 @@
         "title": "MicroPython: Open Legacy Debug & RTA Panel",
         "category": "MicroPython Studio",
         "icon": "$(debug-console)"
+      },
+      {
+        "command": "micropython-ide.configureNativeDebug",
+        "title": "MicroPython: Configure Native Run and Debug",
+        "category": "MicroPython Studio"
       }
     ],
     "menus": {
@@ -518,25 +523,40 @@
                 "default": ""
               }
             }
+          },
+          "attach": {
+            "required": [],
+            "properties": {
+              "replPort": {
+                "type": "string",
+                "description": "MicroPython REPL/upload port; must differ from the debugger CDC.",
+                "default": ""
+              },
+              "debugPort": {
+                "type": "string",
+                "description": "Dedicated firmware debugger CDC port (for example COM13).",
+                "default": ""
+              }
+            }
           }
         },
         "initialConfigurations": [
           {
             "type": "micropython-studio",
-            "request": "launch",
-            "name": "MicroPython Studio: Native Debugger",
+            "request": "attach",
+            "name": "MicroPython Studio: Attach to hardware",
             "replPort": "",
             "debugPort": ""
           }
         ],
         "configurationSnippets": [
           {
-            "label": "MicroPython Studio — Native Debugger",
-            "description": "Hardware debugger on a dedicated CDC, without uploading helper files.",
+            "label": "MicroPython Studio — Attach to hardware",
+            "description": "Attach via dedicated debug CDC; run the application separately on REPL.",
             "body": {
               "type": "micropython-studio",
-              "request": "launch",
-              "name": "MicroPython Studio: Native Debugger",
+              "request": "attach",
+              "name": "MicroPython Studio: Attach to hardware",
               "replPort": "",
               "debugPort": ""
             }
@@ -578,5 +598,10 @@
     "mocha": "^7.2.0",
     "typescript": "^5.3.3",
     "jsdom": "^29.0.2"
-  }
+  },
+  "activationEvents": [
+    "onDebugInitialConfigurations:micropython-studio",
+    "onDebugDynamicConfigurations:micropython-studio",
+    "onDebugResolve:micropython-studio"
+  ]
 }
