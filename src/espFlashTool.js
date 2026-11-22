@@ -11,9 +11,14 @@ const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const { getSimpleFlashProfile, prepareSimpleFirmwareRows } = require('./flashProfiles');
+const { normalizeSerialPort, samePort, isSavedUsbPort } = require('./devicePortSelection');
+const wsQueue = require('./wsQueue');
+const connectionManager = require('./connectionManager');
 
 let activePanel = null;
 let activeProcess = null;
+let flashPending = false;
 
 /**
  * Scan for connected serial ports using fast_port_scan.py.
@@ -40,7 +45,9 @@ function scanComPorts(context) {
             }
             try {
                 const parsed = JSON.parse(stdout);
-                resolve(Array.isArray(parsed) ? parsed : []);
+                resolve(Array.isArray(parsed) ? parsed.map(item => ({
+                    ...item, port: normalizeSerialPort(item.port)
+                })) : []);
             } catch (e) {
                 console.error('[ESP Flash Tool] Could not parse port list JSON:', e);
                 resolve([]);
@@ -55,10 +62,16 @@ function scanComPorts(context) {
  * @param {vscode.OutputChannel} outputChannel
  * @param {string|null} currentDevicePort
  */
-async function openEspFlashTool(context, outputChannel, currentDevicePort) {
+async function openEspFlashTool(context, outputChannel, currentDevicePort, options = {}) {
     if (activePanel) {
-        activePanel.reveal(vscode.ViewColumn.One);
-        return;
+        // Guided selections are explicit; don't silently keep an old chip/file
+        // from an already-open advanced panel.
+        if ((options.chipType || options.advanced) && !activeProcess && !flashPending) {
+            activePanel.dispose();
+        } else {
+            activePanel.reveal(vscode.ViewColumn.One);
+            return;
+        }
     }
 
     const panel = vscode.window.createWebviewPanel(
@@ -80,13 +93,22 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort) {
         { enabled: false, path: '', offset: '0x8000' },
         { enabled: false, path: '', offset: '0xe000' }
     ]);
-    const savedChipType = context.globalState.get('espFlash.chipType', 'esp32');
+    const savedChipType = options.chipType || context.globalState.get('espFlash.chipType', 'esp32');
     const savedSpiSpeed = context.globalState.get('espFlash.spiSpeed', '40m');
     const savedSpiMode = context.globalState.get('espFlash.spiMode', 'dio');
     const savedFlashSize = context.globalState.get('espFlash.flashSize', 'detect');
     const savedBaudRate = context.globalState.get('espFlash.baudRate', '460800');
-    const savedPort = context.globalState.get('espFlash.port', currentDevicePort || '');
-    const savedAdvanced = context.globalState.get('espFlash.advanced', false);
+    // The active project's adapter wins over stale cross-project globalState.
+    const storedPort = currentDevicePort && !/^wss?:/i.test(currentDevicePort)
+        ? currentDevicePort : context.globalState.get('espFlash.port', '');
+    const savedPort = normalizeSerialPort(storedPort);
+    const savedAdvanced = options.advanced === true || !getSimpleFlashProfile(savedChipType);
+    let firmwareRows = savedAdvanced ? savedRows : prepareSimpleFirmwareRows(savedChipType, savedRows);
+    if (options.firmwareFile && typeof options.firmwareFile === 'string') {
+        firmwareRows = firmwareRows.map((row, index) => index === 0
+            ? { ...row, enabled: true, path: options.firmwareFile }
+            : row);
+    }
 
     // Get current COM ports list
     const portsList = await scanComPorts(context);
@@ -95,7 +117,7 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort) {
     panel.webview.html = getWebviewContent(
         portsList,
         {
-            rows: savedRows,
+            rows: firmwareRows,
             chipType: savedChipType,
             spiSpeed: savedSpiSpeed,
             spiMode: savedSpiMode,
@@ -199,8 +221,8 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort) {
     /**
      * Run esptool child process.
      */
-    function runEsptool(settings, action) {
-        if (activeProcess) {
+    async function runEsptool(settings, action) {
+        if (activeProcess || flashPending) {
             vscode.window.showWarningMessage('A flashing or erasing operation is already in progress.');
             return;
         }
@@ -214,11 +236,30 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort) {
             return;
         }
 
+        // Use the actual project-selected USB port, not a stale globalState
+        // value or an unrelated debugger CDC interface.
+        const selectedPort = normalizeSerialPort(settings.port);
+        if (!isSavedUsbPort(selectedPort)) {
+            sendLog('[ERROR] Flashing requires an actual USB serial port, not WebREPL.\n');
+            return;
+        }
+        if (connectionManager.isConnected && !samePort(connectionManager.portName, selectedPort)) {
+            sendLog('[ERROR] Another serial adapter is active in the REPL. Select the project USB adapter before flashing.\n');
+            return;
+        }
+        if (!settings.advanced) {
+            const profile = getSimpleFlashProfile(settings.chipType);
+            if (!profile) {
+                sendLog('[ERROR] No verified single-image offset for this chip. Use Advanced Mode.\n');
+                return;
+            }
+        }
         const args = ['-m', 'esptool'];
+        const logDetails = [];
 
         // Add serial port connection parameters
         if (settings.port) {
-            args.push('--port', settings.port);
+            args.push('--port', selectedPort);
         } else {
             sendLog('[ERROR] No COM Port selected. Please select a valid COM port.\n');
             sendProgress(0, 'Failed');
@@ -260,7 +301,6 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort) {
 
             // Parse rows of binaries
             let filesAdded = 0;
-            const logDetails = [];
             
             if (settings.advanced) {
                 // Advanced mode: parse all enabled rows
@@ -275,8 +315,10 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort) {
                 // Simple mode: just write row 0 (MicroPython binary) at offset-0 (auto-determined address)
                 const mainRow = settings.rows[0];
                 if (mainRow && mainRow.path.trim()) {
-                    args.push(mainRow.offset.trim(), mainRow.path.trim());
-                    logDetails.push(`${mainRow.offset} -> ${path.basename(mainRow.path)}`);
+                    // Only supported single-image profiles can use Simple mode.
+                    const address = getSimpleFlashProfile(settings.chipType).offset;
+                    args.push(address, mainRow.path.trim());
+                    logDetails.push(`${address} -> ${path.basename(mainRow.path)}`);
                     filesAdded++;
                 }
             }
@@ -287,65 +329,111 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort) {
                 return;
             }
 
-            sendLog(`Executing: python -m esptool write_flash ${logDetails.join(', ')}\n`);
-            sendProgress(0, 'Connecting...');
+            sendLog(`Prepared: ${settings.chipType} on ${selectedPort}: ${logDetails.join(', ')}\n`);
+            sendProgress(0, 'Ready to confirm');
         }
 
-        panel.webview.postMessage({ type: 'processState', running: true });
-
-        activeProcess = spawn(venvPython, args);
-
-        activeProcess.stdout.on('data', (data) => {
-            const output = data.toString();
-            sendLog(output);
-
-            // Parse progress percentage (e.g. "(12 %)" or "Writing at 0x00004000... (32 %)")
-            const match = output.match(/(\d+)\s*%/);
-            if (match) {
-                const percent = parseInt(match[1], 10);
-                sendProgress(percent, `Writing... ${percent}%`);
+        // Fail before claiming the serial device if the binary file cannot
+        // be read. Do not accept malformed paths or wrong file types.
+        for (const row of action === 'flash' ? (settings.rows || []) : []) {
+            if (!row.enabled || !row.path) continue;
+            if (!path.isAbsolute(row.path) || !/\.bin$/i.test(row.path)) {
+                sendLog('[ERROR] Select a local MicroPython .bin file, not a script or ZIP.\n');
+                sendProgress(0, 'Invalid firmware file');
+                return;
             }
-        });
+            try {
+                const stat = fs.statSync(row.path);
+                if (!stat.isFile() || stat.size === 0 || stat.size > 64 * 1024 * 1024) {
+                    throw new Error('File is empty or unusually large');
+                }
+            } catch (err) {
+                sendLog('[ERROR] Firmware file is not readable: ' + err.message + '\n');
+                sendProgress(0, 'Invalid firmware file');
+                return;
+            }
+        }
 
-        activeProcess.stderr.on('data', (data) => {
-            sendLog(data.toString());
-        });
-
-        activeProcess.on('close', (code) => {
-            panel.webview.postMessage({ type: 'processState', running: false });
-            activeProcess = null;
-
-            if (code === 0) {
-                sendProgress(100, action === 'erase' ? 'Erase Complete' : 'Flash Complete');
-                sendLog(action === 'erase' ? '\n[SUCCESS] Flash erased successfully!\n' : '\n[SUCCESS] MicroPython firmware flashed successfully!\n');
+        if (action === 'flash') {
+            const confirmation = await vscode.window.showWarningMessage(
+                'Flash firmware to ' + selectedPort + ' (' + settings.chipType + ')?\n' +
+                logDetails.join('\n') + '\n\nBack up your MicroPython files. The selected binary will overwrite flash memory.',
+                { modal: true },
+                'Flash Firmware'
+            );
+            if (confirmation !== 'Flash Firmware') {
+                sendLog('Flashing cancelled. No device changes made.\n');
+                return;
+            }
+        }
+        flashPending = true;
+        let firmwareWritten = false;
+        try {
+            await wsQueue.run(() => new Promise((resolve) => {
+                // Exclusive handoff: the queue releases the REPL's COM handle
+                // before esptool opens it, then resumes it after process exit.
+                activeProcess = spawn(venvPython, args, { shell: false, windowsHide: true });
+                const child = activeProcess;
+                panel.webview.postMessage({ type: 'processState', running: true });
+                child.stdout.on('data', data => {
+                    const output = data.toString();
+                    sendLog(output);
+                    const match = output.match(/(\d+)\s*%/);
+                    if (match) sendProgress(parseInt(match[1], 10),
+                        'Writing... ' + match[1] + '%');
+                });
+                child.stderr.on('data', data => sendLog(data.toString()));
+                let closed = false;
+                const finish = (code, error) => {
+                    if (closed) return;
+                    closed = true;
+                    if (activeProcess === child) activeProcess = null;
+                    panel.webview.postMessage({ type: 'processState', running: false });
+                    if (code === 0) {
+                        firmwareWritten = true;
+                        sendProgress(100, action === 'erase' ? 'Erase Complete' : 'Flash Complete');
+                        sendLog(action === 'erase' ? '\n[SUCCESS] Flash erased.\n' :
+                            '\n[SUCCESS] Firmware write and esptool verification finished.\n');
+                    } else {
+                        sendProgress(0, 'Failed');
+                        sendLog('[ERROR] esptool failed: ' + (error || 'exit code ' + code) + '\n');
+                    }
+                    resolve(code);
+                };
+                child.on('close', code => finish(code));
+                child.on('error', err => finish(-1, err.message));
+            }), 'Firmware flash (exclusive COM handoff)');
+        } catch (err) {
+            if (firmwareWritten) {
+                sendLog('[WARNING] Firmware write finished, but the REPL port did not automatically reconnect: ' +
+                    err.message + '. Reconnect the USB device after it re-enumerates.\n');
             } else {
-                sendProgress(0, 'Failed');
-                sendLog(`\n[ERROR] esptool exited with code ${code}\n`);
+                sendProgress(0, 'Serial port busy');
+                sendLog('[ERROR] Flash operation could not acquire the serial port: ' + err.message + '\n');
             }
-        });
-
-        activeProcess.on('error', (err) => {
-            panel.webview.postMessage({ type: 'processState', running: false });
-            activeProcess = null;
-            sendProgress(0, 'Error');
-            sendLog(`\n[ERROR] Failed to start esptool subprocess: ${err.message}\n`);
-        });
+        } finally {
+            flashPending = false;
+        }
     }
 }
 
 /**
  * Return Webview HTML content.
  */
+function escapeFlashHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 function getWebviewContent(ports, initialSettings) {
     // Generate COM ports options HTML
     const portOptions = ports.map(p => {
-        const isSelected = p.port === initialSettings.port ? 'selected' : '';
+        const isSelected = samePort(p.port, initialSettings.port) ? 'selected' : '';
         const displayLabel = p.vendor ? `${p.port} (${p.vendor})` : `${p.port} - ${p.desc}`;
-        return `<option value="${p.port}" ${isSelected}>${displayLabel}</option>`;
+        return `<option value="${escapeFlashHtml(p.port)}" ${isSelected}>${escapeFlashHtml(displayLabel)}</option>`;
     }).join('');
 
     // Fallback if no ports found
-    const finalPortOptions = portOptions || (initialSettings.port ? `<option value="${initialSettings.port}" selected>${initialSettings.port}</option>` : '<option value="">No ports detected</option>');
+    const finalPortOptions = portOptions || (initialSettings.port ? `<option value="${escapeFlashHtml(initialSettings.port)}" selected>${escapeFlashHtml(initialSettings.port)}</option>` : '<option value="">No ports detected</option>');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -720,8 +808,8 @@ function getWebviewContent(ports, initialSettings) {
 
     <header class="header">
         <div>
-            <h1>ESP Flash Download Tool</h1>
-            <div class="header-subtitle">Write MicroPython firmware and binaries using esptool</div>
+            <h1>Flash MicroPython Firmware</h1>
+            <div class="header-subtitle">Guided firmware update — advanced binary layout is optional</div>
         </div>
         <div class="checkbox-container">
             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.85rem; user-select: none;">
@@ -732,40 +820,44 @@ function getWebviewContent(ports, initialSettings) {
     </header>
 
     <div class="container">
+        <div class="card full-width" style="padding:14px 18px">
+            <div style="font-weight:600;font-size:13px">1. Select official firmware (.bin)  →  2. Confirm chip &amp; COM adapter  →  3. Flash Firmware</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:7px">Back up your files first. Download the exact board firmware from micropython.org/download. No erase or write occurs until you confirm.</div>
+        </div>
         <!-- Binary Files table -->
         <div class="card full-width">
             <h2>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
-                Download Path Config
+                Firmware file
             </h2>
             <div class="binary-row-grid">
                 <!-- Row 1 -->
                 <div class="binary-row ${initialSettings.advanced ? '' : 'simple-view'}" id="row-wrap-0">
                     <input type="checkbox" id="check-0" class="advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" ${initialSettings.rows[0].enabled ? 'checked' : ''} onchange="saveConfig()">
-                    <input type="text" class="file-path" id="path-0" value="${initialSettings.rows[0].path}" placeholder="Select MicroPython bin file..." onchange="saveConfig()">
+                    <input type="text" class="file-path" id="path-0" value="${escapeFlashHtml(initialSettings.rows[0].path)}" placeholder="Select MicroPython bin file..." onchange="saveConfig()">
                     <button class="btn btn-sm" onclick="browseFile(0)">Browse...</button>
-                    <input type="text" class="offset advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="offset-0" value="${initialSettings.rows[0].offset}" placeholder="0x1000" onchange="saveConfig()">
+                    <input type="text" class="offset advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="offset-0" value="${escapeFlashHtml(initialSettings.rows[0].offset)}" placeholder="0x1000" onchange="saveConfig()">
                 </div>
                 <!-- Row 2 -->
                 <div class="binary-row advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="row-wrap-1">
                     <input type="checkbox" id="check-1" ${initialSettings.rows[1].enabled ? 'checked' : ''} onchange="saveConfig()">
-                    <input type="text" class="file-path" id="path-1" value="${initialSettings.rows[1].path}" placeholder="Additional binary (e.g. bootloader)..." onchange="saveConfig()">
+                    <input type="text" class="file-path" id="path-1" value="${escapeFlashHtml(initialSettings.rows[1].path)}" placeholder="Additional binary (e.g. bootloader)..." onchange="saveConfig()">
                     <button class="btn btn-sm" onclick="browseFile(1)">Browse...</button>
-                    <input type="text" class="offset" id="offset-1" value="${initialSettings.rows[1].offset}" placeholder="0x0" onchange="saveConfig()">
+                    <input type="text" class="offset" id="offset-1" value="${escapeFlashHtml(initialSettings.rows[1].offset)}" placeholder="0x0" onchange="saveConfig()">
                 </div>
                 <!-- Row 3 -->
                 <div class="binary-row advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="row-wrap-2">
                     <input type="checkbox" id="check-2" ${initialSettings.rows[2].enabled ? 'checked' : ''} onchange="saveConfig()">
-                    <input type="text" class="file-path" id="path-2" value="${initialSettings.rows[2].path}" placeholder="Additional binary (e.g. partitions)..." onchange="saveConfig()">
+                    <input type="text" class="file-path" id="path-2" value="${escapeFlashHtml(initialSettings.rows[2].path)}" placeholder="Additional binary (e.g. partitions)..." onchange="saveConfig()">
                     <button class="btn btn-sm" onclick="browseFile(2)">Browse...</button>
-                    <input type="text" class="offset" id="offset-2" value="${initialSettings.rows[2].offset}" placeholder="0x8000" onchange="saveConfig()">
+                    <input type="text" class="offset" id="offset-2" value="${escapeFlashHtml(initialSettings.rows[2].offset)}" placeholder="0x8000" onchange="saveConfig()">
                 </div>
                 <!-- Row 4 -->
                 <div class="binary-row advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="row-wrap-3">
                     <input type="checkbox" id="check-3" ${initialSettings.rows[3].enabled ? 'checked' : ''} onchange="saveConfig()">
-                    <input type="text" class="file-path" id="path-3" value="${initialSettings.rows[3].path}" placeholder="Additional binary (e.g. ota)..." onchange="saveConfig()">
+                    <input type="text" class="file-path" id="path-3" value="${escapeFlashHtml(initialSettings.rows[3].path)}" placeholder="Additional binary (e.g. ota)..." onchange="saveConfig()">
                     <button class="btn btn-sm" onclick="browseFile(3)">Browse...</button>
-                    <input type="text" class="offset" id="offset-3" value="${initialSettings.rows[3].offset}" placeholder="0xe000" onchange="saveConfig()">
+                    <input type="text" class="offset" id="offset-3" value="${escapeFlashHtml(initialSettings.rows[3].offset)}" placeholder="0xe000" onchange="saveConfig()">
                 </div>
             </div>
         </div>
@@ -774,7 +866,7 @@ function getWebviewContent(ports, initialSettings) {
         <div class="card">
             <h2>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M12 6v6l4 2"/></svg>
-                Device &amp; Port Config
+                Board &amp; USB Adapter
             </h2>
             <div class="form-grid">
                 <div class="form-item" style="grid-column: span 2;">
@@ -877,9 +969,9 @@ function getWebviewContent(ports, initialSettings) {
             </div>
             
             <div class="actions-bar">
-                <button class="btn btn-warning" id="btn-erase" onclick="eraseFlash()">Erase Flash</button>
+                <button class="btn btn-warning advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="btn-erase" onclick="eraseFlash()">Erase Flash</button>
                 <button class="btn btn-danger" id="btn-stop" onclick="stopProcess()" disabled>STOP</button>
-                <button class="btn btn-primary" id="btn-start" onclick="startFlash()">START</button>
+                <button class="btn btn-primary" id="btn-start" onclick="startFlash()">Flash Firmware</button>
             </div>
         </div>
     </div>
@@ -981,7 +1073,8 @@ function getWebviewContent(ports, initialSettings) {
             const currentOffset = offsetInput.value.trim();
             const standardOffsets = ['', '0x0', '0x1000', '0x2000'];
 
-            if (standardOffsets.includes(currentOffset)) {
+            if (!document.getElementById('advanced-toggle').checked ||
+                standardOffsets.includes(currentOffset)) {
                 if (chip === 'esp32' || chip === 'esp32s2') {
                     offsetInput.value = '0x1000';
                 } else if (chip === 'esp32p4' || chip === 'esp32c5') {

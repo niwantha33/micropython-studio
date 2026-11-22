@@ -55,7 +55,8 @@ suite('RTA on/off regression', () => {
         assert.ok(pump.includes('PUMP_BUILD = "2026-10-07-rta-viewer-v5"'));
         assert.ok(!host.includes('uploadDebuggerFiles('));
         assert.ok(!host.includes('verifyUploadedPumpFile('));
-        assert.ok(host.includes('Debugger COM port (not REPL port)'));
+        assert.ok(host.includes('chooseDebugAdapter(normalizeSerialPort(replPort))'));
+        assert.ok(!host.includes('uploadDebuggerFiles('));
         assert.ok(host.includes('op: \'debug CDC open; synchronizing breakpoint table\''));
         assert.ok(!host.includes("JSON.stringify({ op: 'pump_info' })"));
         assert.ok(host.includes("msg.text.startsWith('cleared all bp slots')"));

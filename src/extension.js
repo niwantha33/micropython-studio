@@ -14,11 +14,13 @@ const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort, findProjectRoot } = require('./refreshSettings');
-const { isSavedUsbPort } = require('./devicePortSelection');
+const { isSavedUsbPort, normalizeSerialPort } = require('./devicePortSelection');
+const { pickSerialAdapter, buildSerialAdapterItems, validateManualPort } = require('./serialAdapterPicker');
 const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
+const { SIMPLE_PROFILES } = require('./flashProfiles');
 const { openDeviceDashboard } = require('./deviceDashboard');
 const { openDeviceTerminal } = require('./deviceTerminal');
 const connectionManager = require('./connectionManager');
@@ -80,7 +82,7 @@ async function getActiveDeviceConfigPath() {
 async function saveSelectedDevicePort(port) {
     const configPath = await getActiveDeviceConfigPath();
     if (typeof port !== 'string' || !port.trim()) throw new Error('Choose a valid device port.');
-    const selected = port.trim();
+    const selected = /^wss?:/i.test(port.trim()) ? port.trim() : normalizeSerialPort(port);
     if (/^wss?:/i.test(selected)) {
         // Keep WebREPL credentials exclusively in SecretStorage.
         await updateCfgComponent(configPath, 'device', 'run_transport', 'webrepl');
@@ -101,24 +103,32 @@ async function saveSelectedDevicePort(port) {
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
 
 /**
- * Build the list of selectable port options from device.cfg.
- * Always includes the USB COM port (if we have one) plus Wi-Fi if webrepl_enabled=true.
- * Returns null when there is no choice to offer (WebREPL not configured).
+ * Status-bar adapter picker is useful with or without WebREPL enabled.
+ * List all visible CDC devices, the saved offline adapter, and optional Wi-Fi.
  */
 async function _buildRunPortOptions() {
     const cfgPath = await getActiveDeviceConfigPath();
     const savedCom = await getConfigValue(cfgPath, 'device', 'port');
+    const devices = await getConnectedDevices();
+    const items = buildSerialAdapterItems(devices, savedCom);
     const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
     const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
-    const password = await getDeviceSecret(cfgPath, 'webrepl_password');
-
-    if (enabled !== 'true' || !ip) return null;
-
-    const items = [];
-    if (isSavedUsbPort(savedCom)) {
-        items.push({ label: `[OK] USB — ${savedCom}`, port: savedCom });
+    if (enabled === 'true' && ip) {
+        const password = await getDeviceSecret(cfgPath, 'webrepl_password');
+        if (password) {
+            items.push({
+                label: '$(radio-tower) Wi-Fi WebREPL (' + ip + ')',
+                description: 'Use configured wireless REPL',
+                port: 'ws:' + ip + ',' + password
+            });
+        }
     }
-    items.push({ label: `[OK] Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
+    items.push({
+        label: '$(edit) Enter USB adapter manually…',
+        description: 'When the desired COM port is not in the detected list',
+        manual: true,
+        savedCom: isSavedUsbPort(savedCom) ? normalizeSerialPort(savedCom) : ''
+    });
     return items;
 }
 
@@ -461,9 +471,12 @@ function updateDeviceStatusBar() {
 
     if (gRemoteDevicePort) {
         const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
-        const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : gRemoteDevicePort;
-        deviceStatusBarItem.text = `${portLabel}`;
-        deviceStatusBarItem.tooltip = `Connected to ${redactDevicePort(gRemoteDevicePort)}`;
+        const portLabel = wsMatch
+            ? '$(radio-tower) ' + wsMatch[1]
+            : '$(plug) ' + normalizeSerialPort(gRemoteDevicePort);
+        deviceStatusBarItem.text = portLabel;
+        deviceStatusBarItem.tooltip = 'Selected REPL adapter: ' +
+            redactDevicePort(gRemoteDevicePort) + ' — click to choose another COM adapter or transport';
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
         deviceStatusBarItem.text = '[OK] No Device';
@@ -1316,22 +1329,31 @@ function activate(context) {
     // Choose Run Transport (USB / Wi-Fi)
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.chooseRunPort', async () => {
-            if (!gRemoteDevicePort) {
-                vscode.window.showWarningMessage('No device connected. Refresh first.');
-                return;
-            }
-            const items = await _buildRunPortOptions();
-            if (!items) {
-                vscode.window.showInformationMessage(
-                    'WebREPL is not enabled. Only USB is available.'
-                );
+            let items;
+            try {
+                items = await _buildRunPortOptions();
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot list USB adapters: ' + error.message);
                 return;
             }
             const pick = await vscode.window.showQuickPick(items, {
-                placeHolder: 'Choose run transport'
+                title: 'Select REPL adapter / run transport',
+                placeHolder: 'USB Serial Adapter (COM5) or saved WebREPL',
+                ignoreFocusOut: true
             });
             if (!pick) return;
-            const newPort = /** @type {any} */ (pick).port;
+            let newPort = pick.port;
+            if (pick.manual) {
+                const entered = await vscode.window.showInputBox({
+                    title: 'Enter REPL USB serial port',
+                    value: pick.savedCom,
+                    prompt: 'Choose the REPL interface, not the debugger CDC',
+                    validateInput: validateManualPort,
+                    ignoreFocusOut: true
+                });
+                if (entered === undefined) return;
+                newPort = normalizeSerialPort(entered);
+            }
             try {
                 gRemoteDevicePort = await saveSelectedDevicePort(newPort);
             } catch (error) {
@@ -1443,30 +1465,32 @@ function activate(context) {
         })
     );
 
-    // Update Device Port (placeholder — coming soon)
-    // Update Device Port (placeholder - coming soon)
+    // Select the actual REPL USB adapter; do not auto-pick a lower-numbered
+    // debugger CDC port. Persist the canonical COM string in device.cfg.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.updateDevicePort', async () => {
-            const port = await vscode.window.showInputBox({
-                prompt: 'Enter the device port manually',
-                placeHolder: 'e.g. COM3, /dev/ttyUSB0',
-                value: gRemoteDevicePort || ''
-            });
-            if (port) {
-                try {
-                    gRemoteDevicePort = await saveSelectedDevicePort(port);
-                } catch (error) {
-                    vscode.window.showErrorMessage('Device port was not saved: ' + error.message);
-                    return;
-                }
-
-                updateDeviceStatusBar();
-                if (deviceFileExplorer) {
-                    const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
-                    deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
-                }
-                vscode.window.showInformationMessage(`Device port set to: ${redactDevicePort(port)}`);
+            let port;
+            try {
+                port = await pickSerialAdapter({
+                    selected: gRemoteDevicePort,
+                    purpose: 'REPL'
+                });
+                if (!port) return;
+                gRemoteDevicePort = await saveSelectedDevicePort(port);
+            } catch (error) {
+                vscode.window.showErrorMessage('Device port was not saved: ' + error.message);
+                return;
             }
+            updateDeviceStatusBar();
+            if (deviceFileExplorer) {
+                const isCp = gDeviceFirmware === 'CircuitPython' ||
+                    (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
+                deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
+            }
+            vscode.window.showInformationMessage(
+                'REPL USB adapter saved as ' + normalizeSerialPort(port) +
+                ' in project device.cfg. Refresh will preserve this selection.'
+            );
         })
     );
 
@@ -1577,43 +1601,60 @@ function activate(context) {
         })
     );
 
-    // Flash firmware to device via mpflash or esptool
+    // Guided firmware update: the typical user only chooses the board family,
+    // a matching official .bin file, and confirms the selected COM adapter.
+    // Multi-image/partition flashing stays in the explicit Advanced route.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.flashFirmware', async () => {
-            const pick = await vscode.window.showQuickPick([
-                {
-                    label: '$(circuit-board) Raspberry Pi Pico / STM32 / Standard Board',
-                    description: 'Flash firmware via standard mpflash wizard',
-                    type: 'standard'
-                },
-                {
-                    label: '$(chip) ESP32 / ESP8266 (Espressif Board)',
-                    description: 'Flash firmware using the ESP Flash Download Tool (esptool)',
-                    type: 'esp'
-                }
-            ], {
-                placeHolder: 'Select your microcontroller type for flashing'
+            const items = [
+                { label: '$(cloud-download) Get official MicroPython firmware', detail: 'Browse board-specific downloads before changing your device', action: 'download' },
+                ...Object.entries(SIMPLE_PROFILES).map(([chip, profile]) => ({
+                    label: '$(chip) ' + profile.label + ' — Guided Flash',
+                    description: 'One official .bin file',
+                    detail: 'Uses the official MicroPython full-image address ' + profile.offset,
+                    action: 'simpleEsp',
+                    chip
+                })),
+                { label: '$(circuit-board) Pico / STM32 / other mpflash boards',
+                  detail: 'Use existing board-detection and version wizard', action: 'mpflash' },
+                { label: '$(settings-gear) Advanced ESP flash (multiple binaries)',
+                  detail: 'Custom offsets, partitions and erase controls for experienced users', action: 'advanced' }
+            ];
+            const selection = await vscode.window.showQuickPick(items, {
+                title: 'Flash MicroPython firmware — choose your board',
+                placeHolder: 'Select the exact chip or choose Advanced for custom images',
+                ignoreFocusOut: true
             });
-
-            if (!pick) return;
-
-            if (pick.type === 'standard') {
-                const terminal = getMpremoteTerminal();
-                const result = await flashFirmware(outputChannel, terminal);
-                if (result && gDeviceCodeDir) {
-                    // Record the flashed version in device.cfg
-                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
-                    await updateCfgComponent(cfgPath, 'device', 'last_flashed_version', result.version);
-                    await updateCfgComponent(cfgPath, 'device', 'last_flashed_board', result.board);
-                    // Update status bar tooltip to show firmware version
-                    if (deviceStatusBarItem) {
-                        deviceStatusBarItem.tooltip = `Connected to ${redactDevicePort(result.port)} — firmware ${result.version}`;
-                    }
-                }
-            } else {
-                const { openEspFlashTool } = require('./espFlashTool');
-                openEspFlashTool(context, outputChannel, gRemoteDevicePort);
+            if (!selection) return;
+            if (selection.action === 'download') {
+                await vscode.env.openExternal(vscode.Uri.parse('https://micropython.org/download/'));
+                return;
             }
+            if (selection.action === 'mpflash') {
+                const terminal = getMpremoteTerminal();
+                // mpflash runs asynchronously inside the terminal. Do not
+                // record last-flashed metadata until the device confirms it.
+                await flashFirmware(outputChannel, terminal);
+                return;
+            }
+            let filePath = '';
+            if (selection.action === 'simpleEsp') {
+                const file = await vscode.window.showOpenDialog({
+                    canSelectFiles: true,
+                    canSelectFolders: false,
+                    canSelectMany: false,
+                    openLabel: 'Use this firmware .bin',
+                    filters: { 'MicroPython firmware': ['bin'] }
+                });
+                if (!file?.length) return;
+                filePath = file[0].fsPath;
+            }
+            const { openEspFlashTool } = require('./espFlashTool');
+            await openEspFlashTool(context, outputChannel, gRemoteDevicePort, {
+                chipType: selection.chip || undefined,
+                firmwareFile: filePath,
+                advanced: selection.action === 'advanced'
+            });
         })
     );
 
