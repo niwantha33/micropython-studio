@@ -7,7 +7,7 @@
  */
 
 const vscode = require('vscode');
-const { exec, spawn } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs'); // Added fs import
 const wsQueue = require('./wsQueue');
@@ -386,9 +386,9 @@ function isFileInProjectFolder(filePath, projectFolder) {
  * Check if Python is available on the system.
  */
 function checkPythonAvailability() {
-    exec('python --version', (err) => {
+    execFile('python', ['--version'], { timeout: 5000, windowsHide: true }, (err) => {
         if (err) {
-            exec('python3 --version', (err2) => {
+            execFile('python3', ['--version'], { timeout: 5000, windowsHide: true }, (err2) => {
                 if (err2) {
                     vscode.window.showWarningMessage(
                         '[ERROR] Python not found in PATH. MicroPython Studio requires Python 3.7+.'
@@ -1445,7 +1445,8 @@ function activate(context) {
             outputChannel.show(true);
             outputChannel.appendLine(`Compiling: ${path.basename(filePath)} → ${path.basename(outputFile)}`);
 
-            exec(`"${venvPython}" -m mpy_cross "${filePath}"`, (error, stdout, stderr) => {
+            execFile(venvPython, ['-m', 'mpy_cross', filePath],
+                { timeout: 60000, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
                 if (error) {
                     outputChannel.appendLine(`[ERROR] ${stderr || error.message}`);
                     vscode.window.showErrorMessage(`Compile failed: ${stderr || error.message}`);
@@ -1669,7 +1670,8 @@ function activate(context) {
             outputChannel.show(true);
             outputChannel.appendLine(`Generating flowchart: ${path.basename(filePath)} → ${path.basename(outputFile)}`);
 
-            exec(`"${code2flowExe}" "${filePath}" --output "${outputFile}"`, (error, stdout, stderr) => {
+            execFile(code2flowExe, [filePath, '--output', outputFile],
+                { timeout: 60000, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
                 if (error) {
                     outputChannel.appendLine(`[ERROR] ${stderr || error.message}`);
                     vscode.window.showErrorMessage(`Flowchart generation failed: ${stderr || error.message}`);
