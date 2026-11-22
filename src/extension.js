@@ -772,16 +772,21 @@ function activate(context) {
 
             if (currentTarget !== 'Host' && !isCircuitPython) {
                 // Run on MCU (MicroPython) uses the daemon.
-                if (!connectionManager.isConnected && gRemoteDevicePort) {
-                    outputChannel.appendLine(`[Run Command] Connecting daemon process to port ${redactDevicePort(gRemoteDevicePort)}...`);
+                if ((!connectionManager.isConnected || connectionManager.portName !== gRemoteDevicePort) &&
+                    gRemoteDevicePort) {
+                    if (connectionManager.isScriptRunning) {
+                        throw new Error('Stop the running MCU script before changing serial ports.');
+                    }
+                    outputChannel.appendLine(`[Run Command] Connecting daemon to selected port ${redactDevicePort(gRemoteDevicePort)}...`);
                     await connectionManager.connect(gRemoteDevicePort);
-                } else if (connectionManager.isConnected && connectionManager.isSuspended) {
-                    outputChannel.appendLine(`[Run Command] Resuming daemon process on port ${redactDevicePort(gRemoteDevicePort)}...`);
-                    await connectionManager.resume();
+                } else if (connectionManager.isConnected &&
+                           (connectionManager.isSuspended || connectionManager.isReconnecting)) {
+                    throw new Error('Selected REPL is temporarily busy with a serial transfer or USB reconnect.');
                 }
             }
 
-            if (connectionManager.isConnected && currentTarget === 'MCU' && !isCircuitPython) {
+            if (connectionManager.isConnected && connectionManager.portName === runPort &&
+                currentTarget === 'MCU' && !isCircuitPython) {
                 // If using the daemon for MCU run, get the code from the editor (or file) and run it!
                 let code = '';
                 const editor = vscode.window.activeTextEditor;
