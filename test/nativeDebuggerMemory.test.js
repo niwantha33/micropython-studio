@@ -21,12 +21,16 @@ suite('Native Debug Adapter + Memory and GC analyzer', () => {
         assert.ok(script.includes('_mps_gc.collect()'));
         assert.ok(script.includes('_mps_alloc_after ='));
         assert.ok(script.includes('ticks_diff'));
+        assert.strictEqual((script.match(/_mps_gc\.collect\(\)/g) || []).length, 1,
+            'manual GC must only run once, even if timing is unsupported');
     });
 
     test('parse sample accurately and reject damaged or ambiguous responses', () => {
         const sample = parseMemorySample('noise\nMPS_MEMORY_V1:800,200,500,500,1250,-1\n', true, 100);
         assert.strictEqual(sample.total, 1000);
         assert.strictEqual(sample.reclaimed, 300);
+        assert.strictEqual(summarizeMemory([sample]).allocatedHighWater, 800,
+            'peak must include pre-GC allocation');
         assert.strictEqual(sample.gcTimeUs, 1250);
         assert.strictEqual(sample.threshold, null);
         assert.strictEqual(sample.collected, true);
