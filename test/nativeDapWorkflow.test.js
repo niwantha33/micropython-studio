@@ -3,8 +3,9 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { NativeMicroPythonAdapter } = require('../src/nativeDebugger');
-const { defaultAttachConfiguration } = require('../src/debugProjectConfig');
+const { defaultAttachConfiguration, resolveReplPort } = require('../src/debugProjectConfig');
 const { sanitizeTargetGlobals, parseDebuggerReply } = require('../src/nativeDebugParser');
 
 suite('Native DAP workflow and real target scopes', () => {
@@ -22,6 +23,18 @@ suite('Native DAP workflow and real target scopes', () => {
         assert.ok(source('nativeDebugger.js').includes('DebugConfigurationProviderTriggerKind.Dynamic'));
         assert.ok(source('createNewProject.js').includes("path.join(config.settingsDir, 'launch.json')"));
         assert.ok(source('extension.js').includes('micropython-ide.configureNativeDebug'));
+    });
+
+    test('saved project COM7 takes priority over stale in-memory COM3', async () => {
+        const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mps-debug-project-'));
+        try {
+            fs.writeFileSync(path.join(temp, 'device.cfg'), '[device]\\nport = "com7"\\n');
+            const folder = { uri: { fsPath: temp } };
+            assert.strictEqual(await resolveReplPort('', 'COM3', folder), 'COM7');
+            assert.strictEqual(await resolveReplPort('COM9', 'COM3', folder), 'COM9');
+        } finally {
+            fs.rmSync(temp, { recursive: true, force: true });
+        }
     });
 
     test('native session reuses existing bridge without showing separate debugger panel', () => {
