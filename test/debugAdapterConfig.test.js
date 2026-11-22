@@ -82,6 +82,22 @@ suite('MicroPython debugger adapter selection and persistence', () => {
         assert.strictEqual(await getConfigValue(cfg, 'debug', 'adapter_port'), 'COM13');
     });
 
+    test('saved debugger missing while only REPL remains still asks the user', async () => {
+        fs.appendFileSync(cfg, '[debug]\nadapter_port = "COM13"\n');
+        let asked = false;
+        const result = await chooseDebugAdapter(cfg, 'COM5', {
+            devices: [dualCdc[0]],
+            showQuickPick: async items => {
+                asked = true;
+                assert.ok(items.some(i => i.port === 'COM13'));
+                return undefined;
+            }
+        });
+        assert.strictEqual(asked, true);
+        assert.strictEqual(result, null);
+        assert.strictEqual(await getConfigValue(cfg, 'debug', 'adapter_port'), 'COM13');
+    });
+
     test('manual adapter entry validates against REPL and persists selection', async () => {
         const selected = await chooseDebugAdapter(cfg, 'COM5', {
             devices: dualCdc,
