@@ -122,6 +122,8 @@ suite('device.cfg selected port persistence', () => {
         assert.ok(src.includes('gRemoteDevicePort = await saveSelectedDevicePort(port)'));
         assert.ok(src.includes('gRemoteDevicePort = await saveSelectedDevicePort(newPort)'));
         assert.ok(refresh.includes('selectConfiguredPort(savedPort, devicesRaw)'));
+        assert.ok(refresh.includes('const candidates = devicesRaw;'));
+        assert.ok(!refresh.includes('filterDualCdcPorts('));
         assert.ok(refresh.includes("const preferredTransport = await getConfigValue(configPath, 'device', 'run_transport')"));
         assert.ok(!refresh.includes("Device ID match found at new port"));
     });
