@@ -74,6 +74,19 @@ def _get_lock_path(port: str) -> str:
     return os.path.join(tempfile.gettempdir(), lock_name)
 
 
+def _release_lock_if_owned(lock_path: str):
+    """Never erase the VS Code suspended lock or another process's COM claim."""
+    if not lock_path:
+        return
+    try:
+        with open(lock_path, 'r', encoding='utf-8') as lock_file:
+            owner = lock_file.read().strip()
+        if owner in (f'{os.getpid()}:cli', f'{os.getpid()}:cli_run'):
+            os.unlink(lock_path)
+    except OSError:
+        pass
+
+
 def parse_mpremote_output(raw: str) -> dict:
     """Extract TransportError and device output from mpremote failure."""
     result: dict[str, Any] = {"error": None, "device_output": None}
@@ -712,10 +725,9 @@ class SerialConnection:
             if g_verbose:
                 sys.stderr.write(f"[LOCK] PID {pid}: Releasing lock for port {self.port}\n")
             try:
-                if os.path.exists(self.lock_path):
-                    os.remove(self.lock_path)
-                    if g_verbose:
-                        sys.stderr.write(f"[LOCK] PID {pid}: Lock released successfully\n")
+                _release_lock_if_owned(self.lock_path)
+                if g_verbose:
+                    sys.stderr.write(f"[LOCK] PID {pid}: Own lock cleanup complete\n")
             except Exception as err:
                 if g_verbose:
                     sys.stderr.write(f"[LOCK] PID {pid}: Error releasing lock: {err}\n")
@@ -1829,10 +1841,9 @@ def run_mpremote(python_exe, args_list, timeout=60):
             if g_verbose:
                 sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote releasing lock for port {port}\n")
             try:
-                if os.path.exists(lock_path):
-                    os.remove(lock_path)
-                    if g_verbose:
-                        sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote lock released successfully\n")
+                _release_lock_if_owned(lock_path)
+                if g_verbose:
+                    sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote own-lock cleanup complete\n")
             except Exception as err:
                 if g_verbose:
                     sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote error releasing lock: {err}\n")
