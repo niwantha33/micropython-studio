@@ -17,6 +17,7 @@ const {
   getVenvPythonPath,
   getVenvPythonPathFolder,
   getConfigValue,
+  redactDevicePort,
 } = require("./commonFxn");
 
 /**
@@ -1940,14 +1941,17 @@ function getWebviewContent(metrics) {
             if (msg.command === 'wifiConnectDone') {
                 const status = document.getElementById('connectStatus');
                 if (msg.success) {
-                    status.innerHTML = \`<div style="color:#10b981;font-weight:600">✅ Connected!  IP: \${msg.ip}</div>\`;
+                    status.style.color = '#10b981';
+                    status.textContent = '✅ Connected! IP: ' + String(msg.ip || '');
                     // Update the status area at the top of the card
                     document.getElementById('wifiStatusArea').innerHTML = \`
                         <div class="wifi-status-badge connected"><span class="wifi-dot"></span> Connected</div>
                         <div class="wifi-info-row">
-                            <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval">\${msg.ssid}</span></div>
-                            <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp">\${msg.ip}</span></div>
-                        </div>\`;
+                            <div class="wifi-info-item"><span class="wlabel">Network</span><span class="wval" id="connectedSsid"></span></div>
+                            <div class="wifi-info-item"><span class="wlabel">IP Address</span><span class="wval" id="currentIp"></span></div>
+                        </div>`;
+                    document.getElementById('connectedSsid').textContent = String(msg.ssid || '');
+                    document.getElementById('currentIp').textContent = String(msg.ip || '');
                     // Show WebREPL toggle if not already there
                     if (!document.getElementById('webReplArea')) {
                         const toggle = document.createElement('div');
@@ -2009,14 +2013,15 @@ function getWebviewContent(metrics) {
                     <div class="webrepl-ip-box">
                         <div style="flex:1">
                             <div class="webrepl-ip-label">WebREPL · Listening</div>
-                            <div class="webrepl-ip-val">\${msg.ip}</div>
+                            <div class="webrepl-ip-val" id="webReplListeningIp"></div>
                             <div style="font-size:11px;color:#10b981;margin-top:4px">Listener active — boot.py unchanged</div>
                         </div>
                         <div style="display:flex;flex-direction:column;gap:6px">
                             <button class="btn btn-warning" id="switchWirelessBtn">⚡ Switch to Wireless</button>
                             <button class="btn btn-danger btn-sm" id="disableRemoteBtnInBox">Stop WebREPL</button>
                         </div>
-                    </div>\`;
+                    </div>`;
+                document.getElementById('webReplListeningIp').textContent = String(msg.ip || '');
 
                 document.getElementById('switchWirelessBtn').addEventListener('click', () => {
                     vscode.postMessage({ command: 'switchToWireless', ip: msg.ip });
@@ -2040,17 +2045,19 @@ function getWebviewContent(metrics) {
                 const statusEl = document.getElementById('webWorkflowStatus');
                 if (statusEl) {
                     const col = msg.ip ? '#10b981' : '#f59e0b';
-                    statusEl.innerHTML = '<span style="color:' + col + '">' + msg.message + '</span>';
+                    statusEl.style.color = col;
+                    statusEl.textContent = String(msg.message || '');
                 }
             }
 
             if (msg.command === 'webWorkflowSaved') {
                 const statusEl = document.getElementById('webWorkflowStatus');
                 if (statusEl) {
-                    statusEl.innerHTML = msg.success
-                        ? '<span style="color:#10b981">' + msg.message + '</span>'
-                        : '<span style="color:#ef4444">' + msg.message + '</span>' +
-                          (!msg.success ? '<br><span style="color:#94a3b8;font-size:11px;">Tip: Press Stop / Ctrl+C in the REPL to unlock the drive, then try again.</span>' : '');
+                    statusEl.style.color = msg.success ? '#10b981' : '#ef4444';
+                    statusEl.textContent = String(msg.message || '');
+                    if (!msg.success) {
+                        statusEl.appendChild(document.createTextNode(' Tip: Press Stop / Ctrl+C in the REPL to unlock the drive, then try again.'));
+                    }
                 }
             }
 
@@ -2068,7 +2075,10 @@ function getWebviewContent(metrics) {
 
             if (msg.command === 'wifiConnectError') {
                 const status = document.getElementById('connectStatus');
-                if (status) status.innerHTML = \`<div style="color:#ef4444">\${msg.message}</div>\`;
+                if (status) {
+                    status.style.color = '#ef4444';
+                    status.textContent = String(msg.message || 'Wi-Fi connection failed');
+                }
             }
         });
 
@@ -2270,11 +2280,11 @@ async function openDeviceDashboard(
   const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
   // Loading screen
-  panel.webview.html = `<!DOCTYPE html><html><head><style>
+  panel.webview.html = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';"><style>
         body{background:#1a1a24;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:20px}
         .loader{border:4px solid rgba(255,255,255,0.1);border-top-color:#3b82f6;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite}
         @keyframes spin{to{transform:rotate(360deg)}}
-    </style></head><body><div class="loader"></div><div>Fetching telemetry from ${currentDevicePort}…</div></body></html>`;
+    </style></head><body><div class="loader"></div><div>Fetching telemetry from ${escapeDashboardHtml(redactDevicePort(currentDevicePort))}…</div></body></html>`;
 
   const updateDashboard = async () => {
     try {
@@ -2297,7 +2307,7 @@ async function openDeviceDashboard(
       const errMsg = err instanceof Error ? err.message : String(err);
       panel.webview.html =
         '<body style="background:#1a1a24;color:#ef4444;padding:32px"><h2>Error</h2><p>' +
-        errMsg +
+        escapeDashboardHtml(errMsg) +
         "</p></body>";
     }
   };
