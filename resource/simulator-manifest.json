@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "reason": "No approved, SHA-256-pinned QEMU and firmware release artifacts have been qualified yet. Automatic simulator execution is disabled until an audited manifest is published.",
+  "platforms": {},
+  "firmware": null
+}
