@@ -140,6 +140,10 @@ class DeviceOperationQueue {
 
       const useDirect = runDirectIfConnected && connectionManager.isConnected && !connectionManager.isSuspended;
 
+      if (connectionManager.isReconnecting) {
+        throw new Error('USB serial transport is reconnecting. Wait for REPL recovery before ' + label + '.');
+      }
+
       // Never let file operations or telemetry steal the serial stream from a
       // running user script. An explicit user hard-reset can still cancel it.
       if ((connectionManager.isScriptRunning || connectionManager._runStartPending) &&
