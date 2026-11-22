@@ -14,7 +14,8 @@ const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort, findProjectRoot } = require('./refreshSettings');
-const { isSavedUsbPort } = require('./devicePortSelection');
+const { isSavedUsbPort, normalizeSerialPort } = require('./devicePortSelection');
+const { pickSerialAdapter } = require('./serialAdapterPicker');
 const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
@@ -80,7 +81,7 @@ async function getActiveDeviceConfigPath() {
 async function saveSelectedDevicePort(port) {
     const configPath = await getActiveDeviceConfigPath();
     if (typeof port !== 'string' || !port.trim()) throw new Error('Choose a valid device port.');
-    const selected = port.trim();
+    const selected = /^wss?:/i.test(port.trim()) ? port.trim() : normalizeSerialPort(port);
     if (/^wss?:/i.test(selected)) {
         // Keep WebREPL credentials exclusively in SecretStorage.
         await updateCfgComponent(configPath, 'device', 'run_transport', 'webrepl');
@@ -116,7 +117,7 @@ async function _buildRunPortOptions() {
 
     const items = [];
     if (isSavedUsbPort(savedCom)) {
-        items.push({ label: `[OK] USB — ${savedCom}`, port: savedCom });
+        items.push({ label: `[OK] USB Serial Adapter (${normalizeSerialPort(savedCom)})`, port: normalizeSerialPort(savedCom) });
     }
     items.push({ label: `[OK] Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
     return items;
@@ -461,7 +462,7 @@ function updateDeviceStatusBar() {
 
     if (gRemoteDevicePort) {
         const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
-        const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : gRemoteDevicePort;
+        const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : normalizeSerialPort(gRemoteDevicePort);
         deviceStatusBarItem.text = `${portLabel}`;
         deviceStatusBarItem.tooltip = `Connected to ${redactDevicePort(gRemoteDevicePort)}`;
         deviceStatusBarItem.backgroundColor = undefined;
@@ -1443,30 +1444,32 @@ function activate(context) {
         })
     );
 
-    // Update Device Port (placeholder — coming soon)
-    // Update Device Port (placeholder - coming soon)
+    // Select the actual REPL USB adapter; do not auto-pick a lower-numbered
+    // debugger CDC port. Persist the canonical COM string in device.cfg.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.updateDevicePort', async () => {
-            const port = await vscode.window.showInputBox({
-                prompt: 'Enter the device port manually',
-                placeHolder: 'e.g. COM3, /dev/ttyUSB0',
-                value: gRemoteDevicePort || ''
-            });
-            if (port) {
-                try {
-                    gRemoteDevicePort = await saveSelectedDevicePort(port);
-                } catch (error) {
-                    vscode.window.showErrorMessage('Device port was not saved: ' + error.message);
-                    return;
-                }
-
-                updateDeviceStatusBar();
-                if (deviceFileExplorer) {
-                    const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
-                    deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
-                }
-                vscode.window.showInformationMessage(`Device port set to: ${redactDevicePort(port)}`);
+            let port;
+            try {
+                port = await pickSerialAdapter({
+                    selected: gRemoteDevicePort,
+                    purpose: 'REPL'
+                });
+                if (!port) return;
+                gRemoteDevicePort = await saveSelectedDevicePort(port);
+            } catch (error) {
+                vscode.window.showErrorMessage('Device port was not saved: ' + error.message);
+                return;
             }
+            updateDeviceStatusBar();
+            if (deviceFileExplorer) {
+                const isCp = gDeviceFirmware === 'CircuitPython' ||
+                    (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
+                deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
+            }
+            vscode.window.showInformationMessage(
+                'REPL USB adapter saved as ' + normalizeSerialPort(port) +
+                ' in project device.cfg. Refresh will preserve this selection.'
+            );
         })
     );
 
