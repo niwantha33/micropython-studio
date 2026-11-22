@@ -539,7 +539,8 @@ class MpyDaemon:
                     pending = self._pending_program_input
                     self._pending_program_input = b""
             if pending and not self._program_cancel.is_set():
-                self._paced_serial_write(pending)
+                with self._lock:
+                    self._paced_serial_write(pending)
             self._stream_raw_execution()
         except Exception as exc:
             if not self._program_cancel.is_set():
@@ -589,7 +590,8 @@ class MpyDaemon:
                             self.send_event("error", {"message": "REPL input buffer full. Paste smaller chunks."})
                 if executing:
                     try:
-                        self._paced_serial_write(data)
+                        with self._lock:
+                            self._paced_serial_write(data)
                     except Exception as exc:
                         self.send_event("error", {"message": f"REPL input failed: {exc}"})
             else:
