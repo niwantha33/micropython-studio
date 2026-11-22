@@ -9,7 +9,7 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs').promises;
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const { getVenvPythonPathFolder, getVenvPythonPath, getMicropythonStudioPath } = require('./commonFxn');
 const { runCommand } = require('./runCommand');
 const {
@@ -157,9 +157,8 @@ async function detectAndSelectDevice(config) {
     const venvPython = customPython || getVenvPythonPath(venvFolder);
 
     return new Promise((resolve) => {
-        const command = `"${venvPython}" -m mpremote connect list`;
-
-        exec(command, async (error, stdout) => {
+        execFile(venvPython, ['-m', 'mpremote', 'connect', 'list'],
+            { timeout: 15000, maxBuffer: 1024 * 1024, windowsHide: true }, async (error, stdout) => {
             if (error) {
                 vscode.window.showWarningMessage(
                     'Could not detect devices. You can configure the port later in device.cfg.'
