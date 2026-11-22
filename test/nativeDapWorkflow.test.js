@@ -28,7 +28,7 @@ suite('Native DAP workflow and real target scopes', () => {
     test('saved project COM7 takes priority over stale in-memory COM3', async () => {
         const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mps-debug-project-'));
         try {
-            fs.writeFileSync(path.join(temp, 'device.cfg'), '[device]\\nport = "com7"\\n');
+            fs.writeFileSync(path.join(temp, 'device.cfg'), '[device]\nport = "com7"\n');
             const folder = { uri: { fsPath: temp } };
             assert.strictEqual(await resolveReplPort('', 'COM3', folder), 'COM7');
             assert.strictEqual(await resolveReplPort('COM9', 'COM3', folder), 'COM9');
