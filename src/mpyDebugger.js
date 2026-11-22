@@ -350,6 +350,8 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     const pyCmd = venvPython || (process.platform === 'win32' ? 'python' : 'python3');
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
     bridge = spawn(pyCmd, [script, port, workspaceFolder], { stdio: ['pipe', 'pipe', 'pipe'] });
+    // Capture this process identity: an old bridge may exit after a new session starts.
+    const sessionBridge = bridge;
 
     // A new debugger session owns the target breakpoint table, but target
     // commands are not sent until the SECOND COM/debug CDC has opened and the
@@ -1137,6 +1139,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
             } catch (e) {
                 // A damaged bridge record should be diagnosed, not blindly
                 // injected into the UI (or allowed to crash its message loop).
+                console.error('[MicroPython Debug] Bridge message handling failed:', e);
                 if (panel) panel.webview.postMessage({
                     evt: 'error', msg: 'Malformed debugger message ignored.'
                 });
@@ -1154,6 +1157,9 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         emitNative({ evt: 'transport_lost', msg: message });
     });
     bridge.on('close', (code, signal) => {
+        // An older process can close after another debug session has opened.
+        // Never publish its events or clear the newer session's bridge.
+        if (bridge !== sessionBridge) return;
         if (!bridgeExpectedShutdown && !bridgeTransportFailureReported) {
             const diagnostic = 'MicroPython debugger bridge exited unexpectedly ' +
                 '(exit=' + (code === null ? 'unknown' : code) +

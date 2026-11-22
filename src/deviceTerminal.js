@@ -26,9 +26,9 @@ async function openDeviceTerminal(_context, devicePort) {
         return;
     }
 
-    if (activeTerminal && activePort === devicePort) {
+    if (activeTerminal && samePort(activePort, devicePort)) {
         activeTerminal.show();
-        if (connectionManager.isConnected && connectionManager.portName === devicePort
+        if (connectionManager.isConnected && samePort(connectionManager.portName, devicePort)
             && connectionManager.isSuspended) {
             vscode.window.showInformationMessage('REPL is temporarily busy with a device operation. It will be available when the owner resumes it.');
         }
@@ -95,7 +95,7 @@ async function openDeviceTerminal(_context, devicePort) {
             emit(terminalNotice(`Opening REPL on ${devicePort} (no reset or interrupt sent).`));
             onDebugState(getDebugExecutionState());
             try {
-                if (connectionManager.isConnected && connectionManager.portName === devicePort) {
+                if (connectionManager.isConnected && samePort(connectionManager.portName, devicePort)) {
                     if (connectionManager.isSuspended)
                         emit(terminalNotice('REPL temporarily busy with another device operation. No reset was sent.'));
                     else onConnected();
@@ -121,7 +121,7 @@ async function openDeviceTerminal(_context, devicePort) {
         },
         handleInput: async data => {
             if (!connectionManager.isConnected || connectionManager.isSuspended
-                || connectionManager.isLocked || connectionManager.portName !== devicePort) {
+                || connectionManager.isLocked || !samePort(connectionManager.portName, devicePort)) {
                 emit(terminalNotice('REPL is unavailable while another operation owns the serial port.'));
                 return;
             }
