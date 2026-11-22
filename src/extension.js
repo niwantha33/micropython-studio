@@ -792,7 +792,7 @@ function activate(context) {
                 }
                 
                 outputChannel.appendLine(`[Run Command] Streaming editor script to MCU via daemon's raw paste...`);
-                await connectionManager.runInTerminal(code);
+                await wsQueue.run(() => connectionManager.runInTerminal(code), 'Run MCU Script', true);
                 outputChannel.appendLine(`[Run Command] Streaming script execution started.`);
                 
                 // Show the terminal if it's hidden
@@ -865,21 +865,21 @@ function activate(context) {
         })
     );
 
-    // Stop Running Script — send Ctrl+C and trigger hard reset to guarantee stopping the MCU
+    // Stop must interrupt the MCU without resetting it or competing for COM.
+    // Hard Reset is a separate, explicit command and remains available.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.stopRun', async () => {
-            if (connectionManager.isConnected) {
-                // Interrupt the advanced shell
-                connectionManager.write(Buffer.from('\r\x03'));
-                await new Promise(resolve => setTimeout(resolve, 300));
-                await vscode.commands.executeCommand('micropython-ide.hardResetDevice');
+            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+                try {
+                    await connectionManager.write(Buffer.from('\r\x03'));
+                    outputChannel.appendLine('[REPL] Ctrl+C sent to MCU. Hard Reset was not requested.');
+                } catch (err) {
+                    vscode.window.showErrorMessage('Stop failed: ' + err.message);
+                }
             } else {
-                const terminal = getMpremoteTerminal();
-                terminal.sendText('\x03', false); // Ctrl+C — interrupts the running script
-                terminal.show();
-                // Wait for the terminal process to receive Ctrl+C and release the COM port
-                await new Promise(resolve => setTimeout(resolve, 800));
-                await vscode.commands.executeCommand('micropython-ide.hardResetDevice');
+                vscode.window.showWarningMessage(
+                    'No active REPL owns the device. Open Shell or wait for the current serial transfer to finish.'
+                );
             }
         })
     );
