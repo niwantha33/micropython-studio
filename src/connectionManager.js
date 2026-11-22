@@ -87,6 +87,9 @@ class ConnectionManager extends EventEmitter {
         this.daemonProcess = null;
         this.isLocked = false;
         this.isSuspended = false;
+        this.isScriptRunning = false;
+        this.isReconnecting = false;
+        this._runStartPending = null;
         
         // Promises for run_code requests
         this._runCodeRequests = new Map();
@@ -226,7 +229,12 @@ class ConnectionManager extends EventEmitter {
 
     _handleDaemonMessage(msg, resolve, reject, connected) {
         switch (msg.type) {
+            case 'reconnecting':
+                this.isReconnecting = true;
+                this.emit('reconnecting', msg.port);
+                break;
             case 'connected':
+                this.isReconnecting = false;
                 logMsg(`[ConnectionManager] Received 'connected' event from daemon`);
                 this.isConnected = true;
                 this.isSuspended = false;
@@ -261,6 +269,24 @@ class ConnectionManager extends EventEmitter {
                 logMsg(`[ConnectionManager] Received 'disconnected' event from daemon`);
                 this.isSuspended = false;
                 this.disconnect();
+                break;
+            case 'run_started': {
+                const pending = this._runStartPending;
+                if (!pending || pending.id !== msg.id) break;
+                this._runStartPending = null;
+                clearTimeout(pending.timer);
+                if (msg.success) {
+                    this.isScriptRunning = true;
+                    this.emit('runStarted');
+                    pending.resolve();
+                } else {
+                    pending.reject(new Error(msg.error || 'Device REPL is busy.'));
+                }
+                break;
+            }
+            case 'run_finished':
+                this.isScriptRunning = false;
+                this.emit('runFinished');
                 break;
             case 'run_result':
                 const req = this._runCodeRequests.get(msg.id);
@@ -360,7 +386,9 @@ class ConnectionManager extends EventEmitter {
     }
 
     async suspend() {
+        if (this.isReconnecting) throw new Error('USB serial transport is reconnecting. Wait for recovery.');
         if (!this.isConnected) return;
+        if (this.isScriptRunning) throw new Error('Serial port is running an MCU script. Press Stop before file transfer.');
         if (this.isSuspended) return;
         await this._requestTransition('suspend');
         // No background auto-resume. The owner of the transfer must
@@ -390,8 +418,8 @@ class ConnectionManager extends EventEmitter {
      * Never spawn a second port owner or terminate unrelated processes.
      */
     hardReset() {
-        if (!this.isConnected || !this.daemonProcess || this.isSuspended) {
-            return Promise.reject(new Error('REPL serial port is not ready for reset.'));
+        if (!this.isConnected || !this.daemonProcess || this.isSuspended || this.isReconnecting) {
+            return Promise.reject(new Error('REPL serial port is busy or reconnecting; wait before resetting.'));
         }
         if (this._resetPending) return this._resetPending.promise;
         const id = this._nextReqId++;
@@ -427,6 +455,14 @@ class ConnectionManager extends EventEmitter {
 
     _daemonGone(error) {
         this.stopAutoResumeCheck();
+        this.isScriptRunning = false;
+        this.isReconnecting = false;
+        if (this._runStartPending) {
+            const pending = this._runStartPending;
+            this._runStartPending = null;
+            clearTimeout(pending.timer);
+            pending.reject(error);
+        }
         if (this._resetPending) {
             const pending = this._resetPending;
             this._resetPending = null;
@@ -688,21 +724,40 @@ except Exception as e:
      * Writes user terminal input to the device
      */
     async write(data) {
-        if (!this.isConnected || !this.daemonProcess) return;
-        
-        const b64 = Buffer.isBuffer(data) ? data.toString('base64') : Buffer.from(data).toString('base64');
-        const cmd = {
-            action: 'terminal_input',
-            data: b64
-        };
-        this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n');
+        if (!this.isConnected || !this.daemonProcess ||
+            this.isSuspended || this.isReconnecting) {
+            throw new Error('REPL is not connected or USB is temporarily unavailable.');
+        }
+        const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        if (bytes.length > 4096) {
+            throw new Error('REPL paste is too large for one operation. Paste in smaller chunks.');
+        }
+        const cmd = { action: 'terminal_input', data: bytes.toString('base64') };
+        // Resolve only when Node has actually queued the IPC frame, not
+        // before a write failure could be reported.
+        return new Promise((resolve, reject) => {
+            try {
+                this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n', err => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            } catch (err) {
+                reject(err);
+            }
+        });
     }
 
     /**
      * Executes code programmatically via raw paste in the background daemon.
      */
     async runCodeSilently(codeString) {
-        if (!this.isConnected || !this.daemonProcess) throw new Error('Not connected');
+        if (!this.isConnected || !this.daemonProcess || this.isSuspended || this.isReconnecting ||
+            this.isScriptRunning || this._runStartPending) {
+            throw new Error('REPL is busy or disconnected. Stop the MCU script or wait for the transfer.');
+        }
+        if (this._runCodeRequests.size > 0) {
+            throw new Error('REPL is already running another device command.');
+        }
 
         const reqId = this._nextReqId++;
         
@@ -732,14 +787,41 @@ except Exception as e:
     /**
      * Executes code in the foreground terminal (streams output, supports infinite loops).
      */
-    async runInTerminal(codeString) {
-        if (!this.isConnected || !this.daemonProcess) throw new Error('Not connected');
-
-        const cmd = {
-            action: 'run_in_terminal',
-            code: codeString
-        };
-        this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n');
+    runInTerminal(codeString) {
+        if (!this.isConnected || !this.daemonProcess || this.isSuspended || this.isReconnecting ||
+            this.isScriptRunning || this._runCodeRequests.size > 0) {
+            return Promise.reject(new Error('REPL busy or disconnected. Stop the previous script first.'));
+        }
+        if (this._runStartPending) return this._runStartPending.promise;
+        const id = this._nextReqId++;
+        let resolvePending, rejectPending;
+        const promise = new Promise((resolve, reject) => {
+            resolvePending = resolve;
+            rejectPending = reject;
+        });
+        const pending = { id, promise, resolve: resolvePending, reject: rejectPending, timer: null };
+        this._runStartPending = pending;
+        pending.timer = setTimeout(() => {
+            if (this._runStartPending !== pending) return;
+            this._runStartPending = null;
+            rejectPending(new Error('Device did not acknowledge script start within 10 seconds.'));
+        }, 10000);
+        try {
+            this.daemonProcess.stdin.write(JSON.stringify({ action: 'run_in_terminal', code: codeString, id }) + '\n', err => {
+                if (err && this._runStartPending === pending) {
+                    this._runStartPending = null;
+                    clearTimeout(pending.timer);
+                    rejectPending(err);
+                }
+            });
+        } catch (err) {
+            if (this._runStartPending === pending) {
+                this._runStartPending = null;
+                clearTimeout(pending.timer);
+                rejectPending(err);
+            }
+        }
+        return promise;
     }
 }
 

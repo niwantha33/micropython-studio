@@ -772,16 +772,21 @@ function activate(context) {
 
             if (currentTarget !== 'Host' && !isCircuitPython) {
                 // Run on MCU (MicroPython) uses the daemon.
-                if (!connectionManager.isConnected && gRemoteDevicePort) {
-                    outputChannel.appendLine(`[Run Command] Connecting daemon process to port ${redactDevicePort(gRemoteDevicePort)}...`);
+                if ((!connectionManager.isConnected || connectionManager.portName !== gRemoteDevicePort) &&
+                    gRemoteDevicePort) {
+                    if (connectionManager.isScriptRunning) {
+                        throw new Error('Stop the running MCU script before changing serial ports.');
+                    }
+                    outputChannel.appendLine(`[Run Command] Connecting daemon to selected port ${redactDevicePort(gRemoteDevicePort)}...`);
                     await connectionManager.connect(gRemoteDevicePort);
-                } else if (connectionManager.isConnected && connectionManager.isSuspended) {
-                    outputChannel.appendLine(`[Run Command] Resuming daemon process on port ${redactDevicePort(gRemoteDevicePort)}...`);
-                    await connectionManager.resume();
+                } else if (connectionManager.isConnected &&
+                           (connectionManager.isSuspended || connectionManager.isReconnecting)) {
+                    throw new Error('Selected REPL is temporarily busy with a serial transfer or USB reconnect.');
                 }
             }
 
-            if (connectionManager.isConnected && currentTarget === 'MCU' && !isCircuitPython) {
+            if (connectionManager.isConnected && connectionManager.portName === runPort &&
+                currentTarget === 'MCU' && !isCircuitPython) {
                 // If using the daemon for MCU run, get the code from the editor (or file) and run it!
                 let code = '';
                 const editor = vscode.window.activeTextEditor;
@@ -792,7 +797,7 @@ function activate(context) {
                 }
                 
                 outputChannel.appendLine(`[Run Command] Streaming editor script to MCU via daemon's raw paste...`);
-                await connectionManager.runInTerminal(code);
+                await wsQueue.run(() => connectionManager.runInTerminal(code), 'Run MCU Script', true);
                 outputChannel.appendLine(`[Run Command] Streaming script execution started.`);
                 
                 // Show the terminal if it's hidden
@@ -865,21 +870,22 @@ function activate(context) {
         })
     );
 
-    // Stop Running Script — send Ctrl+C and trigger hard reset to guarantee stopping the MCU
+    // Stop must interrupt the MCU without resetting it or competing for COM.
+    // Hard Reset is a separate, explicit command and remains available.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.stopRun', async () => {
-            if (connectionManager.isConnected) {
-                // Interrupt the advanced shell
-                connectionManager.write(Buffer.from('\r\x03'));
-                await new Promise(resolve => setTimeout(resolve, 300));
-                await vscode.commands.executeCommand('micropython-ide.hardResetDevice');
+            if (connectionManager.isConnected && !connectionManager.isSuspended &&
+                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
+                try {
+                    await connectionManager.write(Buffer.from('\r\x03'));
+                    outputChannel.appendLine('[REPL] Ctrl+C sent to MCU. Hard Reset was not requested.');
+                } catch (err) {
+                    vscode.window.showErrorMessage('Stop failed: ' + err.message);
+                }
             } else {
-                const terminal = getMpremoteTerminal();
-                terminal.sendText('\x03', false); // Ctrl+C — interrupts the running script
-                terminal.show();
-                // Wait for the terminal process to receive Ctrl+C and release the COM port
-                await new Promise(resolve => setTimeout(resolve, 800));
-                await vscode.commands.executeCommand('micropython-ide.hardResetDevice');
+                vscode.window.showWarningMessage(
+                    'No active REPL owns the device. Open Shell or wait for the current serial transfer to finish.'
+                );
             }
         })
     );
@@ -1066,7 +1072,8 @@ function activate(context) {
 
             const baseDest = isXBeeDevice() ? '/flash' : '';
 
-            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            if (connectionManager.isConnected && !connectionManager.isSuspended &&
+                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
                 try {
                     const filename = path.basename(filePath);
                     const destPath = baseDest === '' ? `/${filename}` : `${baseDest}/${filename}`;
@@ -1136,7 +1143,8 @@ function activate(context) {
             const dest = path.basename(folderPath);
             const baseDest = isXBeeDevice() ? `/flash/${dest}` : dest;
 
-            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            if (connectionManager.isConnected && !connectionManager.isSuspended &&
+                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
                 try {
                     const remoteFolder = isXBeeDevice() ? `/flash/${dest}` : `/${dest}`;
                     await uploadFolderDirect(folderPath, remoteFolder);
@@ -1215,7 +1223,8 @@ function activate(context) {
 
             const baseDest = isXBeeDevice() ? '/flash' : '';
 
-            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            if (connectionManager.isConnected && !connectionManager.isSuspended &&
+                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
                 try {
                     let localTarget = gDeviceCodeDir;
                     const remoteDest = isXBeeDevice() ? '/flash' : '/';

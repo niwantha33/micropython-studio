@@ -171,7 +171,8 @@ except:
   const tempScriptPath = path.join(metricsTempDir, "metrics.py");
   try {
       let rawOutput = "";
-      if (connectionManager.isConnected && !connectionManager.isSuspended) {
+      if (connectionManager.isConnected && !connectionManager.isSuspended &&
+          !connectionManager.isReconnecting && connectionManager.portName === devicePort) {
           try {
               const res = await connectionManager.runCodeSilently(pythonScript);
               rawOutput = res.stdout || "";
