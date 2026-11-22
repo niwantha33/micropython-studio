@@ -12,6 +12,7 @@ const fs = require('fs').promises;
 const { execFile } = require('child_process');
 const { getVenvPythonPathFolder, getVenvPythonPath, getMicropythonStudioPath } = require('./commonFxn');
 const { runCommand } = require('./runCommand');
+const { isSafeProjectName, resolveProjectDirectory } = require('./pathSafety');
 const {
     languageOption, mcuOptions_MP,
     rpBoards_MP, espBoards_MP, stmBoards_MP,
@@ -78,7 +79,7 @@ async function findCircuitPythonDrive() {
  */
 async function buildProjectConfig(configDict, folderUri) {
     configDict.parentPath = folderUri[0].fsPath;
-    configDict.projectDir = path.join(configDict.parentPath, configDict.projectName);
+    configDict.projectDir = resolveProjectDirectory(configDict.parentPath, configDict.projectName);
     // CircuitPython: deviceCodeDir is the device drive, resolved later in createNewProject
     // MicroPython: deviceCodeDir is the local main/ folder
     configDict.deviceCodeDir = path.join(configDict.projectDir, 'main');
@@ -100,7 +101,7 @@ async function selectMcuAndBoard() {
         placeHolder: 'e.g. my-micropython-project',
         validateInput: value => {
             if (!value) return 'Project name is required';
-            if (/[<>:"/\\|?*]/.test(value)) return 'Project name contains invalid characters';
+            if (!isSafeProjectName(value)) return 'Project name must be a single safe folder name (no reserved names or traversal).';
             return null;
         }
     });
