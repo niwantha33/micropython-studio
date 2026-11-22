@@ -869,7 +869,8 @@ function activate(context) {
     // Hard Reset is a separate, explicit command and remains available.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.stopRun', async () => {
-            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            if (connectionManager.isConnected && !connectionManager.isSuspended &&
+                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
                 try {
                     await connectionManager.write(Buffer.from('\r\x03'));
                     outputChannel.appendLine('[REPL] Ctrl+C sent to MCU. Hard Reset was not requested.');
@@ -1066,7 +1067,8 @@ function activate(context) {
 
             const baseDest = isXBeeDevice() ? '/flash' : '';
 
-            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            if (connectionManager.isConnected && !connectionManager.isSuspended &&
+                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
                 try {
                     const filename = path.basename(filePath);
                     const destPath = baseDest === '' ? `/${filename}` : `${baseDest}/${filename}`;
@@ -1136,7 +1138,8 @@ function activate(context) {
             const dest = path.basename(folderPath);
             const baseDest = isXBeeDevice() ? `/flash/${dest}` : dest;
 
-            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            if (connectionManager.isConnected && !connectionManager.isSuspended &&
+                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
                 try {
                     const remoteFolder = isXBeeDevice() ? `/flash/${dest}` : `/${dest}`;
                     await uploadFolderDirect(folderPath, remoteFolder);
@@ -1215,7 +1218,8 @@ function activate(context) {
 
             const baseDest = isXBeeDevice() ? '/flash' : '';
 
-            if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            if (connectionManager.isConnected && !connectionManager.isSuspended &&
+                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
                 try {
                     let localTarget = gDeviceCodeDir;
                     const remoteDest = isXBeeDevice() ? '/flash' : '/';
