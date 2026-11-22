@@ -37,6 +37,7 @@ class FakeMicroPythonSerial:
         self.daemon = daemon
         self.continuous = continuous
         self.writes = []
+        self.control_changes = []
         self.dtr = False
         self.rts = False
 
@@ -60,9 +61,11 @@ class FakeMicroPythonSerial:
         return len(data)
 
     def setDTR(self, enabled):
+        self.control_changes.append(('DTR', enabled))
         self.dtr = enabled
 
     def setRTS(self, enabled):
+        self.control_changes.append(('RTS', enabled))
         self.rts = enabled
 
 
@@ -144,8 +147,8 @@ class SerialStreamingTests(unittest.TestCase):
                          [{"id": 36, "success": True}])
         self.assertTrue(self.daemon._program_cancel.is_set())
         self.assertFalse(self.daemon._program_running)
-        self.assertIn(("RTS", True), [("RTS", v) for v in
-                                      [getattr(fake, "rts", None), True]])
+        self.assertIn(("RTS", True), fake.control_changes)
+        self.assertIn(("RTS", False), fake.control_changes)
 
     def test_usb_reconnect_failure_emits_disconnected_state_instead_of_ghost_repl(self):
         class DisappearedSerial:
