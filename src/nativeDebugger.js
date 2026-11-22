@@ -9,6 +9,7 @@ const {
     connectNativeDebugger, sendNativeCommand, disconnectNativeDebugger
 } = require('./mpyDebugger');
 const { parseDebuggerReply, sanitizeTargetGlobals } = require('./nativeDebugParser');
+const { defaultAttachConfiguration, resolveReplPort, resolveDebugPort } = require('./debugProjectConfig');
 
 const DEBUG_TYPE = 'micropython-studio';
 
@@ -301,35 +302,37 @@ class NativeMicroPythonAdapter {
 function registerNativeDebugger(context, getReplPort, getPython) {
     const provider = {
         provideDebugConfigurations() {
-            return [{ name: 'MicroPython Studio: Native Debugger', type: DEBUG_TYPE,
-                request: 'launch', replPort: getReplPort() || '', debugPort: '' }];
+            return [defaultAttachConfiguration()];
         },
-        async resolveDebugConfiguration(_folder, config) {
+        async resolveDebugConfiguration(folder, config) {
             if (!config.type) config.type = DEBUG_TYPE;
-            if (!config.request) config.request = 'launch';
-            if (!config.name) config.name = 'MicroPython Studio: Native Debugger';
-            if (!config.replPort) config.replPort = getReplPort() || '';
-            const repl = String(config.replPort || '').trim();
-            if (!repl || repl === '-' || repl.startsWith('ws:')) {
-                vscode.window.showErrorMessage('Select the USB REPL/upload port first. Native debugging uses a separate debug CDC.');
+            if (!config.request) config.request = 'attach';
+            if (!config.name) config.name = 'MicroPython Studio: Attach to hardware';
+            try {
+                const repl = await resolveReplPort(config.replPort, getReplPort(), folder);
+                if (!repl) {
+                    vscode.window.showErrorMessage(
+                        'Select the MicroPython USB REPL port in device.cfg before attaching the debugger.'
+                    );
+                    return undefined;
+                }
+                const debugPort = await resolveDebugPort(folder, repl, config.debugPort);
+                if (!debugPort) return undefined;
+                config.replPort = repl;
+                config.debugPort = debugPort;
+                return config;
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot configure MicroPython Debug: ' + error.message);
                 return undefined;
             }
-            if (!config.debugPort) config.debugPort = await vscode.window.showInputBox({
-                prompt: 'MicroPython debugger CDC port (different from REPL)',
-                placeHolder: 'e.g. COM13'
-            });
-            const debugPort = String(config.debugPort || '').trim();
-            if (!debugPort) return undefined;
-            if (debugPort.toUpperCase() === repl.toUpperCase()) {
-                vscode.window.showErrorMessage('Debugger CDC must be different from the REPL/upload COM port.');
-                return undefined;
-            }
-            config.replPort = repl;
-            config.debugPort = debugPort;
-            return config;
         }
     };
+    // Initial generates launch.json defaults. Dynamic makes the MicroPython
+    // debugger appear in VS Code Run and Debug even without launch.json.
     context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, provider));
+    context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider(
+        DEBUG_TYPE, provider, vscode.DebugConfigurationProviderTriggerKind.Dynamic
+    ));
     context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory(DEBUG_TYPE, {
         createDebugAdapterDescriptor(session) {
             return new vscode.DebugAdapterInlineImplementation(
