@@ -87,7 +87,9 @@ class ConnectionManager extends EventEmitter {
         this.daemonProcess = null;
         this.isLocked = false;
         this.isSuspended = false;
-        
+        this.isScriptRunning = false;
+        this._foregroundPending = null;
+
         // Promises for run_code requests
         this._runCodeRequests = new Map();
         this._nextReqId = 1;
@@ -247,6 +249,30 @@ class ConnectionManager extends EventEmitter {
                     this.emit('data', buf);
                 }
                 break;
+            case 'terminal_run_started':
+                this.isScriptRunning = true;
+                this._resolveForegroundStart();
+                this.emit('run-started');
+                break;
+            case 'terminal_run_finished':
+                this.isScriptRunning = false;
+                if (msg.success) {
+                    this._resolveForegroundStart();
+                } else {
+                    this._rejectForegroundStart(new Error(msg.error || 'MCU execution failed.'));
+                }
+                this.emit('run-finished', {
+                    success: Boolean(msg.success), error: msg.error || ''
+                });
+                if (!msg.success && msg.error && this.listenerCount('error')) {
+                    this.emit('error', new Error(msg.error));
+                }
+                break;
+            case 'transition_error':
+                if (['suspend', 'resume'].includes(msg.action)) {
+                    this._rejectTransition(msg.action, new Error(msg.message || 'Serial transfer denied.'));
+                }
+                break;
             case 'disconnected':
                 logMsg(`[ConnectionManager] Received 'disconnected' event from daemon`);
                 this.isSuspended = false;
@@ -284,6 +310,31 @@ class ConnectionManager extends EventEmitter {
                 this._resolveTransition('resume');
                 break;
         }
+    }
+
+    _resolveForegroundStart() {
+        const pending = this._foregroundPending;
+        if (!pending) return;
+        this._foregroundPending = null;
+        clearTimeout(pending.timer);
+        pending.resolve();
+    }
+
+    _rejectForegroundStart(error) {
+        const pending = this._foregroundPending;
+        if (!pending) return;
+        this._foregroundPending = null;
+        clearTimeout(pending.timer);
+        pending.reject(error);
+    }
+
+    _rejectTransition(action, error) {
+        const key = this._transitionField(action);
+        const pending = this[key];
+        if (!pending) return;
+        this[key] = null;
+        clearTimeout(pending.timer);
+        pending.reject(error);
     }
 
     _transitionField(action) {
@@ -377,6 +428,8 @@ class ConnectionManager extends EventEmitter {
 
     _daemonGone(error) {
         this.stopAutoResumeCheck();
+        this.isScriptRunning = false;
+        this._rejectForegroundStart(error);
         this.isConnected = false;
         this.isSuspended = false;
         this._rejectPendingTransitions(error);
@@ -647,6 +700,9 @@ except Exception as e:
      */
     async runCodeSilently(codeString) {
         if (!this.isConnected || !this.daemonProcess) throw new Error('Not connected');
+        if (this.isScriptRunning || this._foregroundPending) {
+            throw new Error('MCU program is running. Press Ctrl+C in Shell before probing or transferring files.');
+        }
 
         const reqId = this._nextReqId++;
         
@@ -677,13 +733,25 @@ except Exception as e:
      * Executes code in the foreground terminal (streams output, supports infinite loops).
      */
     async runInTerminal(codeString) {
-        if (!this.isConnected || !this.daemonProcess) throw new Error('Not connected');
+        if (!this.isConnected || !this.daemonProcess || this.isSuspended)
+            throw new Error('USB REPL is not connected or is busy.');
+        if (this.isScriptRunning || this._foregroundPending)
+            throw new Error('MCU script already running. Press Ctrl+C in Shell first.');
 
-        const cmd = {
-            action: 'run_in_terminal',
-            code: codeString
-        };
-        this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n');
+        const cmd = { action: 'run_in_terminal', code: codeString };
+        // Only report success after the daemon accepts the foreground run.
+        // Infinite loops return a start acknowledgement, NOT an EOF timeout.
+        return new Promise((resolve, reject) => {
+            const pending = { resolve, reject, timer: null };
+            this._foregroundPending = pending;
+            pending.timer = setTimeout(() => {
+                this._rejectForegroundStart(new Error(
+                    'MCU Run did not start within 15 seconds. Check USB and REPL output.'));
+            }, 15000);
+            this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n', error => {
+                if (error) this._rejectForegroundStart(error);
+            });
+        });
     }
 }
 
