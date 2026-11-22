@@ -74,7 +74,7 @@ suite('WebREPL session-only dashboard startup', () => {
     });
     test('Dashboard tells users WebREPL is optional without touching USB debugging', () => {
         const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'deviceDashboard.js'), 'utf8');
-        const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'webrepl_bridge.py'), 'utf8');
+        const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'webreplBridge.js'), 'utf8');
         assert.ok(dash.includes('Optional · PC must reach this board on TCP 8266.'));
         assert.ok(dash.includes('USB REPL/debugger work without it.'));
         assert.ok(dash.includes('Checking WebREPL…'));
