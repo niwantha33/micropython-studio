@@ -179,17 +179,28 @@ function createNativeDetailPanel(context, port) {
         onDidDispose: session.onDidDispose,
         webview: {
             postMessage(message) {
-                if (message && typeof message === 'object' && message.evt &&
-                    JSON.stringify(message).length <= 4096) {
-                    recentEvents.push(message);
-                    if (recentEvents.length > 200) recentEvents.shift();
+                if (message && typeof message === 'object' && message.evt) {
+                    try {
+                        if (JSON.stringify(message).length <= 4096) {
+                            recentEvents.push(message);
+                            if (recentEvents.length > 200) recentEvents.shift();
+                        }
+                    } catch (_) { /* Never let unexpected data crash the host. */ }
                 }
-                return view ? view.webview.postMessage(message) : Promise.resolve(false);
+                if (!view) return Promise.resolve(false);
+                try {
+                    return Promise.resolve(view.webview.postMessage(message)).catch(() => false);
+                } catch (_) {
+                    // The user can close the detailed editor between bridge
+                    // events. Only its view disappears, not the DAP connection.
+                    return Promise.resolve(false);
+                }
             },
             replayHistory() {
                 if (!view) return;
                 for (const message of recentEvents) {
-                    view.webview.postMessage(message);
+                    try { Promise.resolve(view.webview.postMessage(message)).catch(() => {}); }
+                    catch (_) { return; }
                 }
             },
             onDidReceiveMessage(handler) {
@@ -617,13 +628,27 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     }
 
     let buf = '';
+    const MAX_BRIDGE_LINE = 128 * 1024;
     bridge.stdout.on('data', (d) => {
         buf += d.toString();
+        if (buf.length > MAX_BRIDGE_LINE && buf.indexOf('\n') === -1) {
+            buf = '';
+            const error = 'Debugger bridge exceeded its maximum message length; connection closed safely.';
+            emitNative({ evt: 'transport_lost', msg: error });
+            try { bridge.kill(); } catch (_) {}
+            return;
+        }
         let idx;
         while ((idx = buf.indexOf('\n')) >= 0) {
             const line = buf.slice(0, idx).trim();
             buf = buf.slice(idx + 1);
             if (!line) continue;
+            if (line.length > MAX_BRIDGE_LINE) {
+                emitNative({ evt: 'transport_lost',
+                    msg: 'Oversized debugger protocol record rejected.' });
+                try { bridge.kill(); } catch (_) {}
+                return;
+            }
             try {
                 const msg = JSON.parse(line);
 
@@ -1062,7 +1087,11 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                     panel.webview.postMessage(msg);
                 }
             } catch (e) {
-                if (panel) panel.webview.postMessage({ evt: 'raw', text: line });
+                // A damaged bridge record should be diagnosed, not blindly
+                // injected into the UI (or allowed to crash its message loop).
+                if (panel) panel.webview.postMessage({
+                    evt: 'error', msg: 'Malformed debugger message ignored.'
+                });
             }
         }
     });
