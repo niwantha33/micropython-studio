@@ -155,6 +155,27 @@ class KnownGoodReplProtocolTests(unittest.TestCase):
         self.daemon._foreground_thread.join(3)
         self.assertFalse(self.daemon._foreground_thread.is_alive())
 
+    def test_continuous_print_is_chunked_without_losing_bytes(self):
+        import threading
+        # A large burst of console output must not become one unbounded
+        # JSON/base64 event. All bytes must still be delivered in order.
+        payload = bytes(range(256)) * 32
+        with self.daemon._rx_lock:
+            self.daemon._rx_queue.extend(payload)
+        reader = threading.Thread(target=self.daemon._read_loop, daemon=True)
+        reader.start()
+        self.wait_for(lambda: sum(
+            len(base64.b64decode(msg["data"]))
+            for event, msg in self.events if event == "terminal_data"
+        ) >= len(payload))
+        self.daemon.running = False
+        reader.join(2)
+        self.assertFalse(reader.is_alive())
+        chunks = [base64.b64decode(msg["data"])
+                  for event, msg in self.events if event == "terminal_data"]
+        self.assertTrue(all(0 < len(chunk) <= 2048 for chunk in chunks))
+        self.assertEqual(b"".join(chunks), payload)
+
     def test_finite_run_uses_original_device_protocol(self):
         self.daemon.process_command({
             "action": "run_in_terminal", "code": "print('ready')"
