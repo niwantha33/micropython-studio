@@ -4,6 +4,8 @@
 // Reuses the qualified Studio debugger bridge and its breakpoint/CDC ownership.
 // Deliberately does not flash firmware, upload helpers, or claim unsupported DAP capabilities.
 const vscode = require('vscode');
+const { chooseDebugAdapter } = require('./debugAdapterSettings');
+const { normalizeSerialPort, samePort } = require('./devicePortSelection');
 const path = require('path');
 const {
     connectNativeDebugger, sendNativeCommand, disconnectNativeDebugger
@@ -289,17 +291,15 @@ function registerNativeDebugger(context, getReplPort, getPython) {
                 vscode.window.showErrorMessage('Select the USB REPL/upload port first. Native debugging uses a separate debug CDC.');
                 return undefined;
             }
-            if (!config.debugPort) config.debugPort = await vscode.window.showInputBox({
-                prompt: 'MicroPython debugger CDC port (different from REPL)',
-                placeHolder: 'e.g. COM13'
-            });
-            const debugPort = String(config.debugPort || '').trim();
-            if (!debugPort) return undefined;
-            if (debugPort.toUpperCase() === repl.toUpperCase()) {
-                vscode.window.showErrorMessage('Debugger CDC must be different from the REPL/upload COM port.');
+            let debugPort;
+            try {
+                debugPort = await chooseDebugAdapter(repl, config.debugPort);
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot select Debug adapter: ' + error.message);
                 return undefined;
             }
-            config.replPort = repl;
+            if (!debugPort || samePort(debugPort, repl)) return undefined;
+            config.replPort = normalizeSerialPort(repl);
             config.debugPort = debugPort;
             return config;
         }
