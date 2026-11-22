@@ -13,7 +13,9 @@ function buildSerialAdapterItems(devices, selected, excludePort = '') {
     const seen = new Set();
     for (const device of Array.isArray(devices) ? devices : []) {
         const port = normalizeSerialPort(device.port);
-        if (!port || !isSavedUsbPort(port) || samePort(port, excludePort)) continue;
+        // mpremote output may contain diagnostic/header lines; only expose
+        // actual serial-device names as clickable adapters.
+        if (!port || validateManualPort(port) !== null || samePort(port, excludePort)) continue;
         const key = process.platform === 'win32' ? port.toLowerCase() : port;
         if (seen.has(key)) continue;
         seen.add(key);
