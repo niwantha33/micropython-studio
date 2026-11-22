@@ -569,8 +569,15 @@ class MpyDaemon:
                 # directly: the worker may be waiting on an endless program.
                 with self._program_state_lock:
                     executing = self._program_output_phase
-                    if not executing and len(self._pending_program_input) + len(data) <= self._input_buffer_limit:
-                        self._pending_program_input += data
+                    if not executing:
+                        if b'\x03' in data:
+                            # Ctrl+C always wins over a queued paste. A user
+                            # must never lose the ability to stop the MCU.
+                            self._pending_program_input = b'\x03'
+                        elif len(self._pending_program_input) + len(data) <= self._input_buffer_limit:
+                            self._pending_program_input += data
+                        else:
+                            self.send_event("error", {"message": "REPL input buffer full. Paste smaller chunks."})
                 if executing:
                     try:
                         self._paced_serial_write(data)
@@ -579,8 +586,12 @@ class MpyDaemon:
             else:
                 with self._lock:
                     if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
-                        if len(self._terminal_input_buffer) + len(data) <= self._input_buffer_limit:
+                        if b'\x03' in data:
+                            self._terminal_input_buffer = b'\x03'
+                        elif len(self._terminal_input_buffer) + len(data) <= self._input_buffer_limit:
                             self._terminal_input_buffer += data
+                        else:
+                            self.send_event("error", {"message": "REPL input buffer full. Paste smaller chunks."})
                     else:
                         try:
                             self._paced_serial_write(data)
