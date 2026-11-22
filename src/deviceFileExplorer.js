@@ -9,14 +9,28 @@
 
 
 const vscode = require('vscode');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const pathMod = require('path');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 const wsQueue = require('./wsQueue');
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+// All backend operations must be bounded and must never invoke a shell.
+function backendExec(python, args, options, callback) {
+    if (typeof options === 'function') {
+        callback = options;
+        options = {};
+    }
+    return execFile(python, args, {
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+        ...options
+    }, callback);
+}
 
 /**
  * Represents a file or directory on the MicroPython device.
@@ -201,14 +215,14 @@ class DeviceFileExplorerProvider {
             }
 
             const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
-            const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" ls --port "${this._port}" --path "${dirPath}"`;
+            const args = [scriptPath, "--python", venvPython, "ls", "--port", this._port, "--path", dirPath];
 
             let attempts = 0;
             const maxAttempts = 3;
 
             while (attempts < maxAttempts) {
                 const result = await new Promise((resolve) => {
-                    exec(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+                    backendExec(venvPython, args, { timeout: 15000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
                         if (error) {
                             const errStr = stderr || error.message;
                             if (errStr.includes('BUSY') && attempts < maxAttempts - 1) {
@@ -409,10 +423,10 @@ class DeviceFileExplorerProvider {
             }
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
             const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
-            const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" mv --port "${this._port}" --src "${srcPath}" --dest "${destPath}"`;
+            const args = [scriptPath, "--python", venvPython, "mv", "--port", this._port, "--src", srcPath, "--dest", destPath];
 
             const moveOp = () => new Promise((res, rej) => {
-                exec(cmd, { timeout: 15000 }, (error, _stdout, stderr) => {
+                backendExec(venvPython, args, { timeout: 15000 }, (error, _stdout, stderr) => {
                     if (error || (stderr && stderr.includes('Traceback'))) {
                         rej(new Error(stderr || error?.message || 'Unknown error'));
                     } else {
@@ -453,8 +467,8 @@ async function readDeviceFile(port, deviceFilePath) {
                     content = await wsQueue.run(() => connectionManager.catFile(deviceFilePath), 'Read File', true);
                 } else {
                     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
-                    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" cat --port "${port}" --path "${deviceFilePath}"`;
-                    const execOp = () => execAsync(cmd, { timeout: 15000, maxBuffer: 1024 * 1024 });
+                    const args = [scriptPath, "--python", venvPython, "cat", "--port", port, "--path", deviceFilePath];
+                    const execOp = () => execFileAsync(venvPython, args, { timeout: 15000, maxBuffer: 1024 * 1024, windowsHide: true });
                     const { stdout } = await wsQueue.run(execOp);
                     content = Buffer.from(stdout);
                 }
@@ -518,10 +532,10 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
     const venvPython = getVenvPythonPath(venvFolder);
     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
 
-    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFilePath}"`;
+    const args = [scriptPath, "--python", venvPython, "rm", "--port", port, "--path", deviceFilePath];
 
     const rmOp = () => new Promise((resolve) => {
-        exec(cmd, { timeout: 15000 }, (error) => {
+        backendExec(venvPython, args, { timeout: 15000 }, (error) => {
             if (error) {
                 vscode.window.showErrorMessage(`Failed to delete ${deviceFilePath}: ${error.message}`);
             } else {
@@ -583,10 +597,10 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
     const venvPython = getVenvPythonPath(venvFolder);
     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
 
-    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rm --port "${port}" --path "${deviceFolderPath}" --recursive`;
+    const args = [scriptPath, "--python", venvPython, "rm", "--port", port, "--path", deviceFolderPath, "--recursive"];
 
     const rmTreeOp = () => new Promise((resolve) => {
-        exec(cmd, { timeout: 30000 }, (error, _stdout, stderr) => {
+        backendExec(venvPython, args, { timeout: 30000 }, (error, _stdout, stderr) => {
             if (error || (stderr && stderr.includes('Traceback'))) {
                 const msg = stderr || error?.message || 'Unknown error';
                 vscode.window.showErrorMessage(`Failed to delete ${deviceFolderPath}: ${msg}`);
@@ -630,10 +644,10 @@ async function renameDeviceFile(port, oldPath, provider) {
 
     const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
-    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" rename --port "${port}" --src "${oldPath}" --dest "${newPath}"`;
+    const args = [scriptPath, "--python", venvPython, "rename", "--port", port, "--src", oldPath, "--dest", newPath];
 
     await wsQueue.run(() => new Promise((resolve) => {
-        exec(cmd, (error) => {
+        backendExec(venvPython, args, (error) => {
             if (error) {
                 vscode.window.showErrorMessage(`Rename failed: ${error.message}`);
             } else {
@@ -676,9 +690,9 @@ async function uploadToDeviceFolder(port, targetFolder, provider) {
     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
 
     for (const file of files) {
-        const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" upload --port "${port}" --source "${file.fsPath}" --dest "${targetFolder}" --overwrite`;
+        const args = [scriptPath, "--python", venvPython, "upload", "--port", port, "--source", file.fsPath, "--dest", targetFolder, "--overwrite"];
         await wsQueue.run(() => new Promise((resolve) => {
-            exec(cmd, (error) => {
+            backendExec(venvPython, args, (error) => {
                 if (error) {
                     vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
                 }
@@ -717,10 +731,10 @@ async function newDeviceFolder(port, parentPath, provider) {
 
     const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
-    const cmd = `"${venvPython}" "${scriptPath}" --python "${venvPython}" mkdir --port "${port}" --path "${newPath}"`;
+    const args = [scriptPath, "--python", venvPython, "mkdir", "--port", port, "--path", newPath];
 
     await wsQueue.run(() => new Promise((resolve) => {
-        exec(cmd, (error) => {
+        backendExec(venvPython, args, (error) => {
             if (error) {
                 vscode.window.showErrorMessage(`Failed to create folder: ${error.message}`);
             } else {
