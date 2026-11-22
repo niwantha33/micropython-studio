@@ -14,7 +14,7 @@ const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort } = require('./refreshSettings');
-const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent } = require('./commonFxn');
+const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
 const { flashFirmware, downloadFirmware } = require('./flashFirmware');
@@ -153,7 +153,7 @@ function runPythonProcess(exe, args, onComplete) {
 function _parseArgContext(args) {
     const ctx = {};
     for (let i = 0; i < args.length; i++) {
-        if (args[i] === '--port' && args[i + 1]) ctx.port = args[i + 1];
+        if (args[i] === '--port' && args[i + 1]) ctx.port = redactDevicePort(args[i + 1]);
         if (args[i] === '--file' && args[i + 1]) ctx.file = path.basename(args[i + 1]);
     }
     return ctx;
@@ -417,7 +417,7 @@ function updateDeviceStatusBar() {
         const wsMatch = gRemoteDevicePort.match(/^ws:([^,]+)/);
         const portLabel = wsMatch ? `[OK] ${wsMatch[1]}` : gRemoteDevicePort;
         deviceStatusBarItem.text = `${portLabel}`;
-        deviceStatusBarItem.tooltip = `Connected to ${gRemoteDevicePort.startsWith('ws:') ? gRemoteDevicePort.split(',')[0] : gRemoteDevicePort}`;
+        deviceStatusBarItem.tooltip = `Connected to ${redactDevicePort(gRemoteDevicePort)}`;
         deviceStatusBarItem.backgroundColor = undefined;
     } else {
         deviceStatusBarItem.text = '[OK] No Device';
@@ -710,7 +710,7 @@ function activate(context) {
                         }
                     }
 
-                    console.log('Device port:', gRemoteDevicePort, 'Code dir:', gDeviceCodeDir, 'Firmware:', gDeviceFirmware);
+                    console.log('Device port:', redactDevicePort(gRemoteDevicePort), 'Code dir:', gDeviceCodeDir, 'Firmware:', gDeviceFirmware);
                 }
             );
         })
@@ -759,7 +759,7 @@ function activate(context) {
             outputChannel.appendLine(`[Run Command] Initiating execution process...`);
             outputChannel.appendLine(`[Run Command] Target File: ${filePath}`);
             outputChannel.appendLine(`[Run Command] Selected Target: ${currentTarget}`);
-            outputChannel.appendLine(`[Run Command] Selected Port: ${runPort}`);
+            outputChannel.appendLine(`[Run Command] Selected Port: ${redactDevicePort(runPort)}`);
             outputChannel.appendLine(`[Run Command] Firmware Mode: ${gDeviceFirmware}`);
 
             // ── CircuitPython: mpremote mount not supported — use mpremote run ──────
@@ -771,10 +771,10 @@ function activate(context) {
             if (currentTarget !== 'Host' && !isCircuitPython) {
                 // Run on MCU (MicroPython) uses the daemon.
                 if (!connectionManager.isConnected && gRemoteDevicePort) {
-                    outputChannel.appendLine(`[Run Command] Connecting daemon process to port ${gRemoteDevicePort}...`);
+                    outputChannel.appendLine(`[Run Command] Connecting daemon process to port ${redactDevicePort(gRemoteDevicePort)}...`);
                     await connectionManager.connect(gRemoteDevicePort);
                 } else if (connectionManager.isConnected && connectionManager.isSuspended) {
-                    outputChannel.appendLine(`[Run Command] Resuming daemon process on port ${gRemoteDevicePort}...`);
+                    outputChannel.appendLine(`[Run Command] Resuming daemon process on port ${redactDevicePort(gRemoteDevicePort)}...`);
                     await connectionManager.resume();
                 }
             }
@@ -808,7 +808,7 @@ function activate(context) {
                     '--file', filePath,
                     '--no-reset'
                 ];
-                outputChannel.appendLine(`[Run Command] CircuitPython: Queueing backend run on ${runPort}`);
+                outputChannel.appendLine(`[Run Command] CircuitPython: Queueing backend run on ${redactDevicePort(runPort)}`);
                 await wsQueue.run(() => _spawnAsync(venvPython, cpArgs), 'Run CircuitPython Script');
                 return;
             }
@@ -837,7 +837,7 @@ function activate(context) {
                     '--folder', gDeviceCodeDir,
                     '--file', filePath
                 ];
-                outputChannel.appendLine(`[Run Command] Host Target (Mount): Queueing backend run on ${runPort}`);
+                outputChannel.appendLine(`[Run Command] Host Target (Mount): Queueing backend run on ${redactDevicePort(runPort)}`);
             } else {
                 // Run on MCU — send file directly to device and run it (mpremote run <file>)
                 // Always used for: .mpy bytecode, wireless (ws:) connections, MCU target mode
@@ -848,9 +848,9 @@ function activate(context) {
                     '--port', runPort,
                     '--file', filePath
                 ];
-                outputChannel.appendLine(`[Run Command] MCU Target (CLI Run): Queueing backend run on ${runPort}`);
+                outputChannel.appendLine(`[Run Command] MCU Target (CLI Run): Queueing backend run on ${redactDevicePort(runPort)}`);
             }
-            console.log(runArgs);
+            // Do not log raw backend arguments: wireless ports contain WebREPL passwords.
 
             await wsQueue.run(() => _spawnAsync(venvPython, runArgs), `Run ${currentTarget} Script`);
         })
@@ -990,7 +990,7 @@ function activate(context) {
             const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
             const hrArgs = [scriptPath, '--python', venvPython, 'hard_reset', '--port', gRemoteDevicePort];
 
-            vscode.window.showInformationMessage(`Sending hard reset to ${gRemoteDevicePort}...`);
+            vscode.window.showInformationMessage(`Sending hard reset to ${redactDevicePort(gRemoteDevicePort)}...`);
             try {
                 await wsQueue.run(() => _spawnAsync(venvPython, hrArgs));
             } catch (e) {
@@ -1419,7 +1419,7 @@ function activate(context) {
                     const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
                     deviceFileExplorer.setPort(gRemoteDevicePort, gDeviceCodeDir, isCp);
                 }
-                vscode.window.showInformationMessage(`Device port set to: ${port}`);
+                vscode.window.showInformationMessage(`Device port set to: ${redactDevicePort(port)}`);
             }
         })
     );
@@ -1561,7 +1561,7 @@ function activate(context) {
                     await updateCfgComponent(cfgPath, 'device', 'last_flashed_board', result.board);
                     // Update status bar tooltip to show firmware version
                     if (deviceStatusBarItem) {
-                        deviceStatusBarItem.tooltip = `Connected to ${result.port} — firmware ${result.version}`;
+                        deviceStatusBarItem.tooltip = `Connected to ${redactDevicePort(result.port)} — firmware ${result.version}`;
                     }
                 }
             } else {
