@@ -15,8 +15,10 @@ suite('Firmware-first debugger workflow', () => {
         assert.ok(dbg.includes("micropython-ide.flashDebugFirmware"));
     });
     test('REPL port and debugger port must be different', () => {
-        assert.ok(dbg.includes("candidate.toUpperCase() === replPort.toUpperCase()"));
-        assert.ok(dbg.includes("debugger requires the OTHER COM port"));
+        const settings = fs.readFileSync(path.join(__dirname, '..', 'src', 'debugAdapterSettings.js'), 'utf8');
+        assert.ok(dbg.includes("chooseDebugAdapter(normalizeSerialPort(replPort))"));
+        assert.ok(settings.includes("samePort(candidate, repl)"));
+        assert.ok(settings.includes("Debugger COM and USB REPL COM must be different"));
     });
     test('firmware command navigates only, never flashes or overwrites boot.py', () => {
         assert.ok(ext.includes("board.download_url"));
