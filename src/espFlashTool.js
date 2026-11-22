@@ -834,28 +834,28 @@ function getWebviewContent(ports, initialSettings) {
                     <input type="checkbox" id="check-0" class="advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" ${initialSettings.rows[0].enabled ? 'checked' : ''} onchange="saveConfig()">
                     <input type="text" class="file-path" id="path-0" value="${escapeFlashHtml(initialSettings.rows[0].path)}" placeholder="Select MicroPython bin file..." onchange="saveConfig()">
                     <button class="btn btn-sm" onclick="browseFile(0)">Browse...</button>
-                    <input type="text" class="offset advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="offset-0" value="${initialSettings.rows[0].offset}" placeholder="0x1000" onchange="saveConfig()">
+                    <input type="text" class="offset advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="offset-0" value="${escapeFlashHtml(initialSettings.rows[0].offset)}" placeholder="0x1000" onchange="saveConfig()">
                 </div>
                 <!-- Row 2 -->
                 <div class="binary-row advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="row-wrap-1">
                     <input type="checkbox" id="check-1" ${initialSettings.rows[1].enabled ? 'checked' : ''} onchange="saveConfig()">
-                    <input type="text" class="file-path" id="path-1" value="${initialSettings.rows[1].path}" placeholder="Additional binary (e.g. bootloader)..." onchange="saveConfig()">
+                    <input type="text" class="file-path" id="path-1" value="${escapeFlashHtml(initialSettings.rows[1].path)}" placeholder="Additional binary (e.g. bootloader)..." onchange="saveConfig()">
                     <button class="btn btn-sm" onclick="browseFile(1)">Browse...</button>
-                    <input type="text" class="offset" id="offset-1" value="${initialSettings.rows[1].offset}" placeholder="0x0" onchange="saveConfig()">
+                    <input type="text" class="offset" id="offset-1" value="${escapeFlashHtml(initialSettings.rows[1].offset)}" placeholder="0x0" onchange="saveConfig()">
                 </div>
                 <!-- Row 3 -->
                 <div class="binary-row advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="row-wrap-2">
                     <input type="checkbox" id="check-2" ${initialSettings.rows[2].enabled ? 'checked' : ''} onchange="saveConfig()">
-                    <input type="text" class="file-path" id="path-2" value="${initialSettings.rows[2].path}" placeholder="Additional binary (e.g. partitions)..." onchange="saveConfig()">
+                    <input type="text" class="file-path" id="path-2" value="${escapeFlashHtml(initialSettings.rows[2].path)}" placeholder="Additional binary (e.g. partitions)..." onchange="saveConfig()">
                     <button class="btn btn-sm" onclick="browseFile(2)">Browse...</button>
-                    <input type="text" class="offset" id="offset-2" value="${initialSettings.rows[2].offset}" placeholder="0x8000" onchange="saveConfig()">
+                    <input type="text" class="offset" id="offset-2" value="${escapeFlashHtml(initialSettings.rows[2].offset)}" placeholder="0x8000" onchange="saveConfig()">
                 </div>
                 <!-- Row 4 -->
                 <div class="binary-row advanced-only ${initialSettings.advanced ? '' : 'hidden-advanced'}" id="row-wrap-3">
                     <input type="checkbox" id="check-3" ${initialSettings.rows[3].enabled ? 'checked' : ''} onchange="saveConfig()">
-                    <input type="text" class="file-path" id="path-3" value="${initialSettings.rows[3].path}" placeholder="Additional binary (e.g. ota)..." onchange="saveConfig()">
+                    <input type="text" class="file-path" id="path-3" value="${escapeFlashHtml(initialSettings.rows[3].path)}" placeholder="Additional binary (e.g. ota)..." onchange="saveConfig()">
                     <button class="btn btn-sm" onclick="browseFile(3)">Browse...</button>
-                    <input type="text" class="offset" id="offset-3" value="${initialSettings.rows[3].offset}" placeholder="0xe000" onchange="saveConfig()">
+                    <input type="text" class="offset" id="offset-3" value="${escapeFlashHtml(initialSettings.rows[3].offset)}" placeholder="0xe000" onchange="saveConfig()">
                 </div>
             </div>
         </div>
