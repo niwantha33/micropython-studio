@@ -24,6 +24,21 @@ function validateDebugPort(value, replPort) {
     return null;
 }
 
+/**
+ * Only suggest (never auto-select) a possible second CDC when the same
+ * physical board exposes two ports with a reliable, non-empty serial and
+ * a matching VID:PID. Shared VID:PID alone is not sufficient evidence.
+ */
+function findPotentialDebugPorts(replPort, devices) {
+    if (!Array.isArray(devices)) return [];
+    const repl = devices.find(device => samePort(device?.port, replPort));
+    if (!repl || !repl.serial || repl.serial === 'None' ||
+        !repl.vidpid || repl.vidpid === '0000:0000') return [];
+    return devices.filter(device => device && !samePort(device.port, replPort) &&
+        !validateDebugPort(device.port, replPort) &&
+        device.serial === repl.serial && device.vidpid === repl.vidpid);
+}
+
 async function findDebugConfigPath(folder) {
     const startDir = folder?.uri?.fsPath ||
         vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
@@ -135,6 +150,6 @@ async function chooseDebugAdapter(configPath, replPort, options = {}) {
 }
 
 module.exports = {
-    chooseDebugAdapter, findDebugConfigPath, validateDebugPort,
+    chooseDebugAdapter, findDebugConfigPath, findPotentialDebugPorts, validateDebugPort,
     DEBUG_SECTION, DEBUG_PORT_KEY
 };
