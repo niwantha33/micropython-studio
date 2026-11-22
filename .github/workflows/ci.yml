@@ -140,10 +140,10 @@ jobs:
           name: vsix-package
           path: ./
       - name: Publish to VS Code Marketplace
-        run: npx vsce publish --packagePath $(ls *.vsix | head -n1) -p ${{ secrets.VSCE_PAT }}
+        run: npx vsce publish --packagePath "$(ls *.vsix | head -n1)"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
       - name: Publish to Open VSX
-        run: npx ovsx publish $(ls *.vsix | head -n1) -p ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish "$(ls *.vsix | head -n1)" --pat "$OVSX_PAT"
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
