@@ -15,6 +15,7 @@ const fs = require('fs');
 const pathMod = require('path');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 const wsQueue = require('./wsQueue');
+const { isSafeDeviceEntryName } = require('./pathSafety');
 
 const execFileAsync = promisify(execFile);
 
@@ -627,6 +628,10 @@ async function renameDeviceFile(port, oldPath, provider) {
     });
 
     if (!newName) return;
+    if (!isSafeDeviceEntryName(newName)) {
+        vscode.window.showErrorMessage('Invalid file name: use one name without slash, backslash or control characters.');
+        return;
+    }
 
     const parent = oldPath.split('/').slice(0, -1).join('/') || '/';
     const newPath = parent === '/' ? `/${newName}` : `${parent}/${newName}`;
@@ -715,6 +720,10 @@ async function newDeviceFolder(port, parentPath, provider) {
     });
 
     if (!folderName) return;
+    if (!isSafeDeviceEntryName(folderName)) {
+        vscode.window.showErrorMessage('Invalid folder name: use one name without slash, backslash or control characters.');
+        return;
+    }
 
     const newPath = parentPath === '/' ? `/${folderName}` : `${parentPath}/${folderName}`;
 
