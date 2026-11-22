@@ -29,6 +29,8 @@ function htmlForMemoryAnalyzer(nonce) {
         '<div class="grid">',
         '<div class="stat">Allocated<div id="allocated" class="value">—</div></div>',
         '<div class="stat">Free heap<div id="free" class="value">—</div></div>',
+        '<div class="stat">Heap used %<div id="heapPercent" class="value">—</div></div>',
+        '<div class="stat">GC threshold<div id="threshold" class="value">—</div></div>',
         '<div class="stat">Observed peak<div id="peak" class="value">—</div></div>',
         '<div class="stat">Observed growth<div id="growth" class="value">—</div></div>',
         '<div class="stat">Last manual GC reclaimed<div id="reclaimed" class="value">—</div></div>',
@@ -48,6 +50,7 @@ function htmlForMemoryAnalyzer(nonce) {
         'function line(key,color){const points=good.map((r,i)=>[30+(i/(Math.max(1,good.length-1)))*748,200-(r[key]/max)*175].join(",")).join(" ");const el=document.createElementNS(ns,"polyline");el.setAttribute("points",points);el.setAttribute("fill","none");el.setAttribute("stroke",color);el.setAttribute("stroke-width","2.5");svg.appendChild(el);}',
         'line("allocated","#4b9cf5");line("free","#38b58b");}',
         'function render(summary){records=summary.samples;text("allocated",size(summary.latest&&summary.latest.allocated));text("free",size(summary.latest&&summary.latest.free));text("peak",size(summary.allocatedHighWater));text("growth",size(summary.observedGrowth));',
+        'const latest=summary.latest;text("heapPercent",latest&&latest.total>0&&latest.allocated!==null?(100*latest.allocated/latest.total).toFixed(1)+"%":"N/A");text("threshold",size(latest&&latest.threshold));',
         'const lastGc=records.filter(r=>r.collected).slice(-1)[0];text("reclaimed",size(lastGc&&lastGc.reclaimed));text("gcTime",lastGc&&lastGc.gcTimeUs!==null?(lastGc.gcTimeUs/1000).toFixed(2)+" ms":"N/A");',
         'const body=$("history");while(body.firstChild)body.removeChild(body.firstChild);records.slice(-40).reverse().forEach(r=>{const tr=document.createElement("tr");',
         'const vals=[new Date(r.timestamp).toLocaleTimeString(),r.collected?"Manual GC":"Snapshot",size(r.allocated),size(r.free),r.collected?size(r.reclaimed):"—",r.gcTimeUs===null?"—":(r.gcTimeUs/1000).toFixed(2)+" ms"];',
@@ -67,6 +70,7 @@ class MemoryAnalyzer {
         this.context = context;
         this.getPort = getPort;
         this.samples = [];
+        this.currentPort = null;
         this.panel = null;
         this.busy = false;
     }
@@ -113,6 +117,12 @@ class MemoryAnalyzer {
             if (vscode.debug.activeDebugSession?.type === 'micropython-studio') {
                 throw new Error('Stop the native debug session before probing the REPL to avoid modifying paused execution.');
             }
+            if (this.currentPort && this.currentPort !== port) {
+                // Do not mix heap measurements from different boards in one chart.
+                this.samples = [];
+                this.publish();
+            }
+            this.currentPort = port;
             this.status(collect ? 'Running explicitly requested GC...' : 'Reading heap without collecting GC...', false);
             const output = await queue.run(async () => {
                 // Connection can change while this operation waits in the queue.
