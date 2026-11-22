@@ -13,6 +13,7 @@ const net = require('net');
 const { getConnectedDevices } = require('./runCommand');
 const { getDeviceSecret } = require('./deviceSecrets');
 const { getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
+const { selectConfiguredPort, isSavedUsbPort } = require('./devicePortSelection');
 
 let outputChannel = null;
 
@@ -68,8 +69,9 @@ async function findProjectRoot(startDir) {
 }
 
 /**
- * Group connected devices by physical USB serial number and filter out secondary CDC ports.
- * The primary port is assumed to be the one with the lowest numerical or lexicographical port ID.
+ * Suggest a first-time REPL port when a physical device exposes multiple CDC ports.
+ * IMPORTANT: the lowest COM number is only a heuristic. Never use this filter
+ * to override an explicitly saved project port or infer the debugger interface.
  * @param {Array<{port: string, serial: string, vidpid: string}>} devices
  * @returns {Array<{port: string, serial: string, vidpid: string}>}
  */
@@ -103,7 +105,7 @@ function filterDualCdcPorts(devices) {
             groupDevices.sort((a, b) => comparePorts(a.port, b.port));
             
             // The first one is primary (REPL), all others are secondary (debug/RTA)
-            const logStr = `[Port Detection] Dual-CDC detected for serial ${ser}: Primary REPL = ${groupDevices[0].port}, Debug/Secondary = ${groupDevices.slice(1).map(x => x.port).join(', ')}`;
+            const logStr = `[Port Detection] Multiple CDC ports for serial ${ser}: suggested initial USB port ${groupDevices[0].port}, additional ports ${groupDevices.slice(1).map(x => x.port).join(', ')} (manual selection takes priority)`;
             console.log(logStr);
             try {
                 getOutputChannel().appendLine(logStr);
@@ -123,7 +125,7 @@ function filterDualCdcPorts(devices) {
  * Reads the project's device.cfg and matches against connected devices.
  *
  * @param {vscode.Uri} [resource] - Optional folder URI (from explorer context menu)
- * @returns {Promise<[string|null, string|null, string]>} [devicePort, deviceCodeDir, deviceFirmware]
+ * @returns {Promise<[string|null, string|null, string, string|null]>} [devicePort, deviceCodeDir, deviceFirmware, exactConfigPath]
  */
 async function getValidDevicePort(resource) {
     let gRemoteDevicePort = null;
@@ -140,7 +142,7 @@ async function getValidDevicePort(resource) {
             startDir = workspaceFolders[0].uri.fsPath;
         } else {
             vscode.window.showWarningMessage('No workspace folder open. Please open a MicroPython project first.');
-            return [null, null, 'MicroPython'];
+            return [null, null, 'MicroPython', null];
         }
     }
 
@@ -150,7 +152,7 @@ async function getValidDevicePort(resource) {
         vscode.window.showWarningMessage(
             'No device.cfg found. Please create a project first or run from the project root folder.'
         );
-        return [null, null, 'MicroPython'];
+        return [null, null, 'MicroPython', null];
     }
 
     const configPath = path.join(projectDir, 'device.cfg');
@@ -159,68 +161,46 @@ async function getValidDevicePort(resource) {
     const devId = await getConfigValue(configPath, 'device', 'deviceId');
 
     const devicesRaw = await getConnectedDevices();
-    const devices = filterDualCdcPorts(devicesRaw);
-
-    const logMsg = (msg) => {
-        console.log(msg);
-        try {
-            getOutputChannel().appendLine(msg);
-        } catch (_) {}
+    const logMsg = (message) => {
+        console.log(message);
+        try { getOutputChannel().appendLine(message); } catch (_) {}
     };
-
-    logMsg(`[Port Detection] Raw connected devices: ${JSON.stringify(devicesRaw)}`);
-    logMsg(`[Port Detection] Filtered connected devices (REPL candidates): ${JSON.stringify(devices)}`);
-
-    if (devices.length > 0) {
-        // Step 1: Priority check — is the savedPort still available and matching the deviceId?
-        // This is critical for Dual-CDC devices where multiple ports share the same VID:PID.
-        const exactMatch = devices.find(d => d.port === savedPort && d.vidpid === devId);
-        
-        if (exactMatch) {
-            gRemoteDevicePort = savedPort;
-            logMsg(`[Port Detection] Matched saved port: ${savedPort}`);
+    // Manual port selection is authoritative. In particular, the REPL CDC
+    // port can have exactly the same VID:PID and serial number as debug CDC.
+    // A refresh must not change [device] port based on VID:PID or COM ordering.
+    const preferred = selectConfiguredPort(savedPort, devicesRaw);
+    if (preferred.port) {
+        gRemoteDevicePort = preferred.port;
+        if (preferred.present) {
+            logMsg(`[Port Detection] Using configured port ${redactDevicePort(preferred.port)} from ${configPath}`);
         } else {
-            // Step 2: Fallback — find ANY device that matches the deviceId
-            for (const device of devices) {
-                const devicePort = device.port;
-                const vidpid = device.vidpid;
-
-                if (devId && devId !== 'undefined' && devId === vidpid) {
-                    // Match by device ID — update port if it transitioned to a new COM port
-                    gRemoteDevicePort = devicePort;
-                    if (savedPort !== devicePort) {
-                        console.log(`Device ID match found at new port: ${devicePort}`);
-                        await updateCfgComponent(configPath, 'device', 'port', devicePort);
-                    }
-                    break;
-                } else if (!devId || devId === 'undefined') {
-                    // No saved device ID — ask user to confirm
-                    if (vidpid !== '0000:0000') {
-                        const confirm = await vscode.window.showInformationMessage(
-                            `Found device at ${devicePort} (ID: ${vidpid}). Use this device?`,
-                            'Yes', 'No', 'Skip All'
-                        );
-
-                        if (confirm === 'Yes') {
-                            gRemoteDevicePort = devicePort;
-                            await updateCfgComponent(configPath, 'device', 'deviceId', vidpid);
-                            await updateCfgComponent(configPath, 'device', 'port', devicePort);
-                            break;
-                        } else if (confirm === 'Skip All') {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (gRemoteDevicePort) {
-            console.log(`Selected device: ${redactDevicePort(gRemoteDevicePort)}`);
-        } else {
-            vscode.window.showWarningMessage('No matching device found. Using saved port from config.');
+            logMsg(`[Port Detection] Configured port ${redactDevicePort(preferred.port)} is not currently detected; preserving device.cfg without changes.`);
+            vscode.window.showWarningMessage(
+                `Configured port ${redactDevicePort(preferred.port)} is unavailable. It will not be automatically replaced. Select another port manually if the COM number changed.`
+            );
         }
     } else {
-        vscode.window.showWarningMessage('No connected devices detected.');
+        // First-time setup only. Never guess that a matching VID:PID uniquely
+        // identifies the REPL interface, because dual-CDC devices share it.
+        const candidates = filterDualCdcPorts(devicesRaw);
+        if (candidates.length === 0) {
+            logMsg('[Port Detection] No connected USB devices detected for initial selection.');
+        }
+        for (const device of candidates) {
+            if (!device.port || device.vidpid === '0000:0000') continue;
+            const matchingId = devId && devId !== 'undefined' && device.vidpid === devId;
+            const answer = await vscode.window.showInformationMessage(
+                `Select ${device.port} as the MicroPython REPL port${matchingId ? ' (saved device ID matches)' : ''}? Confirm this is the REPL USB interface, not the debugger interface.`,
+                'Use This Port', 'Next', 'Cancel'
+            );
+            if (answer === 'Use This Port') {
+                await updateCfgComponent(configPath, 'device', 'port', device.port);
+                await updateCfgComponent(configPath, 'device', 'deviceId', device.vidpid);
+                gRemoteDevicePort = device.port;
+                break;
+            }
+            if (!answer || answer === 'Cancel') break;
+        }
     }
 
     // ── WebREPL auto-connect — try BEFORE falling back to saved COM port ─────
@@ -248,15 +228,13 @@ async function getValidDevicePort(resource) {
         }
     }
 
-    // Last resort: fall back to the saved COM port from device.cfg
-    if (!gRemoteDevicePort || gRemoteDevicePort === 'NOT_SET') {
-        gRemoteDevicePort = savedPort;
-    }
+    // Do not resurrect NOT_SET as a usable serial port.
+    if (!gRemoteDevicePort && isSavedUsbPort(savedPort)) gRemoteDevicePort = savedPort.trim();
 
     deviceCodeDir = await getConfigValue(configPath, 'filePath', 'deviceCodeDir');
     const deviceFirmware = await getConfigValue(configPath, 'device', 'device_firmware');
 
-    return [gRemoteDevicePort, deviceCodeDir, deviceFirmware || 'MicroPython'];
+    return [gRemoteDevicePort, deviceCodeDir, deviceFirmware || 'MicroPython', configPath];
 }
 
 module.exports = { getValidDevicePort };
