@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const net = require('net');
 const { getConnectedDevices } = require('./runCommand');
+const { getDeviceSecret } = require('./deviceSecrets');
 const { getConfigValue, updateCfgComponent } = require('./commonFxn');
 
 let outputChannel = null;
@@ -229,19 +230,19 @@ async function getValidDevicePort(resource) {
     if (!gRemoteDevicePort) {
         const webReplEnabled  = await getConfigValue(configPath, 'remote', 'webrepl_enabled');
         const webReplIp       = await getConfigValue(configPath, 'remote', 'webrepl_ip');
-        const webReplPassword = await getConfigValue(configPath, 'remote', 'webrepl_password');
+        const webReplPassword = await getDeviceSecret(configPath, 'webrepl_password');
 
         if (webReplEnabled === 'true' && webReplIp) {
             const reachable = await checkWebReplReachable(webReplIp);
-            if (reachable) {
-                gRemoteDevicePort = `ws:${webReplIp},${webReplPassword || 'micro123'}`;
+            if (reachable && webReplPassword) {
+                gRemoteDevicePort = `ws:${webReplIp},${webReplPassword}`;
                 vscode.window.showInformationMessage(
                     `📡 No USB device found — auto-connected wirelessly to ${webReplIp}`
                 );
             } else {
                 vscode.window.showWarningMessage(
-                    `No USB device found. Wireless device at ${webReplIp} is not reachable either. ` +
-                    `Check Wi-Fi or plug in USB.`
+                    `No USB device found. Wireless board ${webReplIp} is unreachable or its password is missing. ` +
+                    `Connect by USB to configure WebREPL.`
                 );
             }
         }
