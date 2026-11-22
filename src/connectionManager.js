@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const { samePort } = require('./devicePortSelection');
 
 let outputChannel = null;
 
@@ -104,7 +105,7 @@ class ConnectionManager extends EventEmitter {
 
     async connect(portName, baudRate = 115200) {
         if (this._connectPromise) {
-            if (this._connectingPort === portName) return this._connectPromise;
+            if (samePort(this._connectingPort, portName)) return this._connectPromise;
             try { await this._connectPromise; } catch (_) { /* retry the requested port */ }
         }
         this._connectingPort = portName;
@@ -121,7 +122,7 @@ class ConnectionManager extends EventEmitter {
 
     async _connectInternal(portName, baudRate) {
         logMsg(`[ConnectionManager] Connecting to port ${portName}...`);
-        if (this.isConnected && this.portName === portName) {
+        if (this.isConnected && samePort(this.portName, portName)) {
             logMsg(`[ConnectionManager] Already connected to ${portName}`);
             return;
         }
