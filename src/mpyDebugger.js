@@ -36,7 +36,7 @@ function connectNativeDebugger(context, debugPort, venvPython, onEvent) {
     if (panel) throw new Error('A MicroPython debug connection is already open. Close the existing debugger panel first.');
     if (typeof onEvent !== 'function') throw new Error('Native debugger event sink is required.');
     nativeEventSink = onEvent;
-    try { openDebuggerPanel(context, debugPort, venvPython); }
+    try { openDebuggerPanel(context, debugPort, venvPython, true); }
     catch (error) { nativeEventSink = null; throw error; }
 }
 
@@ -127,27 +127,65 @@ function extractLocalNames(text, defLine, args) {
 // Map module:func -> array of local names
 const localNamesByFn = new Map();
 
-function openDebuggerPanel(context, port, venvPython) {
+/**
+ * Native DAP sessions must not also open a second debugger editor panel.
+ * The existing bridge controller uses the webview as an optional event sink,
+ * so supply a strictly internal no-op sink in native mode. This object owns
+ * no VS Code editor or second COM connection, but retains deterministic
+ * disposal of the bridge and breakpoint listeners.
+ */
+function createHeadlessDebuggerPanel() {
+    let disposed = false;
+    const disposeListeners = new Set();
+    return {
+        nativeOnly: true,
+        webview: {
+            html: '',
+            postMessage() { return Promise.resolve(true); },
+            onDidReceiveMessage() { return { dispose() {} }; }
+        },
+        reveal() {},
+        onDidDispose(listener) {
+            disposeListeners.add(listener);
+            return { dispose() { disposeListeners.delete(listener); } };
+        },
+        dispose() {
+            if (disposed) return;
+            disposed = true;
+            for (const listener of [...disposeListeners]) {
+                try { listener(); } catch (error) { console.error('[MicroPython Debug] Shutdown:', error); }
+            }
+            disposeListeners.clear();
+        }
+    };
+}
+
+function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     if (panel) {
         panel.reveal();
         return;
     }
-    panel = vscode.window.createWebviewPanel(
-        'mpyDebugger',
-        `MPy Debugger (${port})`,
-        vscode.ViewColumn.Beside,
-        { enableScripts: true, retainContextWhenHidden: true }
-    );
-    const buildInfo = getBuildInfo(context.extensionPath, context.extensionMode);
-    panel.webview.html = getHtml(buildInfo);
+    if (nativeOnly) {
+        // Native VS Code Variables, Call Stack and Breakpoints are the UI.
+        panel = createHeadlessDebuggerPanel();
+    } else {
+        panel = vscode.window.createWebviewPanel(
+            'mpyDebugger',
+            `MPy Debugger (${port})`,
+            vscode.ViewColumn.Beside,
+            { enableScripts: true, retainContextWhenHidden: true }
+        );
+        const buildInfo = getBuildInfo(context.extensionPath, context.extensionMode);
+        panel.webview.html = getHtml(buildInfo);
+    }
 
-    hlDeco = vscode.window.createTextEditorDecorationType({
+    if (!nativeOnly) hlDeco = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(255, 200, 0, 0.25)',
         isWholeLine: true,
         overviewRulerColor: '#ffa500',
         overviewRulerLane: vscode.OverviewRulerLane.Full,
     });
-    stepInDeco = vscode.window.createTextEditorDecorationType({
+    if (!nativeOnly) stepInDeco = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(0, 180, 220, 0.25)',
         isWholeLine: true,
         overviewRulerColor: '#00b4dc',
@@ -155,6 +193,7 @@ function openDebuggerPanel(context, port, venvPython) {
     });
 
     async function highlightLine(fsPath, line1, useStepInColor) {
+        if (nativeOnly) return; // DAP stopped/stackTrace drives editor focus.
         try {
             const doc = await vscode.workspace.openTextDocument(fsPath);
             const ed = await vscode.window.showTextDocument(doc, { preserveFocus: false, viewColumn: vscode.ViewColumn.One });
@@ -927,6 +966,12 @@ function openDebuggerPanel(context, port, venvPython) {
     });
     bridge.stderr.on('data', (d) => {
         if (panel) panel.webview.postMessage({ evt: 'stderr', text: d.toString() });
+        emitNative({ evt: 'stderr', text: d.toString() });
+    });
+    bridge.on('error', (error) => {
+        const message = 'Cannot start MicroPython debugger bridge: ' + error.message;
+        if (panel) panel.webview.postMessage({ evt: 'error', msg: message });
+        emitNative({ evt: 'transport_lost', msg: message });
     });
     bridge.on('close', () => {
         if (panel) panel.webview.postMessage({ evt: 'closed' });
