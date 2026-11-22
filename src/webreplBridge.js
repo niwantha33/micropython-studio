@@ -122,9 +122,10 @@ async function openWebReplTerminal(context, devicePort) {
         // Reserved 4 bytes at offset 12‑15
         rec.writeUInt32LE(0, 12);
         // Name length
-        rec.writeUInt16LE(name.length, 16);
-        // Name
-        Buffer.from(name).copy(rec, 18);
+        const nameBytes = Buffer.from(name, 'utf8');
+        rec.writeUInt16LE(nameBytes.length, 16);
+        // Name (maximum 64 UTF-8 bytes in WebREPL protocol)
+        nameBytes.copy(rec, 18);
         client.send(rec);
     }
     function statusMsg(text) {
@@ -219,6 +220,14 @@ async function openWebReplTerminal(context, devicePort) {
                     binaryState = 23;
                 } else {
                     if (incomingBuf.length < 2 + sz) return; // Wait for full chunk
+                    if (getAccum.length + sz > MAX_WEBREPL_FILE_BYTES) {
+                        statusMsg('Download stopped: file exceeds the safety limit.');
+                        getAccum = [];
+                        incomingBuf = Buffer.alloc(0);
+                        binaryState = 0;
+                        client.disconnect();
+                        return;
+                    }
                     const chunk = incomingBuf.slice(2, 2 + sz);
                     for (let i = 0; i < chunk.length; i++) getAccum.push(chunk[i]);
                     incomingBuf = incomingBuf.slice(2 + sz);
@@ -250,6 +259,12 @@ async function openWebReplTerminal(context, devicePort) {
     }
 
     client.onData = (buf) => {
+        if (incomingBuf.length + buf.length > MAX_WEBREPL_FILE_BYTES + 65536) {
+            incomingBuf = Buffer.alloc(0);
+            statusMsg('WebREPL transfer stopped: receive buffer exceeded safety limit.');
+            client.disconnect();
+            return;
+        }
         incomingBuf = Buffer.concat([incomingBuf, buf]);
         processIncoming();
     };
@@ -285,8 +300,8 @@ async function openWebReplTerminal(context, devicePort) {
             client.sendText(Buffer.from(msg.data));
         } else if (msg.type === 'putFile') {
             if (binaryState !== 0) return;
-            if (!isSafeDeviceEntryName(msg.name) || !Array.isArray(msg.bytes) ||
-                msg.bytes.length > MAX_WEBREPL_FILE_BYTES) {
+            if (!isSafeDeviceEntryName(msg.name) || Buffer.byteLength(msg.name, 'utf8') > 64 ||
+                !Array.isArray(msg.bytes) || msg.bytes.length > MAX_WEBREPL_FILE_BYTES) {
                 statusMsg('Upload rejected: invalid filename or file too large.');
                 return;
             }
@@ -297,7 +312,7 @@ async function openWebReplTerminal(context, devicePort) {
             sendWaHeader(1, putName, putData.length);
         } else if (msg.type === 'getFile') {
             if (binaryState !== 0) return;
-            if (!isSafeDeviceEntryName(msg.name)) {
+            if (!isSafeDeviceEntryName(msg.name) || Buffer.byteLength(msg.name, 'utf8') > 64) {
                 statusMsg('Download rejected: invalid filename.');
                 return;
             }
