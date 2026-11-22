@@ -55,8 +55,14 @@ async function openDeviceTerminal(_context, devicePort) {
         'MCU script running on ' + devicePort + '. Output is live; press Ctrl+C to interrupt.'
     ));
     const onRunFinished = result => {
-        if (!result.success) emit(terminalNotice('MCU script ended with an error: ' + result.error));
-        emit('\r\n>>> ');
+        if (!result.success) {
+            emit(terminalNotice('MCU execution/serial error: ' + result.error +
+                '. Reconnect the REPL if no prompt appears.'));
+            return;
+        }
+        if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            emit('\r\n>>> ');
+        }
     };
     const onDebugState = state => {
         if (!state.replPort || !samePort(state.replPort, devicePort)) return;
