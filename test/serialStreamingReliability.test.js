@@ -15,7 +15,7 @@ suite('Known-good 2.6.1 serial transport compatibility', () => {
         assert.ok(terminalSource.includes('no reset or interrupt sent'));
         assert.ok(terminalSource.includes('Press Enter to see the REPL prompt'));
         assert.ok(!terminalSource.includes("connectionManager.disconnect()"));
-        assert.ok(daemonSource.includes('elif action == "terminal_input":'));
+        assert.ok(daemonSource.includes('if action == "terminal_input":'));
         assert.ok(daemonSource.includes('elif action == "run_in_terminal":'));
         assert.ok(!daemonSource.includes('elif action == "hard_reset":'));
         assert.ok(!daemonSource.includes('_run_terminal_worker'));
