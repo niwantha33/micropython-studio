@@ -119,9 +119,7 @@ class MpyDaemon:
         self.in_raw_repl = False
         self.suspended = False
         self._read_buf = b""
-        # Reconnect can be called by a write while this same thread holds the
-        # device lock. A plain Lock deadlocks on transient USB disconnects.
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         
         # New RX queue & lock
         self._rx_queue = bytearray()
@@ -130,13 +128,6 @@ class MpyDaemon:
         # Terminal input buffering
         self._terminal_input_buffer = b""
         self._input_buffer_limit = 4096
-        self._program_running = False
-        self._program_output_phase = False
-        self._pending_program_input = b''
-        self._program_state_lock = threading.Lock()
-        self._run_worker = None
-        self._event_lock = threading.Lock()
-        self._program_cancel = threading.Event()
 
     def _rx_loop(self):
         while self.running:
@@ -154,40 +145,21 @@ class MpyDaemon:
             except Exception as e:
                 if not self.suspended:
                     err_str = str(e)
-                    is_transient = isinstance(e, OSError) or any(
-                        term.lower() in err_str.lower() for term in (
-                            "device does not recognize", "handle is invalid",
-                            "PermissionError", "SerialException",
-                            "OSError", "Bad command", "access is denied",
-                            "device not functioning"
-                        )
-                    )
+                    is_transient = any(term in err_str for term in [
+                        "device does not recognize",
+                        "handle is invalid",
+                        "PermissionError",
+                        "SerialException",
+                        "OSError",
+                        "Bad command"
+                    ])
                     if is_transient and self.running:
-                        # A raw-REPL transaction cannot be safely continued
-                        # across USB disconnect/re-enumeration.
-                        if self._program_running:
-                            self._program_cancel.set()
-                        self.send_event("reconnecting", {"port": self.port})
-                        try:
-                            reconnected = self._try_reconnect()
-                        except Exception:
-                            reconnected = False
-                        if reconnected:
-                            # Never send Ctrl+C or reset during recovery.
-                            # Old partial REPL responses must not leak into
-                            # the newly opened USB CDC session.
-                            with self._rx_lock:
-                                self._rx_queue.clear()
-                                self._read_buf = b""
+                        if self._try_reconnect():
+                            # Reconnection is transport recovery, NOT permission
+                            # to interrupt whatever script is now running.
                             self.send_event("connected", {"port": self.port})
                             continue
-                    # A zombie daemon must not tell the UI it is connected.
-                    self.send_event("error", {
-                        "message": "USB serial connection lost on " + self.port +
-                                   "; reconnect the device and reopen Shell."
-                    })
-                    self.running = False
-                    break
+                    time.sleep(0.1)
 
     def _rx_read(self, n: int, timeout: float = 0.0) -> bytes:
         start = time.time()
@@ -297,9 +269,8 @@ class MpyDaemon:
         """Sends an event to the Node.js host over stdout."""
         msg = {"type": type_, **payload}
         # Print JSON separated by newline
-        with self._event_lock:
-            sys.stdout.write(json.dumps(msg) + "\n")
-            sys.stdout.flush()
+        sys.stdout.write(json.dumps(msg) + "\n")
+        sys.stdout.flush()
 
     def _try_reconnect(self, retries=50, delay=0.1) -> bool:
         """Tries to reopen the serial port after a transient disconnect (e.g. USB CDC reboot)."""
@@ -434,12 +405,7 @@ class MpyDaemon:
  
             i = 0
             while i < len(code_bytes):
-                stalled_since = time.monotonic()
                 while window_remain == 0:
-                    if time.monotonic() - stalled_since > 10.0:
-                        raise TimeoutError("Raw-paste flow-control stalled for 10 seconds")
-                    if self._program_cancel.is_set():
-                        raise RuntimeError("Run cancelled during USB recovery")
                     b = self._rx_read(1, timeout=0.01)
                     if b == b'\x01':
                         window_remain += window_size
@@ -486,134 +452,24 @@ class MpyDaemon:
 
         return stdout, stderr
 
-    def _emit_terminal_bytes(self, data: bytes):
-        if data:
-            import base64
-            self.send_event("terminal_data", {
-                "data": base64.b64encode(data).decode("ascii")
-            })
-
-    def _stream_raw_execution(self):
-        """Stream raw-REPL stdout/stderr while the MCU runs, even indefinitely.
-
-        The RX consumer switches from the normal terminal to this worker while
-        raw REPL is active. It never accumulates an unbounded output string.
-        """
-        buffer = self._read_buf
-        self._read_buf = b""
-        phase = 0  # stdout then stderr then final raw prompt
-        while self.running and not self.suspended and not self._program_cancel.is_set():
-            if not buffer:
-                buffer = self._rx_read(4096, timeout=0.05)
-                if not buffer:
-                    continue
-            if phase < 2:
-                marker = buffer.find(b"\x04")
-                if marker < 0:
-                    self._emit_terminal_bytes(buffer)
-                    buffer = b""
-                else:
-                    self._emit_terminal_bytes(buffer[:marker])
-                    buffer = buffer[marker + 1:]
-                    phase += 1
-            else:
-                marker = buffer.find(b">")
-                if marker >= 0:
-                    self._read_buf = buffer[marker + 1:]
-                    return
-                buffer = b""
-        raise RuntimeError("Serial connection ended before program finished")
-
-    def _run_terminal_worker(self, code: str):
-        try:
-            # Own the serial writer during raw-paste setup, then RELEASE it
-            # while the user program runs so Ctrl+C and explicit reset work.
-            with self._lock:
-                self.in_raw_repl = True
-                self._paced_serial_write(b'\r\x02\r\x03')
-                time.sleep(0.1)
-                self.enter_raw_repl()
-                self._do_raw_paste(code)
-                with self._program_state_lock:
-                    self._program_output_phase = True
-                    pending = self._pending_program_input
-                    self._pending_program_input = b""
-            if pending and not self._program_cancel.is_set():
-                with self._lock:
-                    self._paced_serial_write(pending)
-            self._stream_raw_execution()
-        except Exception as exc:
-            if not self._program_cancel.is_set():
-                self.send_event("error", {"message": "Script execution failed: " + str(exc)[:320]})
-        finally:
-            try:
-                with self._lock:
-                    # Never send Ctrl+B while an explicit reset is underway.
-                    was_cancelled = self._program_cancel.is_set()
-                    if self.serial and self.serial.is_open and not self.suspended and not was_cancelled:
-                        self.exit_raw_repl()
-                    self.in_raw_repl = False
-                    with self._program_state_lock:
-                        self._program_running = False
-                        self._program_output_phase = False
-                        self._pending_program_input = b""
-                    if not was_cancelled:
-                        self._flush_terminal_input()
-            except Exception as exc:
-                self.send_event("error", {"message": "REPL recovery failed: " + str(exc)[:320]})
-                self.in_raw_repl = False
-                self._program_running = False
-            self.send_event("run_finished", {})
-            if self.running and not self.suspended and not self._program_cancel.is_set():
-                self._emit_terminal_bytes(b"\r\n>>> ")
-
     def process_command(self, cmd: dict):
         action = cmd.get("action")
         
         if action == "terminal_input":
             import base64
             data = base64.b64decode(cmd["data"])
-            if self._program_running:
-                # While uploading raw-paste source, do not interleave serial
-                # writes. Once executing, send user input (including Ctrl+C)
-                # directly: the worker may be waiting on an endless program.
-                with self._program_state_lock:
-                    executing = self._program_output_phase
-                    if not executing:
-                        if b'\x03' in data:
-                            # Ctrl+C always wins over a queued paste. A user
-                            # must never lose the ability to stop the MCU.
-                            self._pending_program_input = b'\x03'
-                        elif len(self._pending_program_input) + len(data) <= self._input_buffer_limit:
-                            self._pending_program_input += data
-                        else:
-                            self.send_event("error", {"message": "REPL input buffer full. Paste smaller chunks."})
-                if executing:
+            with self._lock:
+                if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
+                    if len(self._terminal_input_buffer) + len(data) <= self._input_buffer_limit:
+                        self._terminal_input_buffer += data
+                else:
                     try:
-                        with self._lock:
-                            self._paced_serial_write(data)
-                    except Exception as exc:
-                        self.send_event("error", {"message": f"REPL input failed: {exc}"})
-            else:
-                with self._lock:
-                    if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
-                        if b'\x03' in data:
-                            self._terminal_input_buffer = b'\x03'
-                        elif len(self._terminal_input_buffer) + len(data) <= self._input_buffer_limit:
-                            self._terminal_input_buffer += data
-                        else:
-                            self.send_event("error", {"message": "REPL input buffer full. Paste smaller chunks."})
-                    else:
-                        try:
-                            self._paced_serial_write(data)
-                        except Exception as e:
-                            self.send_event("error", {"message": f"Write error: {e}"})
+                        self._paced_serial_write(data)
+                    except Exception as e:
+                        self.send_event("error", {"message": f"Write error: {e}"})
                     
         elif action == "run_code":
             req_id = cmd.get("id")
-            if self._program_running or self.suspended:
-                self.send_event("run_result", {"id": req_id, "success": False, "error": "REPL busy with script or device transfer"})
-                return
             code = cmd.get("code", "")
             
             with self._lock:
@@ -642,58 +498,34 @@ class MpyDaemon:
                     self._flush_terminal_input()
         elif action == "run_in_terminal":
             code = cmd.get("code", "")
-            request_id = cmd.get("id")
-            if self.suspended or not self.running or self._program_running or self.in_raw_repl:
-                self.send_event("run_started", {
-                    "id": request_id, "success": False,
-                    "error": "REPL is busy; stop the running script or wait for transfer to finish."
-                })
-                return
-            # Claim script ownership before starting the worker. The stdin
-            # command loop must remain responsive for interactive input/Ctrl+C.
-            with self._program_state_lock:
-                self._program_running = True
-                self._program_cancel.clear()
-                self._program_output_phase = False
-                self._pending_program_input = b""
-            self.send_event("run_started", {"id": request_id, "success": True})
-            self._run_worker = threading.Thread(
-                target=self._run_terminal_worker, args=(code,), daemon=True
-            )
-            self._run_worker.start()
-        elif action == "hard_reset":
-            # The daemon owns COM already: a second Python process must never
-            # open or kill the port owner just to perform an explicit reset.
-            request_id = cmd.get("id")
-            try:
-                with self._lock:
-                    if (self.suspended or
-                            not self.serial or not self.serial.is_open):
-                        raise RuntimeError("REPL port is busy or disconnected")
-                    # Cancel streaming run (if present) before changing DTR/RTS.
-                    self._program_cancel.set()
-                    self._paced_serial_write(b'\r\x03\x03')
+            with self._lock:
+                self.in_raw_repl = True
+                try:
+                    # Switch to friendly REPL first to reset state cleanly, then raw REPL
+                    self._paced_serial_write(b'\r\x02\r\x03')
                     time.sleep(0.1)
-                    self.serial.setRTS(True)
-                    self.serial.setDTR(False)
-                    time.sleep(0.1)
-                    self.serial.setRTS(False)
-                    time.sleep(0.5)
-                    # Soft-reboot after hardware reset, then stop main.py just
-                    # as the original explicit hard-reset command did.
-                    self._paced_serial_write(b'\r\x04')
-                    time.sleep(0.4)
-                    self._paced_serial_write(b'\r\x03\x03')
-                self.send_event("reset_result", {"id": request_id, "success": True})
-            except Exception as err:
-                self.send_event("reset_result", {
-                    "id": request_id, "success": False,
-                    "error": str(err)[:320]
-                })
+                    self.enter_raw_repl()
+                    stdout, stderr = self.exec_raw_paste(code)
+                    if stdout:
+                        import base64
+                        self.send_event("terminal_data", {
+                            "data": base64.b64encode(stdout.encode('utf-8', errors='replace')).decode('ascii')
+                        })
+                    if stderr:
+                        import base64
+                        self.send_event("terminal_data", {
+                            "data": base64.b64encode(stderr.encode('utf-8', errors='replace')).decode('ascii')
+                        })
+                except Exception as e:
+                    self.send_event("error", {"message": f"Run failed: {e}"})
+                finally:
+                    try:
+                        self.exit_raw_repl()
+                    except:
+                        pass
+                    self.in_raw_repl = False
+                    self._flush_terminal_input()
         elif action == "suspend":
-            if self._program_running:
-                self.send_event("error", {"message": "Stop the running script before transferring the serial port."})
-                return
             with self._lock:
                 self.suspended = True
                 if self.serial and self.serial.is_open:
