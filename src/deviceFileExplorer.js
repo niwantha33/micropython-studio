@@ -13,7 +13,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const pathMod = require('path');
-const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const { getVenvPythonPathFolder, getVenvPythonPath, redactDevicePort } = require('./commonFxn');
 const wsQueue = require('./wsQueue');
 const { isSafeDeviceEntryName } = require('./pathSafety');
 
@@ -248,7 +248,7 @@ class DeviceFileExplorerProvider {
                     return items;
                 } else if (result.retry) {
                     attempts++;
-                    console.warn(`Port ${this._port} is busy. Retry ${attempts}/${maxAttempts} in 1s...`);
+                    console.warn(`Port ${redactDevicePort(this._port)} is busy. Retry ${attempts}/${maxAttempts} in 1s...`);
                     await new Promise(r => setTimeout(r, 1000));
                     continue;
                 } else {
