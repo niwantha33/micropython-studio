@@ -11,9 +11,14 @@ const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const { getSimpleFlashProfile, prepareSimpleFirmwareRows } = require('./flashProfiles');
+const { normalizeSerialPort, samePort } = require('./devicePortSelection');
+const wsQueue = require('./wsQueue');
+const connectionManager = require('./connectionManager');
 
 let activePanel = null;
 let activeProcess = null;
+let flashPending = false;
 
 /**
  * Scan for connected serial ports using fast_port_scan.py.
@@ -55,10 +60,16 @@ function scanComPorts(context) {
  * @param {vscode.OutputChannel} outputChannel
  * @param {string|null} currentDevicePort
  */
-async function openEspFlashTool(context, outputChannel, currentDevicePort) {
+async function openEspFlashTool(context, outputChannel, currentDevicePort, options = {}) {
     if (activePanel) {
-        activePanel.reveal(vscode.ViewColumn.One);
-        return;
+        // Guided selections are explicit; don't silently keep an old chip/file
+        // from an already-open advanced panel.
+        if ((options.chipType || options.advanced) && !activeProcess && !flashPending) {
+            activePanel.dispose();
+        } else {
+            activePanel.reveal(vscode.ViewColumn.One);
+            return;
+        }
     }
 
     const panel = vscode.window.createWebviewPanel(
@@ -80,13 +91,22 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort) {
         { enabled: false, path: '', offset: '0x8000' },
         { enabled: false, path: '', offset: '0xe000' }
     ]);
-    const savedChipType = context.globalState.get('espFlash.chipType', 'esp32');
+    const savedChipType = options.chipType || context.globalState.get('espFlash.chipType', 'esp32');
     const savedSpiSpeed = context.globalState.get('espFlash.spiSpeed', '40m');
     const savedSpiMode = context.globalState.get('espFlash.spiMode', 'dio');
     const savedFlashSize = context.globalState.get('espFlash.flashSize', 'detect');
     const savedBaudRate = context.globalState.get('espFlash.baudRate', '460800');
-    const savedPort = context.globalState.get('espFlash.port', currentDevicePort || '');
-    const savedAdvanced = context.globalState.get('espFlash.advanced', false);
+    // The active project's adapter wins over stale cross-project globalState.
+    const storedPort = currentDevicePort && !/^wss?:/i.test(currentDevicePort)
+        ? currentDevicePort : context.globalState.get('espFlash.port', '');
+    const savedPort = normalizeSerialPort(storedPort);
+    const savedAdvanced = options.advanced === true || !getSimpleFlashProfile(savedChipType);
+    let firmwareRows = savedAdvanced ? savedRows : prepareSimpleFirmwareRows(savedChipType, savedRows);
+    if (options.firmwareFile && typeof options.firmwareFile === 'string') {
+        firmwareRows = firmwareRows.map((row, index) => index === 0
+            ? { ...row, enabled: true, path: options.firmwareFile }
+            : row);
+    }
 
     // Get current COM ports list
     const portsList = await scanComPorts(context);
@@ -95,7 +115,7 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort) {
     panel.webview.html = getWebviewContent(
         portsList,
         {
-            rows: savedRows,
+            rows: firmwareRows,
             chipType: savedChipType,
             spiSpeed: savedSpiSpeed,
             spiMode: savedSpiMode,
