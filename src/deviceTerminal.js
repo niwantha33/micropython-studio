@@ -65,7 +65,7 @@ async function openDeviceTerminal(_context, devicePort) {
 
     const listeners = [
         ['data', onData], ['connected', onConnected],
-        ['disconnected', onDisconnected], ['error', onError],
+        ['disconnected', onDisconnected], ['reconnecting', onReconnecting], ['error', onError],
     ];
     for (const [name, listener] of listeners) connectionManager.on(name, listener);
 
