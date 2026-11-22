@@ -28,6 +28,7 @@ const { initializeSecretStorage, getDeviceSecret } = require('./deviceSecrets');
 const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
 const { registerNativeDebugger } = require('./nativeDebugger');
+const { chooseDebugAdapter } = require('./debugAdapterConfig');
 const { MemoryAnalyzer } = require('./memoryAnalyzer');
 const { openWebReplTerminal } = require('./webreplBridge.js');
 const { startSimulator, stopSimulator } = require('./simulator');
@@ -52,6 +53,7 @@ let deviceStatusBarItem = null;
 let deviceFileExplorer = null;
 let deviceFileTreeView = null;
 let simulatorButton = null;
+let debugAdapterStatusBarItem = null;
 
 
 /**
@@ -96,6 +98,22 @@ async function saveSelectedDevicePort(port) {
         await updateCfgComponent(configPath, 'device', 'deviceId', matched.vidpid);
     }
     return selected;
+}
+
+/** Keep debugger CDC visible and separate from the REPL connection indicator. */
+async function updateDebugAdapterStatusBar() {
+    if (!debugAdapterStatusBarItem) return;
+    let saved = '';
+    try {
+        const configPath = await getActiveDeviceConfigPath();
+        saved = await getConfigValue(configPath, 'debug', 'adapter_port') || '';
+    } catch (_) { /* No active MicroPython project yet. */ }
+    debugAdapterStatusBarItem.text = saved
+        ? '$(debug-alt) Debug: ' + saved
+        : '$(debug-alt) Adapter';
+    debugAdapterStatusBarItem.tooltip = saved
+        ? 'Debugger CDC: ' + saved + ' (separate from REPL). Click to configure.'
+        : 'Configure dedicated debugger CDC port and save it in device.cfg.';
 }
 
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
@@ -535,6 +553,9 @@ function activate(context) {
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
     registerNativeDebugger(context, () => gRemoteDevicePort, () => getVenvPythonPath(getVenvPythonPathFolder()));
+    context.subscriptions.push(vscode.debug.onDidStartDebugSession(session => {
+        if (session.type === 'micropython-studio') void updateDebugAdapterStatusBar();
+    }));
     const memoryAnalyzer = new MemoryAnalyzer(context, () => gRemoteDevicePort);
     context.subscriptions.push({ dispose: () => memoryAnalyzer.dispose() });
 
@@ -732,6 +753,7 @@ function activate(context) {
                     gDeviceCodeDir = comValues[1];
                     gDeviceFirmware = comValues[2];
                     gDeviceConfigPath = comValues[3] || null;
+                    await updateDebugAdapterStatusBar();
 
                     // Set context key so package.json `when` clauses can react
                     vscode.commands.executeCommand('setContext',
@@ -1412,7 +1434,35 @@ function activate(context) {
         }),
         vscode.commands.registerCommand('micropython-ide.openLegacyDebugPanel', async () => {
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-            await startDebugger(context, gRemoteDevicePort, venvPython);
+            try {
+                const cfgPath = await getActiveDeviceConfigPath();
+                const replPort = gRemoteDevicePort ||
+                    await getConfigValue(cfgPath, 'device', 'port');
+                await startDebugger(context, replPort, venvPython, async repl => {
+                    const port = await chooseDebugAdapter(cfgPath, repl);
+                    if (port) await updateDebugAdapterStatusBar();
+                    return port;
+                });
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot configure legacy debugger: ' + error.message);
+            }
+        }),
+        vscode.commands.registerCommand('micropython-ide.configureDebugAdapter', async () => {
+            try {
+                const cfgPath = await getActiveDeviceConfigPath();
+                const replPort = gRemoteDevicePort ||
+                    await getConfigValue(cfgPath, 'device', 'port');
+                if (!replPort || /^wss?:/i.test(replPort)) {
+                    vscode.window.showWarningMessage('Select a USB REPL/upload port first, then choose its separate debugger CDC.');
+                    return;
+                }
+                const port = await chooseDebugAdapter(cfgPath, replPort, { force: true });
+                if (!port) return;
+                await updateDebugAdapterStatusBar();
+                vscode.window.showInformationMessage('Debug adapter ' + port + ' saved in device.cfg.');
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot save debug adapter: ' + error.message);
+            }
         }),
         vscode.commands.registerCommand('micropython-ide.openMemoryAnalyzer', () => memoryAnalyzer.open())
     );
@@ -1925,6 +1975,15 @@ function createStatusBar(context) {
     startDebugButton.command = 'micropython-ide.startDebug';
     startDebugButton.show();
     context.subscriptions.push(startDebugButton);
+
+    // Select or change dedicated debugger CDC without affecting USB REPL.
+    debugAdapterStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.4);
+    debugAdapterStatusBarItem.command = 'micropython-ide.configureDebugAdapter';
+    debugAdapterStatusBarItem.text = '$(debug-alt) Adapter';
+    debugAdapterStatusBarItem.tooltip = 'Configure dedicated debugger CDC in device.cfg.';
+    debugAdapterStatusBarItem.show();
+    context.subscriptions.push(debugAdapterStatusBarItem);
+    void updateDebugAdapterStatusBar();
 
     const memoryButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.3);
     memoryButton.text = '$(pulse) Memory & GC';
