@@ -84,7 +84,7 @@ suite('Security and reliability hardening', () => {
     test('SecretStorage failure never erases plaintext credentials before migration', async () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mps-secret-fail-'));
         const cfg = path.join(dir, 'device.cfg');
-        fs.writeFileSync(cfg, '[device]\\nport = "ws:10.0.0.1,only-copy"\\n[remote]\\nwebrepl_password = "only-copy"\\n');
+        fs.writeFileSync(cfg, '[device]\nport = "ws:10.0.0.1,only-copy"\n[remote]\nwebrepl_password = "only-copy"\n');
         initializeSecretStorage({ secrets: {
             get: async () => null,
             store: async () => { throw new Error('secure storage unavailable'); },
