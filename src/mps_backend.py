@@ -74,87 +74,17 @@ def _get_lock_path(port: str) -> str:
     return os.path.join(tempfile.gettempdir(), lock_name)
 
 
-def _kill_comport_processes(port: str):
-    """Scan running python processes and kill any process that has the COM port name in its command line."""
-    import subprocess
-    import sys
-    port_lower = port.lower()
-    if sys.platform == 'win32':
-        cmd = ['powershell.exe', '-NoProfile', '-Command',
-               f'Get-CimInstance Win32_Process -Filter "name=\'python.exe\'" | '
-               f'Where-Object {{ $_.CommandLine -like "*{port_lower}*" }} | '
-               f'Select-Object -ExpandProperty ProcessId']
-        try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, shell=True)
-            pids = []
-            for line in res.stdout.splitlines():
-                line = line.strip()
-                if line.isdigit():
-                    pids.append(int(line))
-            
-            for pid in pids:
-                if pid != os.getpid():
-                    sys.stderr.write(f" [INFO] Killing process {pid} referencing port {port} in command line...\n")
-                    try:
-                        os.kill(pid, 9)
-                    except Exception:
-                        subprocess.run(['taskkill', '/F', '/PID', str(pid)], 
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
-            if pids:
-                time.sleep(0.3)
-        except Exception as e:
-            sys.stderr.write(f" [WARN] Failed to scan and kill processes referencing port {port}: {e}\n")
-    else:
-        try:
-            cmd = ['ps', '-eo', 'pid,args']
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-            for line in res.stdout.splitlines():
-                line = line.strip()
-                parts = line.split(None, 1)
-                if len(parts) == 2:
-                    pid_str, args_str = parts
-                    if pid_str.isdigit():
-                        pid = int(pid_str)
-                        if pid != os.getpid() and 'python' in args_str.lower() and port_lower in args_str.lower():
-                            sys.stderr.write(f" [INFO] Killing process {pid} referencing port {port} in command line...\n")
-                            try:
-                                os.kill(pid, 9)
-                            except:
-                                pass
-            time.sleep(0.3)
-        except Exception as e:
-            sys.stderr.write(f" [WARN] Failed to scan and kill processes referencing port {port}: {e}\n")
-
-
-def _kill_port_owner(port: str):
-    """Terminates any process holding the lock or referencing the port for the given COM port."""
-    # 1. Kill via custom lock file
-    lock_path = _get_lock_path(port)
-    if os.path.exists(lock_path):
-        try:
-            with open(lock_path, 'r') as f:
-                content = f.read().strip()
-            if content:
-                parts = content.split(':')
-                pid = int(parts[0])
-                if pid != os.getpid() and _is_pid_running(pid):
-                    sys.stderr.write(f" [INFO] Killing process {pid} holding lock for {port}...\n")
-                    try:
-                        os.kill(pid, 9)
-                    except Exception:
-                        if sys.platform == 'win32':
-                            subprocess.run(['taskkill', '/F', '/PID', str(pid)], 
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
-                    time.sleep(0.3)
-            try:
-                os.remove(lock_path)
-            except:
-                pass
-        except Exception as e:
-            sys.stderr.write(f" [WARN] Failed to kill process holding lock: {e}\n")
-
-    # 2. Scan and kill all other python processes referencing this port in their command line
-    _kill_comport_processes(port)
+def _release_lock_if_owned(lock_path: str):
+    """Never erase the VS Code suspended lock or another process's COM claim."""
+    if not lock_path:
+        return
+    try:
+        with open(lock_path, 'r', encoding='utf-8') as lock_file:
+            owner = lock_file.read().strip()
+        if owner == f'{os.getpid()}:cli':
+            os.unlink(lock_path)
+    except OSError:
+        pass
 
 
 def parse_mpremote_output(raw: str) -> dict:
@@ -795,10 +725,9 @@ class SerialConnection:
             if g_verbose:
                 sys.stderr.write(f"[LOCK] PID {pid}: Releasing lock for port {self.port}\n")
             try:
-                if os.path.exists(self.lock_path):
-                    os.remove(self.lock_path)
-                    if g_verbose:
-                        sys.stderr.write(f"[LOCK] PID {pid}: Lock released successfully\n")
+                _release_lock_if_owned(self.lock_path)
+                if g_verbose:
+                    sys.stderr.write(f"[LOCK] PID {pid}: Own lock cleanup complete\n")
             except Exception as err:
                 if g_verbose:
                     sys.stderr.write(f"[LOCK] PID {pid}: Error releasing lock: {err}\n")
@@ -1912,10 +1841,9 @@ def run_mpremote(python_exe, args_list, timeout=60):
             if g_verbose:
                 sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote releasing lock for port {port}\n")
             try:
-                if os.path.exists(lock_path):
-                    os.remove(lock_path)
-                    if g_verbose:
-                        sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote lock released successfully\n")
+                _release_lock_if_owned(lock_path)
+                if g_verbose:
+                    sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote own-lock cleanup complete\n")
             except Exception as err:
                 if g_verbose:
                     sys.stderr.write(f"[LOCK] PID {pid}: run_mpremote error releasing lock: {err}\n")
@@ -2501,10 +2429,8 @@ def cmd_hard_reset(python_exe, port):
     """Force a reboot using hardware toggles and soft commands."""
     sys.stderr.write(f"   Performing hard reset on {port}...\n")
     
-    # 1. Kill busy port owners / processes holding port
-    _kill_port_owner(port)
-    
-    # 2. Connect directly and send manual reset commands
+    # Never kill another process to reset a board; report a busy port.
+    # Explicit reset still needs exclusive serial ownership.
     import serial
     import time
     
@@ -2516,9 +2442,8 @@ def cmd_hard_reset(python_exe, port):
         
         try:
             s.open()
-        except Exception:
-            _kill_port_owner(port)
-            s.open()
+        except Exception as exc:
+            raise RuntimeError(f'Port {port} is busy; close the other owner and retry') from exc
 
         # Send Ctrl+C first to interrupt any currently running script
         sys.stderr.write(f" [RESET] Sending Ctrl+C to interrupt on {port}...\n")
@@ -3083,83 +3008,57 @@ def main():
     global g_verbose
     g_verbose = getattr(args, 'verbose', False)
 
-    # Acquire port lock at start of process if --port is provided
+    # Cooperate with the extension's serial ownership. Never terminate another
+    # process or overwrite a live lock file (particularly the VS Code host).
     if hasattr(args, 'port') and args.port:
         port = args.port
         lock_path = _get_lock_path(port)
-        log_to_file(f"CLI started for command '{args.command}' on port {port}. Checking lock...")
-        
-        # Check if port is locked by another running process (excluding parent)
-        locked = False
-        locker_info = "unknown"
+        owned_by_parent = False
+        claimed_lock = False
         try:
             if os.path.exists(lock_path):
-                with open(lock_path, 'r') as f:
-                    content = f.read().strip()
-                    parts = content.split(':')
-                    pid = int(parts[0])
-                    owner = parts[1] if len(parts) > 1 else "unknown"
-                    locker_info = f"PID {pid} ({owner})"
-                
-                is_parent = False
-                try:
-                    if hasattr(os, 'getppid') and pid == os.getppid():
-                        is_parent = True
-                except:
-                    pass
-                
-                if _is_pid_running(pid) and not is_parent:
-                    locked = True
-                else:
-                    log_to_file(f"Lock exists for {locker_info} but bypassing because is_parent={is_parent}")
-        except Exception as err:
-            log_to_file(f"Error checking lock at startup: {err}")
-            pass
-
-        if locked:
-            if args.command == 'hard_reset':
-                try:
-                    os.kill(pid, 9)
-                except Exception:
-                    pass
-                time.sleep(0.5)  # Wait for port release
-                locked = False
-            
-            if locked:
-                log_to_file(f"Startup check failed: port is actively locked by {locker_info}")
-                sys.stderr.write(
-                    f"\n [ERROR] Cannot access {port}.\n"
-                    f"   The port is actively locked by {locker_info}.\n"
+                with open(lock_path, 'r', encoding='utf-8') as lock_file:
+                    owner_text = lock_file.read().strip()
+                parts = owner_text.split(':', 1)
+                previous_pid = int(parts[0])
+                previous_role = parts[1] if len(parts) > 1 else 'unknown'
+                parent_pid = os.getppid() if hasattr(os, 'getppid') else None
+                owned_by_parent = (
+                    previous_pid == parent_pid and previous_role == 'suspended_lock'
                 )
-                sys.exit(1)
-        
-        # Claim/write lock file
-        try:
-            with open(lock_path, 'w') as f:
-                f.write(f"{os.getpid()}:cli_run")
-            log_to_file(f"Claimed lock for port {port} (cli_run)")
-            
-            # Register exit handler to clean up the lock file
+                if _is_pid_running(previous_pid) and not owned_by_parent:
+                    raise RuntimeError(
+                        f'Port {port} is already locked by PID {previous_pid} '
+                        f'({previous_role}); close that serial owner first.'
+                    )
+                if not owned_by_parent:
+                    # Only remove dead-owner locks, never an actively owned lock.
+                    os.unlink(lock_path)
+
+            if not owned_by_parent:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                try:
+                    os.write(fd, f'{os.getpid()}:cli_run'.encode('ascii'))
+                finally:
+                    os.close(fd)
+                claimed_lock = True
+        except (OSError, ValueError, RuntimeError) as exc:
+            sys.stderr.write(f'[ERROR] Cannot claim serial port {port}: {exc}\n')
+            sys.exit(1)
+
+        if claimed_lock:
             import atexit
+
             def _release_lock_on_exit():
                 try:
-                    log_to_file(f"CLI exiting. Releasing lock for port {port}...")
-                    if os.path.exists(lock_path):
-                        with open(lock_path, 'r') as f:
-                            content = f.read().strip()
-                            parts = content.split(':')
-                            pid = int(parts[0])
-                        if pid == os.getpid():
-                            os.remove(lock_path)
-                            log_to_file(f"Lock released successfully by CLI exit handler")
-                except Exception as err:
-                    log_to_file(f"Error releasing lock on exit: {err}")
+                    with open(lock_path, 'r', encoding='utf-8') as lock_file:
+                        owner_text = lock_file.read().strip()
+                    if owner_text == f'{os.getpid()}:cli_run':
+                        os.unlink(lock_path)
+                except OSError:
                     pass
+
             atexit.register(_release_lock_on_exit)
-        except Exception as lock_err:
-            log_to_file(f"Failed to write lock in main: {lock_err}")
-            if g_verbose:
-                sys.stderr.write(f"[LOCK] Failed to write lock in main: {lock_err}\n")
 
     # Dispatch
     if args.command == 'run':
