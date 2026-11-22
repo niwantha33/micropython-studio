@@ -155,6 +155,9 @@ class MemoryAnalyzer {
             if (!connectionManager.isConnected || connectionManager.portName !== port || connectionManager.isSuspended) {
                 throw new Error('Device REPL is not idle/connected on ' + port + '. Refresh Device Files, then retry.');
             }
+            if (connectionManager.isScriptRunning) {
+                throw new Error('MCU script is running. Stop it with Ctrl+C in Shell and confirm >>> before sampling; a GC probe must not interrupt your loop.');
+            }
             // A raw-REPL probe uses Ctrl+C. Never inject it into a paused
             // native debug session silently; require explicit consent to
             // terminate the debugger and potentially interrupt MCU code.
