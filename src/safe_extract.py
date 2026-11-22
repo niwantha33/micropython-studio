@@ -38,7 +38,9 @@ def extract_archive(archive, destination):
             if total > MAX_TOTAL_BYTES:
                 raise ValueError("ZIP exceeds total size limit")
             target = (root / name).resolve()
-            if not target.is_relative_to(root):
+            try:
+                target.relative_to(root)
+            except ValueError:
                 raise ValueError("ZIP entry escapes destination")
         root.mkdir(parents=True, exist_ok=True)
         package.extractall(root)
