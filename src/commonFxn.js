@@ -218,7 +218,15 @@ async function updateCfgComponent(cfgFilePath, section, key, newValue) {
     }
 }
 
+/** Device connection strings may embed WebREPL passwords after a comma. */
+function redactDevicePort(port) {
+    if (typeof port !== 'string') return String(port ?? '');
+    if (/^wss?:/i.test(port)) return port.split(',')[0] + ' [credential hidden]';
+    return port;
+}
+
 module.exports = {
+    redactDevicePort,
     getMicropythonStudioPath,
     getVenvPythonPathFolder,
     getVenvPythonPath,
