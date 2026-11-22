@@ -881,7 +881,13 @@ function activate(context) {
                         throw new Error('Stop the running MCU script before changing serial ports.');
                     }
                     outputChannel.appendLine(`[Run Command] Connecting daemon to selected port ${redactDevicePort(gRemoteDevicePort)}...`);
-                    await connectionManager.connect(gRemoteDevicePort);
+                    try {
+                        await connectionManager.connect(gRemoteDevicePort);
+                    } catch (error) {
+                        outputChannel.appendLine('[Run Command] REPL connection failed: ' + error.message);
+                        vscode.window.showErrorMessage('Cannot connect MicroPython REPL: ' + error.message);
+                        return;
+                    }
                 } else if (connectionManager.isConnected &&
                            (connectionManager.isSuspended || connectionManager.isReconnecting)) {
                     throw new Error('Selected REPL is temporarily busy with a serial transfer or USB reconnect.');
