@@ -894,8 +894,14 @@ function activate(context) {
                 }
                 
                 outputChannel.appendLine(`[Run Command] Streaming editor script to MCU via daemon's raw paste...`);
-                await wsQueue.run(() => connectionManager.runInTerminal(code), 'Run MCU Script', true);
-                outputChannel.appendLine(`[Run Command] Streaming script execution started.`);
+                try {
+                    await wsQueue.run(() => connectionManager.runInTerminal(code), 'Run MCU Script', true);
+                    outputChannel.appendLine(`[Run Command] MCU script acknowledged; live output streaming to Shell.`);
+                } catch (error) {
+                    outputChannel.appendLine('[Run Command] MCU Run rejected: ' + error.message);
+                    vscode.window.showErrorMessage('Cannot run MCU script: ' + error.message);
+                    return;
+                }
                 
                 // Show the terminal if it's hidden
                 await vscode.commands.executeCommand('micropython-ide.openShell');

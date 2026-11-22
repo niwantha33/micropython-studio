@@ -11,6 +11,7 @@ const {
 const { parseDebuggerReply, sanitizeTargetGlobals } = require('./nativeDebugParser');
 const { defaultAttachConfiguration, resolveReplPort, resolveDebugPort } = require('./debugProjectConfig');
 const { getBuildInfo } = require('./buildInfo');
+const { setDebugExecutionState } = require('./debugExecutionState');
 
 const DEBUG_TYPE = 'micropython-studio';
 
@@ -54,6 +55,7 @@ class NativeMicroPythonAdapter {
         this.terminated = true;
         this.connected = false;
         this.ready = false;
+        setDebugExecutionState({ status: 'detached' });
         this.sendEvent('terminated');
     }
 
@@ -61,6 +63,9 @@ class NativeMicroPythonAdapter {
         if (this.terminated) return;
         if (msg.evt === 'pump_ready') {
             this.ready = true;
+            setDebugExecutionState({
+                status: 'attached', replPort: this.config.replPort, debugPort: this.config.debugPort
+            });
             const build = getBuildInfo(this.context.extensionPath, this.context.extensionMode);
             this.sendEvent('output', {
                 category: 'console',
@@ -102,6 +107,10 @@ class NativeMicroPythonAdapter {
                 this.localNames = Array.isArray(msg.localNames) ? msg.localNames : [];
             }
             this.paused = true;
+            setDebugExecutionState({
+                status: 'paused', replPort: this.config.replPort, debugPort: this.config.debugPort,
+                location: this.location
+            });
             // A follow-up step_line on an existing pause refines the source
             // location; it must not erase locals/globals already received.
             if (!wasPaused) {
@@ -132,6 +141,9 @@ class NativeMicroPythonAdapter {
             if (parsed) this.sendEvent('invalidated', { areas: ['variables', 'stackTrace'], threadId: 1 });
         } else if (msg.evt === 'sent' && ['continue', 'step', 'step_in', 'step_out'].includes(msg.op)) {
             this.paused = false;
+            setDebugExecutionState({
+                status: 'running', replPort: this.config.replPort, debugPort: this.config.debugPort
+            });
             this.sendEvent('continued', { threadId: 1, allThreadsContinued: true });
         } else if (msg.evt === 'stderr') {
             this.sendEvent('output', { category: 'stderr', output: String(msg.text || '') });

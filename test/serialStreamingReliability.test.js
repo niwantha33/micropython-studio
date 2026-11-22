@@ -25,7 +25,8 @@ suite('Known-good 2.6.1 serial transport compatibility', () => {
         const original = {
             connected: connectionManager.isConnected,
             suspended: connectionManager.isSuspended,
-            process: connectionManager.daemonProcess
+            process: connectionManager.daemonProcess,
+            scriptRunning: connectionManager.isScriptRunning
         };
         const frames = [];
         try {
@@ -38,13 +39,22 @@ suite('Known-good 2.6.1 serial transport compatibility', () => {
             assert.strictEqual(frames.length, 1);
             assert.strictEqual(frames[0].action, 'terminal_input');
             assert.strictEqual(Buffer.from(frames[0].data, 'base64').toString(), '\rprint(1 + 1)\r');
-            await connectionManager.runInTerminal('print(2)');
+            // The new daemon worker must ACK an accepted foreground run;
+            // a write to stdin alone is not enough to claim the MCU ran it.
+            const started = connectionManager.runInTerminal('print(2)');
             assert.strictEqual(frames[1].action, 'run_in_terminal');
             assert.strictEqual(frames[1].code, 'print(2)');
+            connectionManager._handleDaemonMessage(
+                { type: 'terminal_run_started' }, () => {}, () => {}, true);
+            await started;
+            assert.strictEqual(connectionManager.isScriptRunning, true);
+            connectionManager._handleDaemonMessage(
+                { type: 'terminal_run_finished', success: true }, () => {}, () => {}, true);
         } finally {
             connectionManager.isConnected = original.connected;
             connectionManager.isSuspended = original.suspended;
             connectionManager.daemonProcess = original.process;
+            connectionManager.isScriptRunning = original.scriptRunning;
         }
     });
 

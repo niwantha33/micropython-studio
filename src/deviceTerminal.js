@@ -2,6 +2,9 @@
 
 const vscode = require('vscode');
 const connectionManager = require('./connectionManager');
+const { StringDecoder } = require('string_decoder');
+const { samePort } = require('./devicePortSelection');
+const { onDebugExecutionState, getDebugExecutionState } = require('./debugExecutionState');
 
 let activeTerminal = null;
 let activePort = null;
@@ -43,9 +46,36 @@ async function openDeviceTerminal(_context, devicePort) {
     const emitter = new vscode.EventEmitter();
     let terminal = null;
     let closed = false;
+    const decoder = new StringDecoder('utf8');
 
     const emit = text => { if (!closed) emitter.fire(text); };
-    const onData = data => emit(data.toString('utf8'));
+    // Serial RX may split a multibyte UTF-8 character between read() calls.
+    const onData = data => emit(decoder.write(data));
+    const onRunStarted = () => emit(terminalNotice(
+        'MCU script running on ' + devicePort + '. Output is live; press Ctrl+C to interrupt.'
+    ));
+    const onRunFinished = result => {
+        if (!result.success) {
+            emit(terminalNotice('MCU execution/serial error: ' + result.error +
+                '. Reconnect the REPL if no prompt appears.'));
+            return;
+        }
+        if (connectionManager.isConnected && !connectionManager.isSuspended) {
+            emit('\r\n>>> ');
+        }
+    };
+    const onDebugState = state => {
+        if (!state.replPort || !samePort(state.replPort, devicePort)) return;
+        if (state.status === 'paused') {
+            const source = state.location?.path
+                ? ' at ' + state.location.path.split(/[\\/]/).pop() + ':' + state.location.line : '';
+            emit(terminalNotice('MicroPython VM PAUSED by debugger ' + state.debugPort +
+                source + '. No new print() output appears until Continue or Step.'));
+        } else if (state.status === 'running') {
+            emit(terminalNotice('MicroPython VM resumed by debugger; target output can continue.'));
+        }
+    };
+    const debugSubscription = onDebugExecutionState(onDebugState);
     const onConnected = () => {
         emit(terminalNotice(`Connected to ${devicePort}. Press Enter to see the REPL prompt.`));
     };
@@ -55,6 +85,7 @@ async function openDeviceTerminal(_context, devicePort) {
     const listeners = [
         ['data', onData], ['connected', onConnected],
         ['disconnected', onDisconnected], ['error', onError],
+        ['run-started', onRunStarted], ['run-finished', onRunFinished],
     ];
     for (const [name, listener] of listeners) connectionManager.on(name, listener);
 
@@ -62,6 +93,7 @@ async function openDeviceTerminal(_context, devicePort) {
         onDidWrite: emitter.event,
         open: async () => {
             emit(terminalNotice(`Opening REPL on ${devicePort} (no reset or interrupt sent).`));
+            onDebugState(getDebugExecutionState());
             try {
                 if (connectionManager.isConnected && connectionManager.portName === devicePort) {
                     if (connectionManager.isSuspended)
@@ -79,6 +111,8 @@ async function openDeviceTerminal(_context, devicePort) {
             for (const [name, listener] of listeners) {
                 connectionManager.removeListener(name, listener);
             }
+            debugSubscription.dispose();
+            decoder.end();
             emitter.dispose();
             if (activeTerminal === terminal) {
                 activeTerminal = null;

@@ -57,9 +57,15 @@ CMDS = {
 }
 
 
+_event_output_lock = threading.Lock()
+
+
 def say(**kw):
-    sys.stdout.write(json.dumps(kw) + "\n")
-    sys.stdout.flush()
+    # Reader and command threads must never interleave JSON bytes on stdout.
+    # A partial frame can otherwise break the Node bridge and terminate DAP.
+    with _event_output_lock:
+        sys.stdout.write(json.dumps(kw) + "\n")
+        sys.stdout.flush()
 
 
 def reader_loop(ser, stop_evt):

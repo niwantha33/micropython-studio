@@ -55,7 +55,30 @@ let stepInDeco = null;        // TextEditorDecorationType for step-in line (cyan
 let lastActionWasStepIn = false; // tracks whether the last resume action was step_in
 
 let rtaEvents = [];
+const MAX_RTA_EVENTS = 50000;
+const MAX_RTA_EVENTS_PER_SECOND = 5000;
+let rtaDroppedEvents = 0;
+let rtaRateStart = 0;
+let rtaRateCount = 0;
+let rtaLimitTriggered = false;
 let rtaDumpTimer = null;
+
+function addRtaEvent(event) {
+    if (rtaEvents.length >= MAX_RTA_EVENTS) {
+        rtaEvents.splice(0, 1000);
+        rtaDroppedEvents += 1000;
+    }
+    rtaEvents.push(event);
+}
+
+function isUnsafeRtaRate() {
+    const now = Date.now();
+    if (now - rtaRateStart >= 1000) {
+        rtaRateStart = now;
+        rtaRateCount = 0;
+    }
+    return ++rtaRateCount > MAX_RTA_EVENTS_PER_SECOND;
+}
 const taskMap = new Map();
 const funToName = new Map();
 // The identity is tied to this RTA capture, not to a reusable heap address.
@@ -179,17 +202,28 @@ function createNativeDetailPanel(context, port) {
         onDidDispose: session.onDidDispose,
         webview: {
             postMessage(message) {
-                if (message && typeof message === 'object' && message.evt &&
-                    JSON.stringify(message).length <= 4096) {
-                    recentEvents.push(message);
-                    if (recentEvents.length > 200) recentEvents.shift();
+                if (message && typeof message === 'object' && message.evt) {
+                    try {
+                        if (JSON.stringify(message).length <= 4096) {
+                            recentEvents.push(message);
+                            if (recentEvents.length > 200) recentEvents.shift();
+                        }
+                    } catch (_) { /* Never let unexpected data crash the host. */ }
                 }
-                return view ? view.webview.postMessage(message) : Promise.resolve(false);
+                if (!view) return Promise.resolve(false);
+                try {
+                    return Promise.resolve(view.webview.postMessage(message)).catch(() => false);
+                } catch (_) {
+                    // The user can close the detailed editor between bridge
+                    // events. Only its view disappears, not the DAP connection.
+                    return Promise.resolve(false);
+                }
             },
             replayHistory() {
                 if (!view) return;
                 for (const message of recentEvents) {
-                    view.webview.postMessage(message);
+                    try { Promise.resolve(view.webview.postMessage(message)).catch(() => {}); }
+                    catch (_) { return; }
                 }
             },
             onDidReceiveMessage(handler) {
@@ -310,6 +344,8 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     }
 
     // Spawn the Python bridge
+    let bridgeExpectedShutdown = false;
+    let bridgeTransportFailureReported = false;
     const script = path.join(context.extensionPath, 'src', 'dbg_bridge.py');
     const pyCmd = venvPython || (process.platform === 'win32' ? 'python' : 'python3');
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
@@ -617,17 +653,32 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     }
 
     let buf = '';
+    const MAX_BRIDGE_LINE = 128 * 1024;
     bridge.stdout.on('data', (d) => {
         buf += d.toString();
+        if (buf.length > MAX_BRIDGE_LINE && buf.indexOf('\n') === -1) {
+            buf = '';
+            const error = 'Debugger bridge exceeded its maximum message length; connection closed safely.';
+            emitNative({ evt: 'transport_lost', msg: error });
+            try { bridge.kill(); } catch (_) {}
+            return;
+        }
         let idx;
         while ((idx = buf.indexOf('\n')) >= 0) {
             const line = buf.slice(0, idx).trim();
             buf = buf.slice(idx + 1);
             if (!line) continue;
+            if (line.length > MAX_BRIDGE_LINE) {
+                emitNative({ evt: 'transport_lost',
+                    msg: 'Oversized debugger protocol record rejected.' });
+                try { bridge.kill(); } catch (_) {}
+                return;
+            }
             try {
                 const msg = JSON.parse(line);
 
                 if (msg.evt === 'transport_lost') {
+                    bridgeTransportFailureReported = true;
                     sessionReady = false;
                     if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
                     if (panel) {
@@ -972,6 +1023,10 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                             rtaDumpTimer = null;
                         }
                         rtaEvents = [];
+                        rtaDroppedEvents = 0;
+                        rtaRateCount = 0;
+                        rtaRateStart = Date.now();
+                        rtaLimitTriggered = false;
                         taskMap.clear();
                         funToName.clear();
                         rtaNativeIdentity.clear();
@@ -1004,8 +1059,26 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                         // The generic bridge-message forwarding below notifies the webview.
                     }
                 }
+                if ((msg.evt === 'rta_entry' || msg.evt === 'rta_exit') &&
+                    isUnsafeRtaRate() && !rtaLimitTriggered) {
+                    // Protect the extension host and webview from a trace
+                    // storm. Stop RTA instead of accumulating unbounded
+                    // messages or pretending an incomplete trace is complete.
+                    rtaLimitTriggered = true;
+                    try { bridge.stdin.write(JSON.stringify({ op: 'rta_off' }) + '\n'); } catch (_) {}
+                    if (panel) panel.webview.postMessage({
+                        evt: 'error',
+                        msg: 'RTA event rate exceeded 5000/s; tracing stopped to protect VS Code. Use a shorter capture.'
+                    });
+                }
+                if (rtaLimitTriggered &&
+                    (msg.evt === 'rta_entry' || msg.evt === 'rta_exit')) {
+                    // The target may still be draining queued trace frames.
+                    // Do not flood the webview while RTA shutdown completes.
+                    continue;
+                }
                 if (msg.evt === 'rta_entry') {
-                    rtaEvents.push({
+                    addRtaEvent({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
                         // Snapshot the live name so later heap reuse cannot relabel history.
                         _rtaNativeName: rtaNativeIdentity.has(msg.fun) ? funToName.get(msg.fun) : undefined,
@@ -1017,7 +1090,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                     if (rtaDumpTimer) scheduleRtaTraceDump();
                 }
                 if (msg.evt === 'rta_exit') {
-                    rtaEvents.push({
+                    addRtaEvent({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
                         _rtaNativeName: rtaNativeIdentity.has(msg.fun) ? funToName.get(msg.fun) : undefined,
                         ph: "E",
@@ -1062,7 +1135,11 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                     panel.webview.postMessage(msg);
                 }
             } catch (e) {
-                if (panel) panel.webview.postMessage({ evt: 'raw', text: line });
+                // A damaged bridge record should be diagnosed, not blindly
+                // injected into the UI (or allowed to crash its message loop).
+                if (panel) panel.webview.postMessage({
+                    evt: 'error', msg: 'Malformed debugger message ignored.'
+                });
             }
         }
     });
@@ -1071,11 +1148,21 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         emitNative({ evt: 'stderr', text: d.toString() });
     });
     bridge.on('error', (error) => {
+        bridgeTransportFailureReported = true;
         const message = 'Cannot start MicroPython debugger bridge: ' + error.message;
         if (panel) panel.webview.postMessage({ evt: 'error', msg: message });
         emitNative({ evt: 'transport_lost', msg: message });
     });
-    bridge.on('close', () => {
+    bridge.on('close', (code, signal) => {
+        if (!bridgeExpectedShutdown && !bridgeTransportFailureReported) {
+            const diagnostic = 'MicroPython debugger bridge exited unexpectedly ' +
+                '(exit=' + (code === null ? 'unknown' : code) +
+                ', signal=' + (signal || 'none') +
+                '). Check the MicroPython IDE Output and verify the dedicated debug COM port.';
+            if (panel) panel.webview.postMessage({ evt: 'error', msg: diagnostic });
+            emitNative({ evt: 'transport_lost', msg: diagnostic });
+            console.error('[MicroPython Native Debug] ' + diagnostic);
+        }
         if (panel) panel.webview.postMessage({ evt: 'closed' });
         emitNative({ evt: 'closed' });
         bridge = null;
@@ -1298,6 +1385,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     });
 
     panel.onDidDispose(() => {
+        bridgeExpectedShutdown = true;
         if (startupTimer) {
             clearTimeout(startupTimer);
             startupTimer = null;
@@ -2889,6 +2977,10 @@ function dumpRtaTrace() {
     try {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!workspaceFolder) return;
+        if (rtaDroppedEvents > 0) {
+            vscode.window.showWarningMessage('RTA capture was truncated by ' +
+                rtaDroppedEvents + ' events to protect VS Code memory. Do not treat it as a complete timing trace.');
+        }
         const filePath = path.join(workspaceFolder, 'rta_trace.json');
         
         let currentTid = 1;
