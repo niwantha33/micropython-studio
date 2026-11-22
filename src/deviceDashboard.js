@@ -214,7 +214,7 @@ except:
               );
             });
           } else {
-            const mpArgs = ["run", `"${tempScriptPath}"`];
+            const mpArgs = ["run", tempScriptPath];
             rawOutput = await runMpremote(outputChannel, mpArgs);
           }
       }
@@ -2132,7 +2132,7 @@ async function runDeviceScript(
     try {
       fs.writeFileSync(tempPath, scriptContent, "utf8");
       if (!devicePort) {
-        return await runMpremote(outputChannel, ["run", `"${tempPath}"`]);
+        return await runMpremote(outputChannel, ["run", tempPath]);
       }
       const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
       const subpro = path.join(__dirname, "mps_backend.py");
