@@ -68,3 +68,51 @@ not a PR artifact that has only passed CI. The video can show: Pico/S3 REPL,
 running a script, breakpoint hit, Locals, Continue, and RTA. When this PR passes
 device acceptance, the next stable Studio release can mention smoother
 connection behaviour. Avoid claiming every ESP32 board is already supported.
+
+
+## 22 November 2026 — shared serial transport hardening (Draft PR #70)
+
+**Hardware qualification pending.** Green CI is necessary but insufficient
+for real Windows USB CDC operation. Install the PR VSIX and fully reload the
+VS Code window; a stale REPL pseudoterminal still runs old extension code.
+
+Architecture contract:
+
+1. One daemon owns each selected REPL COM port. Shell, Run, Stop,
+   Dashboard, Files and Reset must never open a second serial handle while
+   that daemon owns the COM port.
+2. The REPL and debugger are separate CDC endpoints when the firmware exposes
+   two. Never infer the REPL endpoint from the lowest COM number alone.
+3. User script Run streams output without blocking daemon command intake.
+   Ctrl+C and explicit Hard Reset must remain serviceable.
+4. A file transfer must not interrupt a running script or steal COM ownership.
+   An operation should report "busy", not wait silently or reset the MCU.
+5. After unplug/replug, reconnecting is visible; if recovery fails, the old
+   connection is no longer advertised as healthy.
+6. No automatic Ctrl+C, DTR reset, boot.py change, debugger upload or forced
+   termination occurs just from opening Shell.
+
+Acceptance matrix (run on **physical Windows boards**):
+
+- [ ] Install fresh PR VSIX, close old terminal, Developer: Reload Window,
+      confirm new REPL banner and extension build identity.
+- [ ] COM5 selected as *actual REPL CDC*, not debug CDC; if ambiguous, manually
+      compare the two interfaces with board firmware documentation.
+- [ ] Open Shell, Enter, print(1 + 1); repeat open/close 20 times.
+- [ ] Run a finite UTF-8-output script; verify prompt and normal file operations
+      afterward.
+- [ ] Run an infinite loop with periodic output; Stop must send Ctrl+C promptly
+      **without board reset**.
+- [ ] While loop runs, try File Explorer, Dashboard and upload; reject with
+      understandable "busy" message rather than corrupting execution.
+- [ ] Run infinite loop again; explicit Hard Reset must work and unblock
+      a subsequent REPL command. Note board-specific DTR/RTS behaviour.
+- [ ] Unplug/replug USB during idle and during output; recover without ghost
+      "Connected" state or stale lock; Shell click reconnects existing panel.
+- [ ] Repeat file copy/download/rename/delete, Wi-Fi scan, GC analysis and
+      package install; no cross-feature COM contention.
+- [ ] Validate separate ESP32-S3 debug CDC with breakpoints/RTA while REPL
+      remains available on the designated port.
+- [ ] Repeat on Pico W/Pico 2 W and ESP32-S3, with their stable firmware.
+- [ ] Confirm no dropped UTF-8 characters or unbounded memory growth on
+      a 5-minute continuous print test.
