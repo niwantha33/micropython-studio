@@ -130,6 +130,11 @@ class MpyDaemon:
         # Terminal input buffering
         self._terminal_input_buffer = b""
         self._input_buffer_limit = 4096
+        self._program_running = False
+        self._program_output_phase = False
+        self._pending_program_input = b''
+        self._program_state_lock = threading.Lock()
+        self._run_worker = None
 
     def _rx_loop(self):
         while self.running:
@@ -454,24 +459,117 @@ class MpyDaemon:
 
         return stdout, stderr
 
+    def _emit_terminal_bytes(self, data: bytes):
+        if data:
+            import base64
+            self.send_event("terminal_data", {
+                "data": base64.b64encode(data).decode("ascii")
+            })
+
+    def _stream_raw_execution(self):
+        """Stream raw-REPL stdout/stderr while the MCU runs, even indefinitely.
+
+        The RX consumer switches from the normal terminal to this worker while
+        raw REPL is active. It never accumulates an unbounded output string.
+        """
+        buffer = self._read_buf
+        self._read_buf = b""
+        phase = 0  # stdout then stderr then final raw prompt
+        while self.running and not self.suspended:
+            if not buffer:
+                buffer = self._rx_read(4096, timeout=0.05)
+                if not buffer:
+                    continue
+            if phase < 2:
+                marker = buffer.find(b"\x04")
+                if marker < 0:
+                    self._emit_terminal_bytes(buffer)
+                    buffer = b""
+                else:
+                    self._emit_terminal_bytes(buffer[:marker])
+                    buffer = buffer[marker + 1:]
+                    phase += 1
+            else:
+                marker = buffer.find(b">")
+                if marker >= 0:
+                    self._read_buf = buffer[marker + 1:]
+                    return
+                buffer = b""
+        raise RuntimeError("Serial connection ended before program finished")
+
+    def _run_terminal_worker(self, code: str):
+        try:
+            with self._lock:
+                self.in_raw_repl = True
+                # This interrupt is part of an explicit Run action, not Shell open.
+                self._paced_serial_write(b'\r\x02\r\x03')
+                time.sleep(0.1)
+                self.enter_raw_repl()
+                self._do_raw_paste(code)
+                with self._program_state_lock:
+                    self._program_output_phase = True
+                    pending = self._pending_program_input
+                    self._pending_program_input = b""
+                if pending:
+                    self._paced_serial_write(pending)
+                self._stream_raw_execution()
+        except Exception as exc:
+            self.send_event("error", {"message": "Script execution failed: " + str(exc)[:320]})
+        finally:
+            try:
+                with self._lock:
+                    # The raw REPL must be released for Shell and Dashboard.
+                    if self.serial and self.serial.is_open and not self.suspended:
+                        self.exit_raw_repl()
+                    self.in_raw_repl = False
+                    self._program_running = False
+                    self._program_output_phase = False
+                    self._pending_program_input = b""
+                    self._flush_terminal_input()
+            except Exception as exc:
+                self.send_event("error", {"message": "REPL recovery failed: " + str(exc)[:320]})
+                self.in_raw_repl = False
+                self._program_running = False
+            self.send_event("run_finished", {})
+            # A visible friendly prompt after the raw session finishes.
+            if self.running and not self.suspended:
+                self._emit_terminal_bytes(b"\r\n>>> ")
+
     def process_command(self, cmd: dict):
         action = cmd.get("action")
         
         if action == "terminal_input":
             import base64
             data = base64.b64decode(cmd["data"])
-            with self._lock:
-                if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
-                    if len(self._terminal_input_buffer) + len(data) <= self._input_buffer_limit:
-                        self._terminal_input_buffer += data
-                else:
+            if self._program_running:
+                # While uploading raw-paste source, do not interleave serial
+                # writes. Once executing, send user input (including Ctrl+C)
+                # directly: the worker may be waiting on an endless program.
+                with self._program_state_lock:
+                    executing = self._program_output_phase
+                    if not executing and len(self._pending_program_input) + len(data) <= self._input_buffer_limit:
+                        self._pending_program_input += data
+                if executing:
                     try:
                         self._paced_serial_write(data)
-                    except Exception as e:
-                        self.send_event("error", {"message": f"Write error: {e}"})
+                    except Exception as exc:
+                        self.send_event("error", {"message": f"REPL input failed: {exc}"})
+            else:
+                with self._lock:
+                    if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
+                        if len(self._terminal_input_buffer) + len(data) <= self._input_buffer_limit:
+                            self._terminal_input_buffer += data
+                    else:
+                        try:
+                            self._paced_serial_write(data)
+                        except Exception as e:
+                            self.send_event("error", {"message": f"Write error: {e}"})
                     
         elif action == "run_code":
             req_id = cmd.get("id")
+            if self._program_running or self.suspended:
+                self.send_event("run_result", {"id": req_id, "success": False, "error": "REPL busy with script or device transfer"})
+                return
             code = cmd.get("code", "")
             
             with self._lock:
@@ -500,40 +598,31 @@ class MpyDaemon:
                     self._flush_terminal_input()
         elif action == "run_in_terminal":
             code = cmd.get("code", "")
-            with self._lock:
-                self.in_raw_repl = True
-                try:
-                    # Switch to friendly REPL first to reset state cleanly, then raw REPL
-                    self._paced_serial_write(b'\r\x02\r\x03')
-                    time.sleep(0.1)
-                    self.enter_raw_repl()
-                    stdout, stderr = self.exec_raw_paste(code)
-                    if stdout:
-                        import base64
-                        self.send_event("terminal_data", {
-                            "data": base64.b64encode(stdout.encode('utf-8', errors='replace')).decode('ascii')
-                        })
-                    if stderr:
-                        import base64
-                        self.send_event("terminal_data", {
-                            "data": base64.b64encode(stderr.encode('utf-8', errors='replace')).decode('ascii')
-                        })
-                except Exception as e:
-                    self.send_event("error", {"message": f"Run failed: {e}"})
-                finally:
-                    try:
-                        self.exit_raw_repl()
-                    except:
-                        pass
-                    self.in_raw_repl = False
-                    self._flush_terminal_input()
+            request_id = cmd.get("id")
+            if self.suspended or not self.running or self._program_running or self.in_raw_repl:
+                self.send_event("run_started", {
+                    "id": request_id, "success": False,
+                    "error": "REPL is busy; stop the running script or wait for transfer to finish."
+                })
+                return
+            # Claim script ownership before starting the worker. The stdin
+            # command loop must remain responsive for interactive input/Ctrl+C.
+            with self._program_state_lock:
+                self._program_running = True
+                self._program_output_phase = False
+                self._pending_program_input = b""
+            self.send_event("run_started", {"id": request_id, "success": True})
+            self._run_worker = threading.Thread(
+                target=self._run_terminal_worker, args=(code,), daemon=True
+            )
+            self._run_worker.start()
         elif action == "hard_reset":
             # The daemon owns COM already: a second Python process must never
             # open or kill the port owner just to perform an explicit reset.
             request_id = cmd.get("id")
             try:
                 with self._lock:
-                    if (self.suspended or self.in_raw_repl or
+                    if (self.suspended or self.in_raw_repl or self._program_running or
                             not self.serial or not self.serial.is_open):
                         raise RuntimeError("REPL port is busy or disconnected")
                     self._paced_serial_write(b'\r\x03\x03')
@@ -555,6 +644,9 @@ class MpyDaemon:
                     "error": str(err)[:320]
                 })
         elif action == "suspend":
+            if self._program_running:
+                self.send_event("error", {"message": "Stop the running script before transferring the serial port."})
+                return
             with self._lock:
                 self.suspended = True
                 if self.serial and self.serial.is_open:
