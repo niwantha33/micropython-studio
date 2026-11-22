@@ -15,7 +15,7 @@ const fs = require('fs');
 const pathMod = require('path');
 const { getVenvPythonPathFolder, getVenvPythonPath, redactDevicePort } = require('./commonFxn');
 const wsQueue = require('./wsQueue');
-const { isSafeDeviceEntryName } = require('./pathSafety');
+const { isSafeDeviceEntryName, resolveDeviceDrivePath } = require('./pathSafety');
 
 const execFileAsync = promisify(execFile);
 
@@ -166,9 +166,7 @@ class DeviceFileExplorerProvider {
         if (this._isCircuitPython && isLocalDrive) {
             try {
                 // Map device path (e.g. '/lib') to the local drive path (e.g. 'E:\lib')
-                const localPath = dirPath === '/' 
-                    ? this._deviceCodeDir 
-                    : pathMod.join(this._deviceCodeDir, dirPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+                const localPath = resolveDeviceDrivePath(this._deviceCodeDir, dirPath);
                 
                 const items = [];
                 const entries = fs.readdirSync(localPath, { withFileTypes: true });
@@ -177,6 +175,7 @@ class DeviceFileExplorerProvider {
                     // Skip hidden system files that CircuitPython auto-creates or Windows adds
                     if (entry.name === 'System Volume Information' || entry.name.startsWith('._') || entry.name.startsWith('.$')) continue;
 
+                    if (entry.isSymbolicLink()) continue;
                     const isDir = entry.isDirectory();
                     const stat = fs.statSync(pathMod.join(localPath, entry.name));
                     const size = stat.size;
@@ -391,8 +390,8 @@ class DeviceFileExplorerProvider {
 
             try {
                 if (this._isCircuitPython && this._deviceCodeDir) {
-                    const localSrc = pathMod.join(this._deviceCodeDir, srcPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
-                    const localDest = pathMod.join(this._deviceCodeDir, destPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+                    const localSrc = resolveDeviceDrivePath(this._deviceCodeDir, srcPath);
+                    const localDest = resolveDeviceDrivePath(this._deviceCodeDir, destPath);
                     fs.renameSync(localSrc, localDest);
                 } else {
                     await this._moveFileOnDevice(srcPath, destPath);
@@ -507,7 +506,7 @@ async function deleteDeviceFile(port, deviceFilePath, provider) {
 
     if (provider._isCircuitPython && provider._deviceCodeDir) {
         try {
-            const localPath = pathMod.join(provider._deviceCodeDir, deviceFilePath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+            const localPath = resolveDeviceDrivePath(provider._deviceCodeDir, deviceFilePath);
             fs.unlinkSync(localPath);
             vscode.window.showInformationMessage(`Deleted ${deviceFilePath} from device.`);
             provider.refresh();
@@ -572,7 +571,7 @@ async function deleteDeviceFolder(port, deviceFolderPath, provider) {
 
     if (provider._isCircuitPython && provider._deviceCodeDir) {
         try {
-            const localPath = pathMod.join(provider._deviceCodeDir, deviceFolderPath.replace(/^\//, '').replace(/\//g, pathMod.sep));
+            const localPath = resolveDeviceDrivePath(provider._deviceCodeDir, deviceFolderPath);
             fs.rmSync(localPath, { recursive: true, force: true });
             vscode.window.showInformationMessage(`Deleted folder ${deviceFolderPath} from device.`);
             provider.refresh();
