@@ -308,6 +308,16 @@
         "command": "micropython-ide.configureNativeDebug",
         "title": "MicroPython: Configure Native Run and Debug",
         "category": "MicroPython Studio"
+      },
+      {
+        "command": "micropython-ide.showDebuggerDetails",
+        "title": "MicroPython: Show Detailed Debugger Panel",
+        "category": "MicroPython Studio"
+      },
+      {
+        "command": "micropython-ide.verifyDeviceMain",
+        "title": "MicroPython: Check Device main.py Against Editor",
+        "category": "MicroPython Studio"
       }
     ],
     "menus": {

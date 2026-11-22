@@ -39,15 +39,17 @@ suite('Native DAP workflow and real target scopes', () => {
         }
     });
 
-    test('native session reuses existing bridge without showing separate debugger panel', () => {
+    test('native debug preserves original detailed panel beside VS Code with one COM owner', () => {
         const bridge = source('mpyDebugger.js');
         assert.ok(bridge.includes('openDebuggerPanel(context, debugPort, venvPython, true)'));
-        assert.ok(bridge.includes('function createHeadlessDebuggerPanel()'));
-        assert.ok(bridge.includes('if (nativeOnly) {'));
-        assert.ok(bridge.includes('panel = createHeadlessDebuggerPanel()'));
-        assert.ok(bridge.includes('if (!nativeOnly) hlDeco ='));
+        assert.ok(bridge.includes('function createNativeDetailPanel(context, port)'));
+        assert.ok(bridge.includes('panel = createNativeDetailPanel(context, port)'));
+        assert.ok(bridge.includes('vscode.ViewColumn.Beside'));
+        assert.ok(bridge.includes('function showDebuggerDetails()'));
+        assert.ok(bridge.includes('onDidDispose: session.onDidDispose'));
         assert.ok(bridge.includes('if (nativeOnly) return; // DAP'));
         assert.ok(bridge.includes("nativeEventSink = onEvent"));
+        assert.strictEqual((bridge.match(/bridge = spawn\(pyCmd/g) || []).length, 1);
     });
 
     test('bridge globals from trace pump are not presented as application globals', () => {
@@ -106,7 +108,7 @@ suite('Native DAP workflow and real target scopes', () => {
         }
     });
 
-    test('headless debugger attach must not run user code or alter boot.py', () => {
+    test('native debugger attach must not run user code or alter boot.py', () => {
         const bridge = source('mpyDebugger.js');
         const native = source('nativeDebugger.js');
         assert.ok(!bridge.includes('uploadDebuggerFiles('));

@@ -23,7 +23,8 @@ function htmlForMemoryAnalyzer(nonce) {
         'table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--vscode-panel-border)}.scroller{overflow:auto}#message{min-height:20px}',
         '</style></head><body>',
         '<h1>Memory &amp; Garbage Collection Analyzer</h1>',
-        '<p>Explicit snapshots of the MicroPython heap. Sampling never calls gc.collect(); manual GC is a separate action. The REPL must be idle because evaluation can interrupt running code.</p>',
+        '<p>Explicit heap snapshots do not call gc.collect(). Manual GC is a separate, opt-in operation. The probe uses raw REPL and may interrupt running code; never sample a paused debug frame.</p>',
+        '<p class="muted"><b>During native debugging:</b> Sample/Collect asks for your permission to stop debugging before probing. To avoid interrupting a program, stop it and confirm the REPL is idle first.</p>',
         '<div class="toolbar"><button id="sample">Sample heap</button><button id="gc" class="quiet">Collect GC + compare</button><button id="export" class="quiet">Export CSV</button><button id="clear" class="quiet">Clear history</button></div>',
         '<div id="message" role="status" aria-live="polite"></div>',
         '<div class="grid">',
@@ -60,9 +61,42 @@ function htmlForMemoryAnalyzer(nonce) {
         '$("export").onclick=()=>vscode.postMessage({op:"export"});',
         '$("clear").onclick=()=>vscode.postMessage({op:"clear"});',
         'window.addEventListener("message",e=>{const m=e.data;if(m.type==="data")render(m);if(m.type==="status"){text("message",m.message);if(m.done)setBusy(false);}});',
+        'vscode.postMessage({op:"ready"});',
         '})();',
         '</script></body></html>'
     ].join('\n');
+}
+
+/**
+ * VS Code stopDebugging() may resolve before the extension host receives the
+ * terminate event. Keep raw-REPL probes out of a closing debug session.
+ */
+async function stopDebugSessionSafely(session) {
+    if (!session || session.type !== 'micropython-studio') return;
+    let settled = false;
+    let disposable;
+    let deadline;
+    const ended = new Promise((resolve, reject) => {
+        disposable = vscode.debug.onDidTerminateDebugSession(endedSession => {
+            if (endedSession.id !== session.id || settled) return;
+            settled = true;
+            clearTimeout(deadline);
+            resolve();
+        });
+        deadline = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(new Error('Debug session did not terminate. Heap probing was not started.'));
+        }, 6000);
+    });
+    try {
+        await vscode.debug.stopDebugging(session);
+        // Wait for actual adapter termination, not just the stop request.
+        await ended;
+    } finally {
+        clearTimeout(deadline);
+        if (disposable) disposable.dispose();
+    }
 }
 
 class MemoryAnalyzer {
@@ -82,6 +116,13 @@ class MemoryAnalyzer {
         const nonce = crypto.randomBytes(16).toString('base64');
         this.panel.webview.html = htmlForMemoryAnalyzer(nonce);
         this.panel.webview.onDidReceiveMessage(async message => {
+            if (message.op === 'ready') {
+                this.publish();
+                this.status(vscode.debug.activeDebugSession?.type === 'micropython-studio'
+                    ? 'Native debugger is attached. Stop Debug to sample safely, or approve the stop when you click Sample/Collect.'
+                    : 'Connect the USB REPL and ensure it shows >>> before taking a snapshot.');
+                return;
+            }
             if (message.op === 'sample') await this.sample(message.collect === true);
             else if (message.op === 'clear') {
                 this.samples = [];
@@ -114,8 +155,22 @@ class MemoryAnalyzer {
             if (!connectionManager.isConnected || connectionManager.portName !== port || connectionManager.isSuspended) {
                 throw new Error('Device REPL is not idle/connected on ' + port + '. Refresh Device Files, then retry.');
             }
-            if (vscode.debug.activeDebugSession?.type === 'micropython-studio') {
-                throw new Error('Stop the native debug session before probing the REPL to avoid modifying paused execution.');
+            // A raw-REPL probe uses Ctrl+C. Never inject it into a paused
+            // native debug session silently; require explicit consent to
+            // terminate the debugger and potentially interrupt MCU code.
+            const session = vscode.debug.activeDebugSession;
+            if (session?.type === 'micropython-studio') {
+                const action = collect ? 'Stop Debug and Collect GC' : 'Stop Debug and Sample Heap';
+                const choice = await vscode.window.showWarningMessage(
+                    'Memory probing requires the native debug session to stop. The raw REPL probe may interrupt a running MCU script with Ctrl+C. Confirm your REPL is idle (>>>), or accept the interruption. Manual GC changes the MCU heap.',
+                    { modal: true }, action
+                );
+                if (choice !== action) {
+                    this.status('Memory probe cancelled. Debugger remains attached; no REPL command sent.');
+                    return;
+                }
+                this.status('Stopping native debugger before accessing the REPL...', false);
+                await stopDebugSessionSafely(session);
             }
             if (this.currentPort && this.currentPort !== port) {
                 // Do not mix heap measurements from different boards in one chart.

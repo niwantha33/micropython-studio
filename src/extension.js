@@ -26,11 +26,13 @@ const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFro
 const { getConnectedDevices } = require('./runCommand');
 const { initializeSecretStorage, getDeviceSecret } = require('./deviceSecrets');
 const { AiAssistanceProvider } = require('./aiAssistance');
-const { startDebugger } = require('./mpyDebugger');
+const { startDebugger, showDebuggerDetails } = require('./mpyDebugger');
 const { registerNativeDebugger } = require('./nativeDebugger');
 const { resolveReplPort } = require('./debugProjectConfig');
 const { chooseDebugAdapter, findPotentialDebugPorts } = require('./debugAdapterConfig');
 const { MemoryAnalyzer } = require('./memoryAnalyzer');
+const { comparePythonSource, isInsideProject } = require('./deviceSourceCheck');
+const { samePort } = require('./devicePortSelection');
 const { openWebReplTerminal } = require('./webreplBridge.js');
 const { startSimulator, stopSimulator } = require('./simulator');
 
@@ -1534,6 +1536,112 @@ function activate(context) {
                 vscode.window.showErrorMessage('Cannot save debug adapter: ' + error.message);
             }
         }),
+        vscode.commands.registerCommand('micropython-ide.showDebuggerDetails', async () => {
+            if (!showDebuggerDetails()) {
+                vscode.window.showInformationMessage(
+                    'No MicroPython debugger is connected. Click Start Debug first.'
+                );
+            }
+        }),
+        vscode.commands.registerCommand('micropython-ide.verifyDeviceMain', async () => {
+            try {
+                if (vscode.debug.activeDebugSession?.type === 'micropython-studio') {
+                    vscode.window.showWarningMessage(
+                        'Stop native debugging before comparing main.py. Reading the device REPL can interrupt paused execution.'
+                    );
+                    return;
+                }
+                const configPath = await getActiveDeviceConfigPath();
+                const projectRoot = path.dirname(configPath);
+                const editorDoc = vscode.window.activeTextEditor?.document;
+                // Only canonical project entry-point locations qualify.
+                // An unrelated nested lib/main.py must never be uploaded over
+                // the device's root /main.py merely because it was active.
+                const candidates = [
+                    gDeviceCodeDir ? path.join(gDeviceCodeDir, 'main.py') : null,
+                    path.join(projectRoot, 'main', 'main.py'),
+                    path.join(projectRoot, 'main.py')
+                ].filter(Boolean);
+                const canonicalRoot = fs.realpathSync(projectRoot);
+                const localPath = candidates.find(candidate =>
+                    fs.existsSync(candidate) &&
+                    isInsideProject(canonicalRoot, fs.realpathSync(candidate)));
+                if (!localPath) {
+                    vscode.window.showWarningMessage(
+                        'No local main.py found. Open main/main.py in this MicroPython project first.'
+                    );
+                    return;
+                }
+                const localDoc = editorDoc?.fileName === localPath
+                    ? editorDoc : await vscode.workspace.openTextDocument(localPath);
+                const localSource = localDoc.getText();
+                if (Buffer.byteLength(localSource, 'utf8') > 64 * 1024) {
+                    throw new Error('main.py is over 64 KiB; use Device Files to compare larger programs.');
+                }
+                const port = gRemoteDevicePort;
+                if (!connectionManager.isConnected || connectionManager.isSuspended ||
+                    connectionManager.isReconnecting || !samePort(connectionManager.portName, port)) {
+                    throw new Error('Open Shell on the saved USB REPL port before comparing /main.py.');
+                }
+                const approved = await vscode.window.showWarningMessage(
+                    'Read /main.py from ' + port + ' and compare with the editor? The raw REPL may interrupt running MicroPython code. Check that the board is idle (>>>).',
+                    { modal: true }, 'Compare Code'
+                );
+                if (approved !== 'Compare Code') return;
+                let remote = null;
+                try {
+                    remote = await wsQueue.run(
+                        () => connectionManager.catFile('/main.py'),
+                        'Verify device main.py', true
+                    );
+                } catch (error) {
+                    const message = String(error.message || error);
+                    if (!/CAT_ERR:|ENOENT|no such file/i.test(message)) throw error;
+                }
+                const comparison = remote ? comparePythonSource(localSource, remote) : null;
+                if (comparison?.same) {
+                    vscode.window.showInformationMessage(
+                        'Local main.py matches device /main.py. If import main was already executed, MicroPython may still use the cached module. Remove it from sys.modules and re-import, or deliberately reset when safe.'
+                    );
+                    return;
+                }
+                const choice = await vscode.window.showWarningMessage(
+                    remote
+                        ? 'The Pico /main.py differs from your editor copy. This explains why main.fxn() may return even though the local file contains while True.'
+                        : 'The Pico has no readable /main.py. Upload the local main.py before running it.',
+                    { modal: true }, 'Upload Local main.py', 'Show Device Copy'
+                );
+                if (choice === 'Show Device Copy' && remote) {
+                    const remoteDoc = await vscode.workspace.openTextDocument({
+                        language: 'python', content: remote.toString('utf8')
+                    });
+                    await vscode.commands.executeCommand('vscode.diff',
+                        remoteDoc.uri, localDoc.uri, 'Pico /main.py (left) ↔ local main.py (right)');
+                }
+                if (choice !== 'Upload Local main.py') return;
+                if (localDoc.isDirty && !(await localDoc.save())) {
+                    throw new Error('Local main.py could not be saved; upload cancelled.');
+                }
+                await vscode.commands.executeCommand(
+                    'micropython-ide.uploadFileToDevice', vscode.Uri.file(localPath)
+                );
+                // Upload commands can report success despite backend errors.
+                // Read back the actual device file before saying it was fixed.
+                const updated = await wsQueue.run(
+                    () => connectionManager.catFile('/main.py'),
+                    'Verify uploaded main.py', true
+                );
+                const diskSource = fs.readFileSync(localPath);
+                if (!comparePythonSource(diskSource, updated).same) {
+                    throw new Error('Upload verification failed: device /main.py still differs from local main.py.');
+                }
+                vscode.window.showInformationMessage(
+                    'Verified: device /main.py now matches your project. A previous import main is still cached. At the idle REPL run: import sys; sys.modules.pop("main", None); import main; main.fxn().'
+                );
+            } catch (error) {
+                vscode.window.showErrorMessage('Check MCU main.py: ' + error.message);
+            }
+        }),
         vscode.commands.registerCommand('micropython-ide.openMemoryAnalyzer', () => memoryAnalyzer.open())
     );
 
@@ -2037,6 +2145,17 @@ function createStatusBar(context) {
     flashButton.command = 'micropython-ide.flashFirmware';
     flashButton.show();
     context.subscriptions.push(flashButton);
+
+    // Verify that the on-device module matches the local editor before
+    // investigating a breakpoint or an unexpectedly short-running loop.
+    const sourceCheckButton = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Left, 99.6
+    );
+    sourceCheckButton.text = '$(diff) Check MCU Code';
+    sourceCheckButton.tooltip = 'Compare local main.py with Pico /main.py; offer a confirmed upload if different';
+    sourceCheckButton.command = 'micropython-ide.verifyDeviceMain';
+    sourceCheckButton.show();
+    context.subscriptions.push(sourceCheckButton);
 
     // 6.5 Start MPy Debugger Button
     const startDebugButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.5);
