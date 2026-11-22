@@ -5,11 +5,17 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runCommand } = require('../src/runCommand');
-const { getConfigValue, updateCfgComponent } = require('../src/commonFxn');
+const { getConfigValue, updateCfgComponent, redactDevicePort } = require('../src/commonFxn');
 const { initializeSecretStorage, getDeviceSecret, setDeviceSecret } = require('../src/deviceSecrets');
 const { isSafeDeviceEntryName, isSafeProjectName, resolveProjectDirectory } = require('../src/pathSafety');
 
 suite('Security and reliability hardening', () => {
+    test('redacts wireless passwords while preserving serial port identity', () => {
+        assert.strictEqual(redactDevicePort('COM7'), 'COM7');
+        assert.strictEqual(redactDevicePort('ws:192.168.1.2,very-secret'), 'ws:192.168.1.2 [credential hidden]');
+        assert.strictEqual(redactDevicePort('wss:board.local,very-secret'), 'wss:board.local [credential hidden]');
+    });
+
     test('process runner passes shell metacharacters as literal argv', async () => {
         let output = '';
         const outputChannel = {
