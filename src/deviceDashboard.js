@@ -402,6 +402,7 @@ try {
 
 // Keep this board-identity logic separately unit-testable.
 const {resolvePinoutKey: resolveKey} = require('./pinoutResolver');
+const { findProjectRoot } = require('./refreshSettings');
 function resolvePinoutKey(platform, mcuFromCfg, machineStr) {
   return resolveKey(platform, mcuFromCfg, machineStr, PINOUT_DATA);
 }
@@ -1870,6 +1871,14 @@ function getWebviewContent(metrics) {
                 if (el) el.innerHTML = m.html;
                 return;
             }
+            if (m.command === 'pinoutSaveError') {
+                const status = document.getElementById('pinScanStatus');
+                if (status) {
+                    status.style.color = '#ef4444';
+                    status.textContent = 'Cannot save board selection: ' + String(m.message || '');
+                }
+                return;
+            }
             if (m.command === 'pinMapResults') {
                 const btn = document.getElementById('scanPinsBtn');
                 if (btn) {
@@ -2083,6 +2092,11 @@ function getWebviewContent(metrics) {
             }
         });
 
+        // Request a fresh project scan when this webview is ready to receive
+        // events. Sending a pin map immediately after setting webview.html can
+        // race the script's listener and silently lose the state.
+        vscode.postMessage({ command: 'dashboardReady' });
+
         // ── Static disable buttons (from boot log row / active box in initial HTML) ──
         const disableRemoteBtn = document.getElementById('disableRemoteBtn');
         if (disableRemoteBtn) {
@@ -2283,6 +2297,8 @@ async function openDeviceDashboard(
     return;
   }
   const workspaceRoot = workspaceFolders[0].uri.fsPath;
+  const configRoot = await findProjectRoot(workspaceRoot) || workspaceRoot;
+  const dashboardCfgPath = path.join(configRoot, "device.cfg");
 
   // Loading screen
   panel.webview.html = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';"><style>
@@ -2299,14 +2315,14 @@ async function openDeviceDashboard(
         activePort,
       );
 
-      // Read mcu from device.cfg for pinout fallback (used when device not connected)
-      let mcuFromCfg = "";
-      try {
-        const cfgPath = path.join(workspaceRoot, "device.cfg");
-        mcuFromCfg = (await getConfigValue(cfgPath, "device", "mcu")) || "";
-      } catch (_) {}
-
-      metrics.pinoutKey = resolvePinoutKey(metrics.platform, mcuFromCfg, metrics.machine);
+      // Restore the board the user deliberately selected in this project.
+      // Live pin assignments are rescanned after every dashboard render, so
+      // changes to .py files also appear after Refresh or re-opening Studio.
+      const mcuFromCfg = (await getConfigValue(dashboardCfgPath, "device", "mcu")) || "";
+      const selectedBoard = await getConfigValue(dashboardCfgPath, "dashboard", "pinout_board");
+      const discovered = resolvePinoutKey(metrics.platform, mcuFromCfg, metrics.machine);
+      metrics.pinoutKey = (selectedBoard && Object.hasOwn(PINOUT_DATA, selectedBoard))
+        ? selectedBoard : discovered;
       panel.webview.html = getWebviewContent(metrics);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -2321,7 +2337,16 @@ async function openDeviceDashboard(
   panel.webview.onDidReceiveMessage(
     async (message) => {
       if (message.command === "refreshMetrics") {
-        updateDashboard();
+        await updateDashboard();
+        return;
+      }
+      if (message.command === "dashboardReady") {
+        try {
+          const pinMap = scanWorkspacePins(workspaceRoot);
+          panel.webview.postMessage({ command: "pinMapResults", pinMap });
+        } catch (error) {
+          outputChannel.appendLine("[Pin Scanner] " + String(error.message || error));
+        }
         return;
       }
 
@@ -2451,7 +2476,7 @@ print('OK')
           } catch (_) {}
         }
         if (ip) {
-          const cfgPath = path.join(workspaceRoot, "device.cfg");
+          const cfgPath = dashboardCfgPath;
           await updateCfgComponent(cfgPath, "remote", "webworkflow_ip", ip);
         }
         panel.webview.postMessage({
@@ -2494,7 +2519,7 @@ print('OK')
 
         // Keep non-secret Web Workflow settings in device.cfg; password goes to SecretStorage.
         if (result.ok) {
-          const cfgPath = path.join(workspaceRoot, "device.cfg");
+          const cfgPath = dashboardCfgPath;
           await updateCfgComponent(cfgPath, "remote", "webworkflow_ip", "");
           await setDeviceSecret(cfgPath, "webworkflow_password", message.apiPassword);
           await updateCfgComponent(
@@ -2518,7 +2543,7 @@ print('OK')
       if (message.command === "enableWebrepl") {
         // The board can already have WebREPL running from an existing boot.py.
         // NEVER call webrepl.start() again just because Dashboard selected ws:.
-        const cfgPath = path.join(workspaceRoot, "device.cfg");
+        const cfgPath = dashboardCfgPath;
         try {
           const fwType = await getConfigValue(cfgPath, "device", "device_firmware");
           if (fwType === "CircuitPython") {
@@ -2605,7 +2630,7 @@ print('OK')
             const error = raw.match(/MPS_WEBREPL_STOP_ERROR\|([^\r\n]+)/);
             throw new Error(error ? error[1] : "Device did not confirm WebREPL stop.");
           }
-          const cfgPath = path.join(workspaceRoot, "device.cfg");
+          const cfgPath = dashboardCfgPath;
           await updateCfgComponent(cfgPath, "remote", "webrepl_enabled", "false");
           panel.webview.postMessage({ command: "remoteAccessDisabled" });
           outputChannel.appendLine("[WebREPL] Session stopped. Existing boot.py and device files preserved.");
@@ -2630,12 +2655,23 @@ print('OK')
 
       // ── Switch to Wireless ──────────────────────────────────────────────
       if (message.command === "switchPinout") {
-        const key = message.boardKey;
-        if (PINOUT_DATA[key]) {
-          panel.webview.postMessage({
-            command: "updatePinout",
-            html: createPinoutHtml(key)
-          });
+        const key = String(message.boardKey || "");
+        if (Object.hasOwn(PINOUT_DATA, key)) {
+          try {
+            await updateCfgComponent(dashboardCfgPath, "dashboard", "pinout_board", key);
+            panel.webview.postMessage({
+              command: "updatePinout",
+              html: createPinoutHtml(key)
+            });
+            // Restore the latest pin assignments on the newly selected board.
+            const pinMap = scanWorkspacePins(workspaceRoot);
+            panel.webview.postMessage({ command: "pinMapResults", pinMap });
+          } catch (error) {
+            panel.webview.postMessage({
+              command: "pinoutSaveError",
+              message: String(error.message || error)
+            });
+          }
         }
         return;
       }
@@ -2643,7 +2679,7 @@ print('OK')
       if (message.command === "switchToWireless") {
         // Use the password saved only after WebREPL startup was confirmed.
         // Never hardcode credentials or show them in a tab title.
-        const cfgPath = path.join(workspaceRoot, "device.cfg");
+        const cfgPath = dashboardCfgPath;
         const savedIp = await getConfigValue(cfgPath, "remote", "webrepl_ip");
         const savedSecret = await getDeviceSecret(cfgPath, "webrepl_password");
         const enabled = await getConfigValue(cfgPath, "remote", "webrepl_enabled");
