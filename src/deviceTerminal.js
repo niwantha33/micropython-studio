@@ -47,7 +47,7 @@ async function openDeviceTerminal(_context, devicePort) {
     const emit = text => { if (!closed) emitter.fire(text); };
     const onData = data => emit(data.toString('utf8'));
     const onConnected = () => {
-        emit(terminalNotice(`Connected to ${devicePort}. Press Enter to see the REPL prompt.`));
+        emit(terminalNotice(`Connected to ${devicePort}. Press Enter for >>>. If your script is running, press Ctrl+C to interrupt it. Opening Shell does not reset the board.`));
     };
     const onDisconnected = () => emit(terminalNotice('Device disconnected. Check the selected COM port and USB cable.'));
     const onError = err => emit(terminalNotice(`REPL connection error: ${err.message}`));
