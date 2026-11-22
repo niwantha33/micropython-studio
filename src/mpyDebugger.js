@@ -55,7 +55,30 @@ let stepInDeco = null;        // TextEditorDecorationType for step-in line (cyan
 let lastActionWasStepIn = false; // tracks whether the last resume action was step_in
 
 let rtaEvents = [];
+const MAX_RTA_EVENTS = 50000;
+const MAX_RTA_EVENTS_PER_SECOND = 5000;
+let rtaDroppedEvents = 0;
+let rtaRateStart = 0;
+let rtaRateCount = 0;
+let rtaLimitTriggered = false;
 let rtaDumpTimer = null;
+
+function addRtaEvent(event) {
+    if (rtaEvents.length >= MAX_RTA_EVENTS) {
+        rtaEvents.splice(0, 1000);
+        rtaDroppedEvents += 1000;
+    }
+    rtaEvents.push(event);
+}
+
+function isUnsafeRtaRate() {
+    const now = Date.now();
+    if (now - rtaRateStart >= 1000) {
+        rtaRateStart = now;
+        rtaRateCount = 0;
+    }
+    return ++rtaRateCount > MAX_RTA_EVENTS_PER_SECOND;
+}
 const taskMap = new Map();
 const funToName = new Map();
 // The identity is tied to this RTA capture, not to a reusable heap address.
@@ -997,6 +1020,10 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                             rtaDumpTimer = null;
                         }
                         rtaEvents = [];
+                        rtaDroppedEvents = 0;
+                        rtaRateCount = 0;
+                        rtaRateStart = Date.now();
+                        rtaLimitTriggered = false;
                         taskMap.clear();
                         funToName.clear();
                         rtaNativeIdentity.clear();
@@ -1029,8 +1056,20 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                         // The generic bridge-message forwarding below notifies the webview.
                     }
                 }
+                if ((msg.evt === 'rta_entry' || msg.evt === 'rta_exit') &&
+                    isUnsafeRtaRate() && !rtaLimitTriggered) {
+                    // Protect the extension host and webview from a trace
+                    // storm. Stop RTA instead of accumulating unbounded
+                    // messages or pretending an incomplete trace is complete.
+                    rtaLimitTriggered = true;
+                    try { bridge.stdin.write(JSON.stringify({ op: 'rta_off' }) + '\n'); } catch (_) {}
+                    if (panel) panel.webview.postMessage({
+                        evt: 'error',
+                        msg: 'RTA event rate exceeded 5000/s; tracing stopped to protect VS Code. Use a shorter capture.'
+                    });
+                }
                 if (msg.evt === 'rta_entry') {
-                    rtaEvents.push({
+                    addRtaEvent({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
                         // Snapshot the live name so later heap reuse cannot relabel history.
                         _rtaNativeName: rtaNativeIdentity.has(msg.fun) ? funToName.get(msg.fun) : undefined,
@@ -1042,7 +1081,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                     if (rtaDumpTimer) scheduleRtaTraceDump();
                 }
                 if (msg.evt === 'rta_exit') {
-                    rtaEvents.push({
+                    addRtaEvent({
                         name: `fun_0x${msg.fun.toString(16).toUpperCase()}`,
                         _rtaNativeName: rtaNativeIdentity.has(msg.fun) ? funToName.get(msg.fun) : undefined,
                         ph: "E",
@@ -2918,6 +2957,10 @@ function dumpRtaTrace() {
     try {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!workspaceFolder) return;
+        if (rtaDroppedEvents > 0) {
+            vscode.window.showWarningMessage('RTA capture was truncated by ' +
+                rtaDroppedEvents + ' events to protect VS Code memory. Do not treat it as a complete timing trace.');
+        }
         const filePath = path.join(workspaceFolder, 'rta_trace.json');
         
         let currentTid = 1;
