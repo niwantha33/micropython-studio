@@ -657,6 +657,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     let buf = '';
     const MAX_BRIDGE_LINE = 128 * 1024;
     bridge.stdout.on('data', (d) => {
+        if (bridge !== sessionBridge) return;
         buf += d.toString();
         if (buf.length > MAX_BRIDGE_LINE && buf.indexOf('\n') === -1) {
             buf = '';
@@ -702,10 +703,13 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                         bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
                         panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; synchronizing breakpoint table' });
                         startupTimer = setTimeout(() => {
-                            if (!sessionReady && panel) {
+                            if (!sessionReady && bridge === sessionBridge && panel) {
                                 const error = 'Debugger port opened but firmware did not answer. Check the dedicated debug COM and matching debugger-enabled firmware.';
                                 panel.webview.postMessage({ evt: 'error', msg: error });
-                                emitNative({ evt: 'error', msg: error });
+                                // A port that opens without a pump handshake is NOT
+                                // an attached debugger. Close it, releasing the CDC.
+                                emitNative({ evt: 'transport_lost', msg: error });
+                                try { sessionBridge.kill(); } catch (_) {}
                             }
                         }, 3500);
                     } catch (e) {
@@ -1147,16 +1151,19 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         }
     });
     bridge.stderr.on('data', (d) => {
+        if (bridge !== sessionBridge) return;
         if (panel) panel.webview.postMessage({ evt: 'stderr', text: d.toString() });
         emitNative({ evt: 'stderr', text: d.toString() });
     });
     bridge.on('error', (error) => {
+        if (bridge !== sessionBridge) return;
         bridgeTransportFailureReported = true;
         const message = 'Cannot start MicroPython debugger bridge: ' + error.message;
         if (panel) panel.webview.postMessage({ evt: 'error', msg: message });
         emitNative({ evt: 'transport_lost', msg: message });
     });
     bridge.on('close', (code, signal) => {
+        if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
         // An older process can close after another debug session has opened.
         // Never publish its events or clear the newer session's bridge.
         if (bridge !== sessionBridge) return;
@@ -1390,7 +1397,10 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         postBreakpointSnapshot();
     });
 
+    const ownedPanel = panel;
     panel.onDidDispose(() => {
+        // Late disposal of a prior view must not dismantle the next session.
+        if (panel !== ownedPanel) return;
         bridgeExpectedShutdown = true;
         if (startupTimer) {
             clearTimeout(startupTimer);
@@ -1404,9 +1414,9 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         if (rtaEvents.length > 0) {
             dumpRtaTrace();
         }
-        if (bridge) {
-            try { bridge.stdin.write(JSON.stringify({ op: 'quit' }) + '\n'); } catch (e) {}
-            bridge.kill();
+        if (bridge === sessionBridge) {
+            try { sessionBridge.stdin.write(JSON.stringify({ op: 'quit' }) + '\n'); } catch (e) {}
+            sessionBridge.kill();
             bridge = null;
         }
         panel = null;
