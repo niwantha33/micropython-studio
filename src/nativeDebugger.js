@@ -10,6 +10,7 @@ const {
 } = require('./mpyDebugger');
 const { parseDebuggerReply, sanitizeTargetGlobals } = require('./nativeDebugParser');
 const { defaultAttachConfiguration, resolveReplPort, resolveDebugPort } = require('./debugProjectConfig');
+const { getBuildInfo } = require('./buildInfo');
 
 const DEBUG_TYPE = 'micropython-studio';
 
@@ -60,9 +61,12 @@ class NativeMicroPythonAdapter {
         if (this.terminated) return;
         if (msg.evt === 'pump_ready') {
             this.ready = true;
+            const build = getBuildInfo(this.context.extensionPath, this.context.extensionMode);
             this.sendEvent('output', {
                 category: 'console',
-                output: 'Attached to MicroPython debug CDC ' + this.config.debugPort +
+                output: 'MicroPython Studio ' + (build.version || 'development') +
+                    ' (commit ' + (build.commitShort || 'unknown') + ')\n' +
+                    'Attached to MicroPython debug CDC ' + this.config.debugPort +
                     '. Breakpoints are armed; run your program on the separate REPL port ' +
                     (this.config.replPort || '(not selected)') +
                     '. Attach does not automatically execute main.py or functions.\n'
