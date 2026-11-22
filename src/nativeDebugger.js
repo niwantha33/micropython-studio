@@ -9,6 +9,8 @@ const {
     connectNativeDebugger, sendNativeCommand, disconnectNativeDebugger
 } = require('./mpyDebugger');
 const { parseDebuggerReply } = require('./nativeDebugParser');
+const { getConfigValue } = require('./commonFxn');
+const { chooseDebugAdapter, findDebugConfigPath } = require('./debugAdapterConfig');
 
 const DEBUG_TYPE = 'micropython-studio';
 
@@ -279,29 +281,36 @@ function registerNativeDebugger(context, getReplPort, getPython) {
             return [{ name: 'MicroPython Studio: Native Debugger', type: DEBUG_TYPE,
                 request: 'launch', replPort: getReplPort() || '', debugPort: '' }];
         },
-        async resolveDebugConfiguration(_folder, config) {
+        async resolveDebugConfiguration(folder, config) {
             if (!config.type) config.type = DEBUG_TYPE;
             if (!config.request) config.request = 'launch';
             if (!config.name) config.name = 'MicroPython Studio: Native Debugger';
-            if (!config.replPort) config.replPort = getReplPort() || '';
-            const repl = String(config.replPort || '').trim();
-            if (!repl || repl === '-' || repl.startsWith('ws:')) {
-                vscode.window.showErrorMessage('Select the USB REPL/upload port first. Native debugging uses a separate debug CDC.');
+            try {
+                const configPath = await findDebugConfigPath(folder);
+                if (!configPath) {
+                    vscode.window.showErrorMessage('Open a MicroPython project containing device.cfg before debugging.');
+                    return undefined;
+                }
+                // F5 must also work before pressing Refresh. The project config
+                // is authoritative when the debug configuration has no REPL port.
+                const savedRepl = await getConfigValue(configPath, 'device', 'port');
+                if (!config.replPort) config.replPort = getReplPort() || savedRepl || '';
+                const repl = String(config.replPort || '').trim();
+                if (!repl || repl === '-' || /^wss?:/i.test(repl)) {
+                    vscode.window.showErrorMessage('Select the USB REPL/upload port first. Native debugging uses a separate debug CDC.');
+                    return undefined;
+                }
+                const debugPort = await chooseDebugAdapter(configPath, repl, {
+                    requestedPort: config.debugPort
+                });
+                if (!debugPort) return undefined; // User cancelled adapter setup.
+                config.replPort = repl;
+                config.debugPort = debugPort;
+                return config;
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot configure debug adapter: ' + error.message);
                 return undefined;
             }
-            if (!config.debugPort) config.debugPort = await vscode.window.showInputBox({
-                prompt: 'MicroPython debugger CDC port (different from REPL)',
-                placeHolder: 'e.g. COM13'
-            });
-            const debugPort = String(config.debugPort || '').trim();
-            if (!debugPort) return undefined;
-            if (debugPort.toUpperCase() === repl.toUpperCase()) {
-                vscode.window.showErrorMessage('Debugger CDC must be different from the REPL/upload COM port.');
-                return undefined;
-            }
-            config.replPort = repl;
-            config.debugPort = debugPort;
-            return config;
         }
     };
     context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, provider));
