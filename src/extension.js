@@ -13,7 +13,8 @@ const fs = require('fs'); // Added fs import
 const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
-const { getValidDevicePort } = require('./refreshSettings');
+const { getValidDevicePort, findProjectRoot } = require('./refreshSettings');
+const { isSavedUsbPort } = require('./devicePortSelection');
 const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
@@ -41,6 +42,7 @@ const outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
 let gMpremoteTerminal = null;
 let gRemoteDevicePort = null;
 let gDeviceCodeDir = null;
+let gDeviceConfigPath = null;
 let gDeviceFirmware = 'MicroPython'; // 'MicroPython' | 'CircuitPython'
 let currentTarget = 'Host';
 
@@ -52,6 +54,50 @@ let deviceFileTreeView = null;
 let simulatorButton = null;
 
 
+/**
+ * The only device.cfg to edit is the one refresh actually found. The code
+ * directory can be nested: path.dirname(deviceCodeDir) is not necessarily
+ * the project root. Resolve once and share across all port controls.
+ */
+async function getActiveDeviceConfigPath() {
+    if (gDeviceConfigPath) return gDeviceConfigPath;
+    const candidates = [
+        gDeviceCodeDir,
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+    ];
+    for (const directory of candidates) {
+        if (!directory) continue;
+        const root = await findProjectRoot(directory);
+        if (root) {
+            gDeviceConfigPath = path.join(root, 'device.cfg');
+            return gDeviceConfigPath;
+        }
+    }
+    throw new Error('Cannot save device port: no project device.cfg found. Refresh the project folder first.');
+}
+
+/** Save before changing the UI, so a failed write cannot claim success. */
+async function saveSelectedDevicePort(port) {
+    const configPath = await getActiveDeviceConfigPath();
+    if (typeof port !== 'string' || !port.trim()) throw new Error('Choose a valid device port.');
+    const selected = port.trim();
+    if (/^wss?:/i.test(selected)) {
+        // Keep WebREPL credentials exclusively in SecretStorage.
+        await updateCfgComponent(configPath, 'device', 'run_transport', 'webrepl');
+        return selected;
+    }
+    await updateCfgComponent(configPath, 'device', 'port', selected);
+    await updateCfgComponent(configPath, 'device', 'run_transport', 'usb');
+    const devices = await getConnectedDevices();
+    const matched = devices.find(device => device.port?.toLowerCase() === selected.toLowerCase());
+    if (matched?.vidpid && matched.vidpid !== '0000:0000') {
+        // Informational metadata only. Refresh must not use VID:PID to
+        // substitute another COM number for this explicitly selected port.
+        await updateCfgComponent(configPath, 'device', 'deviceId', matched.vidpid);
+    }
+    return selected;
+}
+
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
 
 /**
@@ -60,9 +106,7 @@ let simulatorButton = null;
  * Returns null when there is no choice to offer (WebREPL not configured).
  */
 async function _buildRunPortOptions() {
-    if (!gDeviceCodeDir) return null;
-
-    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
+    const cfgPath = await getActiveDeviceConfigPath();
     const savedCom = await getConfigValue(cfgPath, 'device', 'port');
     const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
     const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
@@ -71,7 +115,7 @@ async function _buildRunPortOptions() {
     if (enabled !== 'true' || !ip) return null;
 
     const items = [];
-    if (savedCom) {
+    if (isSavedUsbPort(savedCom)) {
         items.push({ label: `[OK] USB — ${savedCom}`, port: savedCom });
     }
     items.push({ label: `[OK] Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
@@ -687,6 +731,7 @@ function activate(context) {
                     gRemoteDevicePort = comValues[0];
                     gDeviceCodeDir = comValues[1];
                     gDeviceFirmware = comValues[2];
+                    gDeviceConfigPath = comValues[3] || null;
 
                     // Set context key so package.json `when` clauses can react
                     vscode.commands.executeCommand('setContext',
@@ -1000,18 +1045,15 @@ function activate(context) {
 
             vscode.window.showInformationMessage(`Sending hard reset to ${redactDevicePort(gRemoteDevicePort)}...`);
             try {
-                if (connectionManager.isConnected &&
-                    connectionManager.portName === gRemoteDevicePort) {
-                    // The REPL daemon already owns this COM port. Reset via
-                    // its serial handle, not a second Python subprocess.
-                    await wsQueue.run(() => connectionManager.hardReset(),
-                        'Hard Reset (shared REPL)', true);
-                } else {
-                    const code = await wsQueue.run(() => _spawnAsync(venvPython, hrArgs),
-                        'Hard Reset (standalone)');
-                    if (code !== 0) {
-                        throw new Error('Reset backend failed; see MicroPython IDE Output for details.');
-                    }
+                // Proven 2.6.1 serial daemon has no inline hard-reset
+                // protocol. The queue releases its COM handle BEFORE the
+                // backend opens it, then restores the shared REPL in finally.
+                const code = await wsQueue.run(
+                    () => _spawnAsync(venvPython, hrArgs),
+                    'Hard Reset (exclusive handoff)'
+                );
+                if (code !== 0) {
+                    throw new Error('Reset backend failed; see MicroPython IDE Output for details.');
                 }
             } catch (e) {
                 vscode.window.showErrorMessage(`Hard reset failed: ${e.message}`);
@@ -1290,19 +1332,11 @@ function activate(context) {
             });
             if (!pick) return;
             const newPort = /** @type {any} */ (pick).port;
-            gRemoteDevicePort = newPort;
-
-            // Persist to device.cfg if we have a project
-            if (gDeviceCodeDir) {
-                const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
-                await updateCfgComponent(cfgPath, 'device', 'port', newPort);
-
-                // Also update deviceId (VID:PID) so getValidDevicePort doesn't flip it back
-                const devices = await getConnectedDevices();
-                const matched = devices.find(d => d.port === newPort);
-                if (matched && matched.vidpid && matched.vidpid !== '0000:0000') {
-                    await updateCfgComponent(cfgPath, 'device', 'deviceId', matched.vidpid);
-                }
+            try {
+                gRemoteDevicePort = await saveSelectedDevicePort(newPort);
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot save selected run port: ' + error.message);
+                return;
             }
 
             updateDeviceStatusBar();
@@ -1387,11 +1421,8 @@ function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.startSimulator', async () => {
             await startSimulator(context, outputChannel, async (newPort) => {
+                // Simulator ports are temporary. Never replace saved USB COM.
                 gRemoteDevicePort = newPort;
-                if (gDeviceCodeDir) {
-                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
-                    await updateCfgComponent(cfgPath, 'device', 'port', newPort);
-                }
                 updateDeviceStatusBar();
                 if (deviceFileExplorer) {
                     const isCp = gDeviceFirmware === 'CircuitPython' || (gDeviceCodeDir && /^[A-Za-z]:[/\\]?$/.test(gDeviceCodeDir.replace(/[/\\]+$/, '') + '\\'));
@@ -1419,22 +1450,14 @@ function activate(context) {
             const port = await vscode.window.showInputBox({
                 prompt: 'Enter the device port manually',
                 placeHolder: 'e.g. COM3, /dev/ttyUSB0',
-                value: gRemoteDevicePort || '-'
+                value: gRemoteDevicePort || ''
             });
             if (port) {
-                gRemoteDevicePort = port;
-
-                // Persist to device.cfg if we have a project
-                if (gDeviceCodeDir) {
-                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
-                    await updateCfgComponent(cfgPath, 'device', 'port', port);
-
-                    // Also update deviceId (VID:PID) to prevent snap-back to old port
-                    const devices = await getConnectedDevices();
-                    const matched = devices.find(d => d.port === port);
-                    if (matched && matched.vidpid && matched.vidpid !== '0000:0000') {
-                        await updateCfgComponent(cfgPath, 'device', 'deviceId', matched.vidpid);
-                    }
+                try {
+                    gRemoteDevicePort = await saveSelectedDevicePort(port);
+                } catch (error) {
+                    vscode.window.showErrorMessage('Device port was not saved: ' + error.message);
+                    return;
                 }
 
                 updateDeviceStatusBar();
@@ -1605,13 +1628,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.openDeviceDashboard', async () => {
             await openDeviceDashboard(context, outputChannel, gRemoteDevicePort, async (newPort) => {
-                gRemoteDevicePort = newPort;
-
-                // Persist to device.cfg if we have a project
-                if (gDeviceCodeDir) {
-                    const cfgPath = path.join(path.dirname(gDeviceCodeDir), 'device.cfg');
-                    await updateCfgComponent(cfgPath, 'device', 'port', newPort);
-                }
+                gRemoteDevicePort = await saveSelectedDevicePort(newPort);
 
                 updateDeviceStatusBar();
                 if (deviceFileExplorer) {

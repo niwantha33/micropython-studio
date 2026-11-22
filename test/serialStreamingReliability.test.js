@@ -4,147 +4,61 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const connectionManager = require('../src/connectionManager');
-const wsQueue = require('../src/wsQueue');
 
-suite('Single-owner serial stream across Studio features', () => {
+suite('Known-good 2.6.1 serial transport compatibility', () => {
     const root = path.join(__dirname, '..');
-    const daemon = fs.readFileSync(path.join(root, 'src', 'mpy_daemon.py'), 'utf8');
-    const extension = fs.readFileSync(path.join(root, 'src', 'extension.js'), 'utf8');
-    const terminal = fs.readFileSync(path.join(root, 'src', 'deviceTerminal.js'), 'utf8');
+    const daemonSource = fs.readFileSync(path.join(root, 'src', 'mpy_daemon.py'), 'utf8');
+    const terminalSource = fs.readFileSync(path.join(root, 'src', 'deviceTerminal.js'), 'utf8');
+    const extensionSource = fs.readFileSync(path.join(root, 'src', 'extension.js'), 'utf8');
 
-    test('host handles Run acknowledgement, stream lifecycle and duplicate Run', async () => {
-        const before = {
+    test('retain 2.6.1 passive shell and existing daemon protocol', () => {
+        assert.ok(terminalSource.includes('no reset or interrupt sent'));
+        assert.ok(terminalSource.includes('Press Enter to see the REPL prompt'));
+        assert.ok(!terminalSource.includes("connectionManager.disconnect()"));
+        assert.ok(daemonSource.includes('if action == "terminal_input":'));
+        assert.ok(daemonSource.includes('elif action == "run_in_terminal":'));
+        assert.ok(!daemonSource.includes('elif action == "hard_reset":'));
+        assert.ok(!daemonSource.includes('_run_terminal_worker'));
+    });
+
+    test('interactive input passes through existing shared daemon without a second COM owner', async () => {
+        const original = {
             connected: connectionManager.isConnected,
             suspended: connectionManager.isSuspended,
-            running: connectionManager.isScriptRunning,
-            process: connectionManager.daemonProcess,
-            pending: connectionManager._runStartPending,
-            next: connectionManager._nextReqId
+            process: connectionManager.daemonProcess
         };
-        const commands = [];
+        const frames = [];
         try {
             connectionManager.isConnected = true;
             connectionManager.isSuspended = false;
-            connectionManager.isScriptRunning = false;
             connectionManager.daemonProcess = {
-                stdin: { write(text, callback) { commands.push(JSON.parse(text)); callback?.(null); } }
+                stdin: { write(data, cb) { frames.push(JSON.parse(data)); cb?.(null); } }
             };
-            const pending = connectionManager.runInTerminal('while True: pass');
-            const duplicate = connectionManager.runInTerminal('print("second")');
-            assert.strictEqual(pending, duplicate);
-            assert.strictEqual(commands.length, 1);
-            assert.strictEqual(commands[0].action, 'run_in_terminal');
-            connectionManager._handleDaemonMessage(
-                { type: 'run_started', success: true, id: commands[0].id },
-                () => {}, () => {}, true
-            );
-            await pending;
-            assert.strictEqual(connectionManager.isScriptRunning, true);
-            await assert.rejects(
-                () => connectionManager.runCodeSilently('print(1)'),
-                /REPL is busy/
-            );
-            await assert.rejects(
-                () => wsQueue.run(async () => {}, 'Read File', true),
-                /MCU script is running/
-            );
-            connectionManager._handleDaemonMessage({ type: 'run_finished' },
-                () => {}, () => {}, true);
-            assert.strictEqual(connectionManager.isScriptRunning, false);
+            await connectionManager.write(Buffer.from('\rprint(1 + 1)\r', 'utf8'));
+            assert.strictEqual(frames.length, 1);
+            assert.strictEqual(frames[0].action, 'terminal_input');
+            assert.strictEqual(Buffer.from(frames[0].data, 'base64').toString(), '\rprint(1 + 1)\r');
+            await connectionManager.runInTerminal('print(2)');
+            assert.strictEqual(frames[1].action, 'run_in_terminal');
+            assert.strictEqual(frames[1].code, 'print(2)');
         } finally {
-            if (connectionManager._runStartPending) {
-                clearTimeout(connectionManager._runStartPending.timer);
-            }
-            connectionManager.isConnected = before.connected;
-            connectionManager.isSuspended = before.suspended;
-            connectionManager.isScriptRunning = before.running;
-            connectionManager.daemonProcess = before.process;
-            connectionManager._runStartPending = before.pending;
-            connectionManager._nextReqId = before.next;
+            connectionManager.isConnected = original.connected;
+            connectionManager.isSuspended = original.suspended;
+            connectionManager.daemonProcess = original.process;
         }
     });
 
-    test('an invalid or busy Run fails immediately with an explicit error', async () => {
-        const before = {
-            connected: connectionManager.isConnected,
-            suspended: connectionManager.isSuspended,
-            running: connectionManager.isScriptRunning,
-            process: connectionManager.daemonProcess,
-            pending: connectionManager._runStartPending
-        };
-        try {
-            connectionManager.isConnected = true;
-            connectionManager.isSuspended = false;
-            connectionManager.isScriptRunning = false;
-            let command;
-            connectionManager.daemonProcess = {
-                stdin: { write(text, cb) { command = JSON.parse(text); cb?.(null); } }
-            };
-            const pending = connectionManager.runInTerminal('print(1)');
-            connectionManager._handleDaemonMessage({
-                type: 'run_started', id: command.id, success: false, error: 'serial busy'
-            }, () => {}, () => {}, true);
-            await assert.rejects(pending, /serial busy/);
-            assert.strictEqual(connectionManager.isScriptRunning, false);
-        } finally {
-            if (connectionManager._runStartPending) clearTimeout(connectionManager._runStartPending.timer);
-            connectionManager.isConnected = before.connected;
-            connectionManager.isSuspended = before.suspended;
-            connectionManager.isScriptRunning = before.running;
-            connectionManager.daemonProcess = before.process;
-            connectionManager._runStartPending = before.pending;
-        }
+    test('Hard Reset uses exclusive handoff, not an unsupported daemon action', () => {
+        assert.ok(extensionSource.includes("'Hard Reset (exclusive handoff)'"));
+        assert.ok(!extensionSource.includes('connectionManager.hardReset()'));
+        assert.ok(extensionSource.includes("await wsQueue.run("));
+        assert.ok(daemonSource.includes('_release_lock(self.port)'));
     });
 
-    test('USB reconnecting blocks operations and updates status', async () => {
-        const before = {
-            connecting: connectionManager.isReconnecting,
-            connected: connectionManager.isConnected,
-            suspended: connectionManager.isSuspended,
-            port: connectionManager.portName,
-        };
-        try {
-            connectionManager.portName = 'COM999';
-            connectionManager.isConnected = true;
-            connectionManager.isSuspended = false;
-            connectionManager._handleDaemonMessage({ type: 'reconnecting', port: 'COM999' },
-                () => {}, () => {}, true);
-            assert.strictEqual(connectionManager.isReconnecting, true);
-            await assert.rejects(
-                wsQueue.run(async () => {}, 'Read File', true),
-                /USB serial transport is reconnecting/
-            );
-            connectionManager._handleDaemonMessage({ type: 'connected', port: 'COM999' },
-                () => {}, () => {}, true);
-            assert.strictEqual(connectionManager.isReconnecting, false);
-        } finally {
-            connectionManager.isReconnecting = before.connecting;
-            connectionManager.isConnected = before.connected;
-            connectionManager.isSuspended = before.suspended;
-            connectionManager.portName = before.port;
-        }
-    });
-
-    test('file explorer and dashboard must not use serial daemon for wrong target port', () => {
-        const explorer = fs.readFileSync(path.join(root, 'src', 'deviceFileExplorer.js'), 'utf8');
-        const dashboard = fs.readFileSync(path.join(root, 'src', 'deviceDashboard.js'), 'utf8');
-        const matches = explorer.match(/if \(canUseSharedSerial\(connectionManager,/g) || [];
-        assert.strictEqual(matches.length, 8);
-        assert.ok(explorer.includes('manager.portName === targetPort'));
-        assert.ok(dashboard.includes('connectionManager.portName === devicePort'));
-        assert.ok(extension.includes('connectionManager.portName === runPort'));
-        assert.ok(terminal.includes('await connectionManager.connect(devicePort)'));
-    });
-
-    test('Stop does not silently reboot or compete for port ownership', () => {
-        const stop = extension.slice(extension.indexOf('// Stop must interrupt the MCU'),
-            extension.indexOf('    async function cpUploadFiles'));
-        assert.ok(stop.includes("connectionManager.write(Buffer.from('\\r\\x03'))"));
-        assert.ok(!stop.includes("executeCommand('micropython-ide.hardResetDevice')"));
-        assert.ok(extension.includes("wsQueue.run(() => connectionManager.runInTerminal(code)"));
-        assert.ok(daemon.includes('target=self._run_terminal_worker'));
-        assert.ok(daemon.includes('self._stream_raw_execution()'));
-        assert.ok(daemon.includes('self._event_lock'));
-        assert.ok(terminal.includes("new StringDecoder('utf8')"));
+    test('CLI backend never kills other processes to seize COM ports', () => {
+        const backend = fs.readFileSync(path.join(root, 'src', 'mps_backend.py'), 'utf8');
+        assert.ok(!backend.includes('_kill_port_owner('));
+        assert.ok(!backend.includes('_kill_comport_processes('));
+        assert.ok(!backend.includes('taskkill'));
     });
 });
