@@ -29,11 +29,16 @@ async function findDebugCfgPath(folder) {
 }
 
 async function resolveReplPort(configPort, runtimePort, folder) {
-    const direct = normalizeSerialPort(configPort || runtimePort || '');
-    if (isSavedUsbPort(direct) && direct !== '-') return direct;
+    // An explicit launch.json override wins; otherwise device.cfg is the
+    // project authority. A stale in-memory COM must not override a port the
+    // user selected and saved before clicking Start Debug.
+    const explicit = normalizeSerialPort(configPort);
+    if (isSavedUsbPort(explicit) && explicit !== '-') return explicit;
     const cfg = await findDebugCfgPath(folder);
     const saved = cfg ? await getConfigValue(cfg, 'device', 'port') : null;
-    return isSavedUsbPort(saved) ? normalizeSerialPort(saved) : null;
+    if (isSavedUsbPort(saved)) return normalizeSerialPort(saved);
+    const fallback = normalizeSerialPort(runtimePort);
+    return isSavedUsbPort(fallback) && fallback !== '-' ? fallback : null;
 }
 
 /**
