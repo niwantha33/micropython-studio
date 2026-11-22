@@ -333,7 +333,7 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
 
         // Fail before claiming the serial device if the binary file cannot
         // be read. Do not accept malformed paths or wrong file types.
-        for (const row of settings.rows || []) {
+        for (const row of action === 'flash' ? (settings.rows || []) : []) {
             if (!row.enabled || !row.path) continue;
             if (!path.isAbsolute(row.path) || !/\.bin$/i.test(row.path)) {
                 sendLog('[ERROR] Select a local MicroPython .bin file, not a script or ZIP.\n');
@@ -365,6 +365,7 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
             }
         }
         flashPending = true;
+        let firmwareWritten = false;
         try {
             await wsQueue.run(() => new Promise((resolve) => {
                 // Exclusive handoff: the queue releases the REPL's COM handle
@@ -387,6 +388,7 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
                     if (activeProcess === child) activeProcess = null;
                     panel.webview.postMessage({ type: 'processState', running: false });
                     if (code === 0) {
+                        firmwareWritten = true;
                         sendProgress(100, action === 'erase' ? 'Erase Complete' : 'Flash Complete');
                         sendLog(action === 'erase' ? '\n[SUCCESS] Flash erased.\n' :
                             '\n[SUCCESS] Firmware write and esptool verification finished.\n');
@@ -400,8 +402,13 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
                 child.on('error', err => finish(-1, err.message));
             }), 'Firmware flash (exclusive COM handoff)');
         } catch (err) {
-            sendProgress(0, 'Serial port busy');
-            sendLog('[ERROR] Flash operation could not acquire the serial port: ' + err.message + '\n');
+            if (firmwareWritten) {
+                sendLog('[WARNING] Firmware write finished, but the REPL port did not automatically reconnect: ' +
+                    err.message + '. Reconnect the USB device after it re-enumerates.\n');
+            } else {
+                sendProgress(0, 'Serial port busy');
+                sendLog('[ERROR] Flash operation could not acquire the serial port: ' + err.message + '\n');
+            }
         } finally {
             flashPending = false;
         }
