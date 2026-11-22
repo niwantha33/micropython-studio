@@ -119,7 +119,9 @@ class MpyDaemon:
         self.in_raw_repl = False
         self.suspended = False
         self._read_buf = b""
-        self._lock = threading.Lock()
+        # Reconnect can be called by a write while this same thread holds the
+        # device lock. A plain Lock deadlocks on transient USB disconnects.
+        self._lock = threading.RLock()
         
         # New RX queue & lock
         self._rx_queue = bytearray()
@@ -525,6 +527,33 @@ class MpyDaemon:
                         pass
                     self.in_raw_repl = False
                     self._flush_terminal_input()
+        elif action == "hard_reset":
+            # The daemon owns COM already: a second Python process must never
+            # open or kill the port owner just to perform an explicit reset.
+            request_id = cmd.get("id")
+            try:
+                with self._lock:
+                    if (self.suspended or self.in_raw_repl or
+                            not self.serial or not self.serial.is_open):
+                        raise RuntimeError("REPL port is busy or disconnected")
+                    self._paced_serial_write(b'\r\x03\x03')
+                    time.sleep(0.1)
+                    self.serial.setRTS(True)
+                    self.serial.setDTR(False)
+                    time.sleep(0.1)
+                    self.serial.setRTS(False)
+                    time.sleep(0.5)
+                    # Soft-reboot after hardware reset, then stop main.py just
+                    # as the original explicit hard-reset command did.
+                    self._paced_serial_write(b'\r\x04')
+                    time.sleep(0.4)
+                    self._paced_serial_write(b'\r\x03\x03')
+                self.send_event("reset_result", {"id": request_id, "success": True})
+            except Exception as err:
+                self.send_event("reset_result", {
+                    "id": request_id, "success": False,
+                    "error": str(err)[:320]
+                })
         elif action == "suspend":
             with self._lock:
                 self.suspended = True
