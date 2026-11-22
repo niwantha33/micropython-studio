@@ -136,6 +136,7 @@ function runPythonProcess(exe, args, onComplete) {
                 }
             }
         }
+        aiAssistanceProvider?.recordDeviceOutput(fullOutput);
         _notifyAiOnError(fullOutput, args);
         channel.appendLine(code === 0 ? '[SUCCESS] Task complete.' :
             `[ERROR] Task failed${code === null ? ' (connection or process error)' : ' with exit code ' + code}.`);
@@ -241,6 +242,7 @@ async function _spawnAsync(exe, args) {
                 finish(null);
             });
         });
+        aiAssistanceProvider?.recordDeviceOutput(fullOutput);
         _notifyAiOnError(fullOutput, args);
     } catch (err) {
         channel.appendLine(`[ERROR] Cannot start device operation: ${err.message}`);
