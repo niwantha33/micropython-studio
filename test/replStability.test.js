@@ -37,7 +37,10 @@ suite('Passive and reliable MicroPython REPL', () => {
     test('daemon only releases its own file lock and does not Ctrl-C after USB reconnect', () => {
         assert.ok(daemon.includes('if owner != f"{pid}:daemon":'));
         assert.ok(daemon.includes('if not _acquire_lock(self.port):'));
-        assert.ok(daemon.includes('Reconnection is transport recovery, NOT permission'));
+        assert.ok(daemon.includes('Never send Ctrl+C or reset during recovery.'));
+        assert.ok(daemon.includes('self.send_event("reconnecting"'));
+        assert.ok(daemon.includes('self.running = False'));
+
     });
     test('backend waits for release and confirms exit status', () => {
         assert.ok(extension.includes("await connectionManager.suspend()"));
