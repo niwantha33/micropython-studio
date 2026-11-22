@@ -91,9 +91,8 @@ async function stopDebugSessionSafely(session) {
     });
     try {
         await vscode.debug.stopDebugging(session);
-        if (vscode.debug.activeDebugSession?.id === session.id) {
-            await ended;
-        }
+        // Wait for actual adapter termination, not just the stop request.
+        await ended;
     } finally {
         clearTimeout(deadline);
         if (disposable) disposable.dispose();
