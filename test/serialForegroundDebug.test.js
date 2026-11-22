@@ -105,6 +105,9 @@ suite('Serial foreground output and native-debug pause safety', () => {
         assert.ok(details.includes("op: 'rta_off'"));
         assert.ok(details.includes('Promise.resolve(view.webview.postMessage(message)).catch(() => false)'));
         assert.ok(details.includes('rtaLimitTriggered &&'));
+        assert.ok(details.includes('bridgeExpectedShutdown = true'));
+        assert.ok(details.includes('bridgeTransportFailureReported = true'));
+        assert.ok(details.includes('MicroPython debugger bridge exited unexpectedly'));
     });
 
     test('daemon must not use blocking raw-paste result for foreground MCU scripts', () => {
