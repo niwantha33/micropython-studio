@@ -344,6 +344,8 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     }
 
     // Spawn the Python bridge
+    let bridgeExpectedShutdown = false;
+    let bridgeTransportFailureReported = false;
     const script = path.join(context.extensionPath, 'src', 'dbg_bridge.py');
     const pyCmd = venvPython || (process.platform === 'win32' ? 'python' : 'python3');
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
@@ -676,6 +678,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                 const msg = JSON.parse(line);
 
                 if (msg.evt === 'transport_lost') {
+                    bridgeTransportFailureReported = true;
                     sessionReady = false;
                     if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
                     if (panel) {
@@ -1145,11 +1148,21 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         emitNative({ evt: 'stderr', text: d.toString() });
     });
     bridge.on('error', (error) => {
+        bridgeTransportFailureReported = true;
         const message = 'Cannot start MicroPython debugger bridge: ' + error.message;
         if (panel) panel.webview.postMessage({ evt: 'error', msg: message });
         emitNative({ evt: 'transport_lost', msg: message });
     });
-    bridge.on('close', () => {
+    bridge.on('close', (code, signal) => {
+        if (!bridgeExpectedShutdown && !bridgeTransportFailureReported) {
+            const diagnostic = 'MicroPython debugger bridge exited unexpectedly ' +
+                '(exit=' + (code === null ? 'unknown' : code) +
+                ', signal=' + (signal || 'none') +
+                '). Check the MicroPython IDE Output and verify the dedicated debug COM port.';
+            if (panel) panel.webview.postMessage({ evt: 'error', msg: diagnostic });
+            emitNative({ evt: 'transport_lost', msg: diagnostic });
+            console.error('[MicroPython Native Debug] ' + diagnostic);
+        }
         if (panel) panel.webview.postMessage({ evt: 'closed' });
         emitNative({ evt: 'closed' });
         bridge = null;
@@ -1372,6 +1385,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     });
 
     panel.onDidDispose(() => {
+        bridgeExpectedShutdown = true;
         if (startupTimer) {
             clearTimeout(startupTimer);
             startupTimer = null;
