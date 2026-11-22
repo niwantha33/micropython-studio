@@ -12,7 +12,7 @@ const path = require('path');
 const fs = require('fs');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 const { SIMPLE_PROFILES, getSimpleFlashProfile, prepareSimpleFirmwareRows } = require('./flashProfiles');
-const { normalizeSerialPort, samePort } = require('./devicePortSelection');
+const { normalizeSerialPort, samePort, isSavedUsbPort } = require('./devicePortSelection');
 const wsQueue = require('./wsQueue');
 const connectionManager = require('./connectionManager');
 
@@ -237,6 +237,10 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
         // Use the actual project-selected USB port, not a stale globalState
         // value or an unrelated debugger CDC interface.
         const selectedPort = normalizeSerialPort(settings.port);
+        if (!isSavedUsbPort(selectedPort)) {
+            sendLog('[ERROR] Flashing requires an actual USB serial port, not WebREPL.\\n');
+            return;
+        }
         if (connectionManager.isConnected && !samePort(connectionManager.portName, selectedPort)) {
             sendLog('[ERROR] Another serial adapter is active in the REPL. Select the project USB adapter before flashing.\\n');
             return;
@@ -252,7 +256,7 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
 
         // Add serial port connection parameters
         if (settings.port) {
-            args.push('--port', settings.port);
+            args.push('--port', selectedPort);
         } else {
             sendLog('[ERROR] No COM Port selected. Please select a valid COM port.\n');
             sendProgress(0, 'Failed');
