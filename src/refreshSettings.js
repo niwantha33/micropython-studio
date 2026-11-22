@@ -180,9 +180,9 @@ async function getValidDevicePort(resource) {
                 `Configured port ${redactDevicePort(preferred.port)} is unavailable. It will not be automatically replaced. Select another port manually if the COM number changed.`
             );
         }
-    } else {
-        // First-time setup only. Never guess that a matching VID:PID uniquely
-        // identifies the REPL interface, because dual-CDC devices share it.
+    } else if (preferredTransport !== 'webrepl') {
+        // First-time USB setup only. Never override a saved Wi-Fi preference.
+        // VID:PID alone cannot identify a REPL interface on a dual-CDC board.
         const candidates = filterDualCdcPorts(devicesRaw);
         if (candidates.length === 0) {
             logMsg('[Port Detection] No connected USB devices detected for initial selection.');
