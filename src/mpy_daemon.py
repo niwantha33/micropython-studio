@@ -119,7 +119,9 @@ class MpyDaemon:
         self.in_raw_repl = False
         self.suspended = False
         self._read_buf = b""
-        self._lock = threading.Lock()
+        # Reconnect can be requested from a normal terminal write while
+        # holding this lock. Raw execution intentionally does NOT reconnect.
+        self._lock = threading.RLock()
         self._state_lock = threading.Lock()
         self._event_lock = threading.Lock()
         # A foreground MCU program runs on its own worker. The main stdin
@@ -172,7 +174,7 @@ class MpyDaemon:
                         "OSError",
                         "Bad command"
                     ])
-                    if is_transient and self.running:
+                    if is_transient and self.running and not self.in_raw_repl:
                         if self._try_reconnect():
                             # Reconnection is transport recovery, NOT permission
                             # to interrupt whatever script is now running.
@@ -222,7 +224,7 @@ class MpyDaemon:
                     "OSError",
                     "Bad command"
                 ])
-                if is_transient and self.running:
+                if is_transient and self.running and not self.in_raw_repl:
                     if self._try_reconnect():
                         try:
                             self.serial.write(chunk)
