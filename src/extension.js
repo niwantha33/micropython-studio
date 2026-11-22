@@ -28,7 +28,7 @@ const { initializeSecretStorage, getDeviceSecret } = require('./deviceSecrets');
 const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
 const { registerNativeDebugger } = require('./nativeDebugger');
-const { chooseDebugAdapter } = require('./debugAdapterConfig');
+const { chooseDebugAdapter, findPotentialDebugPorts } = require('./debugAdapterConfig');
 const { MemoryAnalyzer } = require('./memoryAnalyzer');
 const { openWebReplTerminal } = require('./webreplBridge.js');
 const { startSimulator, stopSimulator } = require('./simulator');
@@ -54,6 +54,7 @@ let deviceFileExplorer = null;
 let deviceFileTreeView = null;
 let simulatorButton = null;
 let debugAdapterStatusBarItem = null;
+const promptedDebugProjects = new Set();
 
 
 /**
@@ -114,6 +115,35 @@ async function updateDebugAdapterStatusBar() {
     debugAdapterStatusBarItem.tooltip = saved
         ? 'Debugger CDC: ' + saved + ' (separate from REPL). Click to configure.'
         : 'Configure dedicated debugger CDC port and save it in device.cfg.';
+}
+
+/**
+ * Detect a possible second CDC only by matching the actual board serial and
+ * VID:PID. Ask once per project; do not claim firmware support or seize COM.
+ * The user must confirm the interface before any config change.
+ */
+async function offerDebugAdapterSetupOnDetection() {
+    const configPath = gDeviceConfigPath;
+    const replPort = gRemoteDevicePort;
+    if (!configPath || !replPort || /^wss?:/i.test(replPort) ||
+        gDeviceFirmware !== 'MicroPython' || promptedDebugProjects.has(configPath)) return;
+    try {
+        const saved = await getConfigValue(configPath, 'debug', 'adapter_port');
+        if (saved) return;
+        const devices = await getConnectedDevices();
+        const candidates = findPotentialDebugPorts(replPort, devices);
+        if (!candidates.length) return;
+        promptedDebugProjects.add(configPath);
+        const action = await vscode.window.showInformationMessage(
+            'A second USB serial interface was detected on the same board. Is it your MicroPython debug CDC? Configure the debugger adapter (no firmware changes)?',
+            'Configure Adapter', 'Later'
+        );
+        if (action !== 'Configure Adapter') return;
+        const port = await chooseDebugAdapter(configPath, replPort, { devices });
+        if (port) await updateDebugAdapterStatusBar();
+    } catch (error) {
+        outputChannel.appendLine('[Debug Adapter] Setup check failed: ' + error.message);
+    }
 }
 
 // ─── Port picker (COM vs WebREPL) ────────────────────────────────────────────
@@ -754,6 +784,7 @@ function activate(context) {
                     gDeviceFirmware = comValues[2];
                     gDeviceConfigPath = comValues[3] || null;
                     await updateDebugAdapterStatusBar();
+                    void offerDebugAdapterSetupOnDetection();
 
                     // Set context key so package.json `when` clauses can react
                     vscode.commands.executeCommand('setContext',
