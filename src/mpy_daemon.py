@@ -341,10 +341,13 @@ class MpyDaemon:
                     continue
 
                 data = b""
+                # Bound each outbound frame. A fast print() loop must never
+                # turn the entire pending RX queue into one enormous JSON
+                # record (or monopolise the daemon's stdout pipe).
                 with self._rx_lock:
                     if self._rx_queue and not self.in_raw_repl and not self.suspended:
-                        data = bytes(self._rx_queue)
-                        self._rx_queue.clear()
+                        data = bytes(self._rx_queue[:2048])
+                        del self._rx_queue[:len(data)]
 
                 if data:
                     b64_data = base64.b64encode(data).decode('ascii')
