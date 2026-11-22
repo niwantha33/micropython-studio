@@ -152,10 +152,11 @@ function compileCondition(input) {
     }
     function comparison() {
         let left = sum();
-        while (['==', '!=', '<', '<=', '>', '>=', 'in'].includes(peek()) ||
+        while (['==', '!=', '<', '<=', '>', '>=', 'in', 'is'].includes(peek()) ||
             (peek() === 'not' && tokens[index + 1]?.value === 'in')) {
             let op = tokens[index++].value;
-            if (op === 'not') { index++; op = 'not in'; }
+            if (op === 'not' && peek() === 'in') { index++; op = 'not in'; }
+            if (op === 'is' && consume('not')) op = 'is not';
             left = node(op, left, sum());
         }
         return left;
@@ -208,8 +209,10 @@ function evaluateCondition(expression, variables = {}) {
         case '//': return Math.floor(number(a) / number(b));
         case '%': return ((number(a) % number(b)) + number(b)) % number(b);
         case '**': return safePower(number(a), number(b));
-        case '==': return a === b;
-        case '!=': return a !== b;
+        case '==':
+        case 'is': return a === b;
+        case '!=':
+        case 'is not': return a !== b;
         case '<': return a < b;
         case '<=': return a <= b;
         case '>': return a > b;
