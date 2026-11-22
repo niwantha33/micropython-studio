@@ -10,6 +10,8 @@ const { spawn } = require('child_process');
 const { getBuildInfo } = require('./buildInfo');
 const { parseRtaNameReply } = require('./rtaNameParser');
 const { parseDeviceLiteral, evaluateCondition } = require('./safeCondition');
+const { chooseDebugAdapter } = require('./debugAdapterSettings');
+const { normalizeSerialPort } = require('./devicePortSelection');
 
 const REQUIRED_PUMP_PROTOCOL = 5;
 const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
@@ -1177,20 +1179,12 @@ async function startDebugger(context, gRemoteDevicePort, venvPython) {
         return;
     }
 
-    const portInput = await vscode.window.showInputBox({
-        prompt: 'Debugger COM port (not REPL port)',
-        placeHolder: 'e.g. COM13',
-        validateInput: value => {
-            const candidate = String(value || '').trim();
-            if (!candidate) return 'Enter the dedicated debugger COM port.';
-            if (candidate.toUpperCase() === replPort.toUpperCase()) {
-                return 'This is the project REPL/upload port. The debugger requires the OTHER COM port.';
-            }
-            return null;
-        }
-    });
-    if (!portInput) return;
-    openDebuggerPanel(context, portInput.trim(), venvPython);
+    try {
+        const debugPort = await chooseDebugAdapter(normalizeSerialPort(replPort));
+        if (debugPort) openDebuggerPanel(context, debugPort, venvPython);
+    } catch (error) {
+        vscode.window.showErrorMessage('Cannot select Debug adapter: ' + error.message);
+    }
 }
 
 function getHtml(buildInfo) {
