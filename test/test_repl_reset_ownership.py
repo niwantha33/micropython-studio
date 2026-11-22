@@ -41,6 +41,10 @@ class SerialResetOwnershipTests(unittest.TestCase):
                 self.assertEqual(lock.read_text(encoding="utf-8"), value)
             lock.write_text(f"{os.getpid()}:cli_run", encoding="utf-8")
             cleanup(str(lock))
+            self.assertEqual(lock.read_text(encoding="utf-8"),
+                             f"{os.getpid()}:cli_run")
+            lock.write_text(f"{os.getpid()}:cli", encoding="utf-8")
+            cleanup(str(lock))
             self.assertFalse(lock.exists())
 
     def test_reset_uses_daemon_existing_serial_handle(self):
