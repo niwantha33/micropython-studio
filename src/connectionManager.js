@@ -95,6 +95,7 @@ class ConnectionManager extends EventEmitter {
         // Promises for suspend/resume
         this._suspendPending = null;
         this._resumePending = null;
+        this._resetPending = null;
         this._autoResumeTimer = null;
         this._connectPromise = null;
         this._connectingPort = null;
@@ -247,6 +248,15 @@ class ConnectionManager extends EventEmitter {
                     this.emit('data', buf);
                 }
                 break;
+            case 'reset_result': {
+                const pending = this._resetPending;
+                if (!pending || msg.id !== pending.id) break;
+                this._resetPending = null;
+                clearTimeout(pending.timer);
+                if (msg.success) pending.resolve();
+                else pending.reject(new Error(msg.error || 'Device hard reset failed.'));
+                break;
+            }
             case 'disconnected':
                 logMsg(`[ConnectionManager] Received 'disconnected' event from daemon`);
                 this.isSuspended = false;
@@ -375,8 +385,54 @@ class ConnectionManager extends EventEmitter {
         await this._requestTransition('resume');
     }
 
+    /**
+     * Explicit user-requested reset while the daemon already owns the COM port.
+     * Never spawn a second port owner or terminate unrelated processes.
+     */
+    hardReset() {
+        if (!this.isConnected || !this.daemonProcess || this.isSuspended) {
+            return Promise.reject(new Error('REPL serial port is not ready for reset.'));
+        }
+        if (this._resetPending) return this._resetPending.promise;
+        const id = this._nextReqId++;
+        let resolvePending, rejectPending;
+        const promise = new Promise((resolve, reject) => {
+            resolvePending = resolve;
+            rejectPending = reject;
+        });
+        const pending = { id, promise, resolve: resolvePending, reject: rejectPending, timer: null };
+        this._resetPending = pending;
+        pending.timer = setTimeout(() => {
+            if (this._resetPending !== pending) return;
+            this._resetPending = null;
+            rejectPending(new Error('Hard reset did not complete. Check the USB connection and retry.'));
+        }, 12000);
+        try {
+            this.daemonProcess.stdin.write(JSON.stringify({ action: 'hard_reset', id }) + '\n', err => {
+                if (err && this._resetPending === pending) {
+                    this._resetPending = null;
+                    clearTimeout(pending.timer);
+                    rejectPending(err);
+                }
+            });
+        } catch (err) {
+            if (this._resetPending === pending) {
+                this._resetPending = null;
+                clearTimeout(pending.timer);
+                rejectPending(err);
+            }
+        }
+        return promise;
+    }
+
     _daemonGone(error) {
         this.stopAutoResumeCheck();
+        if (this._resetPending) {
+            const pending = this._resetPending;
+            this._resetPending = null;
+            clearTimeout(pending.timer);
+            pending.reject(error);
+        }
         this.isConnected = false;
         this.isSuspended = false;
         this._rejectPendingTransitions(error);
