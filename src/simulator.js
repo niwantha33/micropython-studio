@@ -1,47 +1,97 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
-const { spawn, exec } = require('child_process');
+const { spawn, execFile } = require('child_process');
+const { getVenvPythonPath, getVenvPythonPathFolder } = require('./commonFxn');
 const https = require('https');
 
 let qemuProcess = null;
 
-// Helper to download files following redirects
+// Simulator downloads are allowed only over HTTPS from the approved release hosts.
+const TRUSTED_DOWNLOAD_HOSTS = new Set([
+    'github.com', 'raw.githubusercontent.com',
+    'objects.githubusercontent.com', 'release-assets.githubusercontent.com',
+    'github-releases.githubusercontent.com'
+]);
+const MAX_DOWNLOAD_BYTES = 400 * 1024 * 1024;
+
 function downloadFile(url, dest, redirects = 5) {
     return new Promise((resolve, reject) => {
-        const req = https.get(url, (res) => {
-            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
-                res.resume();
-                return resolve(downloadFile(res.headers.location, dest, redirects - 1));
+        let target;
+        try { target = new URL(url); }
+        catch (error) { reject(error); return; }
+        if (target.protocol !== 'https:' || !TRUSTED_DOWNLOAD_HOSTS.has(target.hostname)) {
+            reject(new Error('Simulator download URL is not an approved HTTPS host'));
+            return;
+        }
+        const request = https.get(target, (response) => {
+            if ([301, 302, 303, 307, 308].includes(response.statusCode) &&
+                response.headers.location && redirects > 0) {
+                response.resume();
+                resolve(downloadFile(new URL(response.headers.location, target).toString(), dest, redirects - 1));
+                return;
             }
-            if (res.statusCode !== 200) {
-                res.resume();
-                return reject(new Error('HTTP ' + res.statusCode));
+            if (response.statusCode !== 200) {
+                response.resume();
+                reject(new Error('Simulator download returned HTTP ' + response.statusCode));
+                return;
             }
-            const file = fs.createWriteStream(dest);
-            res.pipe(file);
-            file.on('finish', () => file.close(() => resolve(dest)));
-            file.on('error', reject);
+            const length = Number(response.headers['content-length'] || 0);
+            if (length > MAX_DOWNLOAD_BYTES) {
+                response.destroy();
+                reject(new Error('Simulator artifact exceeds download limit'));
+                return;
+            }
+            const temporary = dest + '.partial';
+            const output = fs.createWriteStream(temporary, { flags: 'w' });
+            let settled = false;
+            let size = 0;
+            const fail = (error) => {
+                if (settled) return;
+                settled = true;
+                output.destroy();
+                response.destroy();
+                fs.rm(temporary, { force: true }, () => reject(error));
+            };
+            response.on('data', chunk => {
+                size += chunk.length;
+                if (size > MAX_DOWNLOAD_BYTES) fail(new Error('Simulator artifact exceeded download limit'));
+            });
+            response.on('error', fail);
+            output.on('error', fail);
+            output.on('finish', () => {
+                if (settled) return;
+                settled = true;
+                output.close(err => {
+                    if (err) { fs.rm(temporary, { force: true }, () => reject(err)); return; }
+                    fs.rename(temporary, dest, renameErr => {
+                        if (renameErr) fs.rm(temporary, { force: true }, () => reject(renameErr));
+                        else resolve(dest);
+                    });
+                });
+            });
+            response.pipe(output);
         });
-        req.on('error', reject);
-        req.setTimeout(30000, () => req.destroy(new Error('timeout')));
+        request.setTimeout(30000, () => request.destroy(new Error('Simulator download timed out')));
+        request.on('error', reject);
     });
 }
 
-// Helper to extract a zip file natively
+// Use Python's validated ZIP extractor, not a shell or unvalidated unzip.
 function extractZip(zipPath, destDir) {
     return new Promise((resolve, reject) => {
-        if (!fs.existsSync(destDir)) {
-            fs.mkdirSync(destDir, { recursive: true });
+        const python = getVenvPythonPath(getVenvPythonPathFolder());
+        if (!fs.existsSync(python)) {
+            reject(new Error('Set up the MicroPython Studio Python environment before starting the simulator.'));
+            return;
         }
-        let cmd = '';
-        if (process.platform === 'win32') {
-            cmd = `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force"`;
-        } else {
-            cmd = `unzip -o "${zipPath}" -d "${destDir}"`;
-        }
-        exec(cmd, (error) => {
-            if (error) reject(error);
+        const extractor = path.join(__dirname, 'safe_extract.py');
+        execFile(python, [extractor, zipPath, destDir], {
+            timeout: 120000,
+            maxBuffer: 1024 * 1024,
+            windowsHide: true
+        }, (error, _stdout, stderr) => {
+            if (error) reject(new Error('Simulator archive rejected: ' + (stderr || error.message).trim().slice(0, 500)));
             else resolve();
         });
     });
