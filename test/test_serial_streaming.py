@@ -132,6 +132,21 @@ class SerialStreamingTests(unittest.TestCase):
         self.assertIn(b"KeyboardInterrupt", binary)
         self.assertIn(b"\x03", fake.writes)
 
+    def test_usb_reconnect_failure_emits_disconnected_state_instead_of_ghost_repl(self):
+        class DisappearedSerial:
+            is_open = True
+
+            @property
+            def in_waiting(self):
+                raise OSError("USB CDC device not functioning")
+
+        self.daemon.serial = DisappearedSerial()
+        self.daemon._try_reconnect = lambda: False
+        self.daemon._rx_loop()
+        self.assertFalse(self.daemon.running)
+        self.assertTrue(self._events("reconnecting"))
+        self.assertTrue(self._events("error"))
+
     def test_reject_second_run_while_first_is_active(self):
         fake = FakeMicroPythonSerial(self.daemon, continuous=True)
         self.daemon.serial = fake
