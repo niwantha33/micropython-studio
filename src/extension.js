@@ -28,7 +28,7 @@ const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
 const { registerNativeDebugger } = require('./nativeDebugger');
 const { MemoryAnalyzer } = require('./memoryAnalyzer');
-const { openWebReplTerminal } = require('./webrepl_bridge.py');
+const { openWebReplTerminal } = require('./webreplBridge.js');
 const { startSimulator, stopSimulator } = require('./simulator');
 
 // Firmware downloads are now deliberate browser actions to board-specific CI artifacts.
