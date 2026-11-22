@@ -8,6 +8,7 @@ const { onDebugExecutionState, getDebugExecutionState } = require('./debugExecut
 
 let activeTerminal = null;
 let activePort = null;
+let activeReady = null;
 
 function terminalNotice(message) {
     return `\x1b[90m${message}\x1b[0m\r\n`;
@@ -28,6 +29,7 @@ async function openDeviceTerminal(_context, devicePort) {
 
     if (activeTerminal && samePort(activePort, devicePort)) {
         activeTerminal.show();
+        if (activeReady) await activeReady;
         if (connectionManager.isConnected && samePort(connectionManager.portName, devicePort)
             && connectionManager.isSuspended) {
             vscode.window.showInformationMessage('REPL is temporarily busy with a device operation. It will be available when the owner resumes it.');
@@ -41,12 +43,32 @@ async function openDeviceTerminal(_context, devicePort) {
         activeTerminal.dispose();
         activeTerminal = null;
         activePort = null;
+        activeReady = null;
     }
 
     const emitter = new vscode.EventEmitter();
     let terminal = null;
     let closed = false;
     const decoder = new StringDecoder('utf8');
+    // VS Code creates the PTY asynchronously. A Run action must wait for its
+    // receiver and serial connection, or quick print() output is lost.
+    let finishReady;
+    let failReady;
+    const ready = new Promise((resolve, reject) => {
+        finishReady = resolve;
+        failReady = reject;
+    });
+    let readySettled = false;
+    const readyTimeout = setTimeout(() => {
+        settleReady(new Error('REPL terminal did not open within 12 seconds.'));
+    }, 12000);
+    function settleReady(error) {
+        if (readySettled) return;
+        readySettled = true;
+        clearTimeout(readyTimeout);
+        if (error) failReady(error);
+        else finishReady();
+    }
 
     const emit = text => { if (!closed) emitter.fire(text); };
     // Serial RX may split a multibyte UTF-8 character between read() calls.
@@ -102,11 +124,14 @@ async function openDeviceTerminal(_context, devicePort) {
                 } else {
                     await connectionManager.connect(devicePort);
                 }
+                settleReady();
             } catch (err) {
                 emit(terminalNotice(`Could not connect to ${devicePort}: ${err.message}`));
+                settleReady(err);
             }
         },
         close: () => {
+            settleReady(new Error('REPL terminal closed before it was ready.'));
             closed = true;
             for (const [name, listener] of listeners) {
                 connectionManager.removeListener(name, listener);
@@ -117,6 +142,7 @@ async function openDeviceTerminal(_context, devicePort) {
             if (activeTerminal === terminal) {
                 activeTerminal = null;
                 activePort = null;
+                activeReady = null;
             }
         },
         handleInput: async data => {
@@ -141,7 +167,9 @@ async function openDeviceTerminal(_context, devicePort) {
     terminal = vscode.window.createTerminal({ name: `MicroPython REPL (${devicePort})`, pty });
     activeTerminal = terminal;
     activePort = devicePort;
+    activeReady = ready;
     terminal.show();
+    await ready;
 }
 
 module.exports = { openDeviceTerminal };
