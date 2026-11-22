@@ -1,6 +1,7 @@
 """Regression tests for the proven 2.6.1 MicroPython serial REPL protocol."""
 import base64
 import importlib.util
+import time
 from pathlib import Path
 import sys
 import types
@@ -83,11 +84,85 @@ class KnownGoodReplProtocolTests(unittest.TestCase):
         self.daemon._flush_terminal_input()
         self.assertIn(b'help()\r', self.port.writes)
 
+    def wait_for(self, predicate, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.005)
+        self.fail("Timed out waiting for foreground serial event")
+
+    def test_infinite_loop_streams_live_and_ctrl_c_releases_worker(self):
+        # Simulate a continuously running device after raw-paste accepted.
+        self.daemon.enter_raw_repl = lambda: None
+        self.daemon._do_raw_paste = lambda code: None
+        self.daemon.exit_raw_repl = lambda: None
+        old_write = self.port.write
+
+        def write(data):
+            result = old_write(data)
+            if data == b'\x03':
+                with self.daemon._rx_lock:
+                    self.daemon._rx_queue.extend(b'\r\nKeyboardInterrupt\r\n\x04\x04>')
+            return result
+
+        self.port.write = write
+        self.daemon.process_command({
+            "action": "run_in_terminal", "code": "while True: print('hello')"
+        })
+        self.wait_for(lambda: any(ev == "terminal_run_started" for ev, _ in self.events))
+        with self.daemon._rx_lock:
+            self.daemon._rx_queue.extend(b'first line\r\n')
+        self.wait_for(lambda: any(
+            ev == "terminal_data" and b"first line" in base64.b64decode(msg["data"])
+            for ev, msg in self.events
+        ))
+        self.assertTrue(self.daemon._foreground_thread.is_alive(),
+                        "The streaming worker must survive while output continues")
+        with self.daemon._rx_lock:
+            self.daemon._rx_queue.extend(b'second line\r\n')
+        self.wait_for(lambda: any(
+            ev == "terminal_data" and b"second line" in base64.b64decode(msg["data"])
+            for ev, msg in self.events
+        ))
+        self.daemon.process_command({
+            "action": "terminal_input",
+            "data": base64.b64encode(b'\x03').decode("ascii")
+        })
+        self.daemon._foreground_thread.join(timeout=3)
+        self.assertFalse(self.daemon._foreground_thread.is_alive())
+        self.assertFalse(self.daemon.in_raw_repl)
+        self.assertFalse(self.daemon._foreground_active)
+        self.assertIn(b'\x03', self.port.writes)
+        self.assertTrue(any(ev == "terminal_run_finished" and msg["success"]
+                            for ev, msg in self.events))
+
+    def test_busy_foreground_rejects_other_raw_operations_without_deadlock(self):
+        self.daemon.enter_raw_repl = lambda: None
+        self.daemon._do_raw_paste = lambda code: None
+        self.daemon.exit_raw_repl = lambda: None
+        stop = __import__("threading").Event()
+        self.daemon._stream_raw_execution = lambda: stop.wait(2)
+        self.daemon.process_command({"action": "run_in_terminal", "code": "loop()"})
+        self.wait_for(lambda: any(ev == "terminal_run_started" for ev, _ in self.events))
+        self.daemon.process_command({"action": "run_code", "id": 25, "code": "gc.mem_free()"})
+        self.daemon.process_command({"action": "suspend"})
+        self.assertTrue(any(ev == "run_result" and not msg.get("success")
+                            for ev, msg in self.events))
+        self.assertTrue(any(ev == "transition_error" and msg["action"] == "suspend"
+                            for ev, msg in self.events))
+        stop.set()
+        self.daemon._foreground_thread.join(3)
+        self.assertFalse(self.daemon._foreground_thread.is_alive())
+
     def test_finite_run_uses_original_device_protocol(self):
-        with patch.object(self.mod.time, "sleep", lambda _: None):
-            self.daemon.process_command({
-                "action": "run_in_terminal", "code": "print('ready')"
-            })
+        self.daemon.process_command({
+            "action": "run_in_terminal", "code": "print('ready')"
+        })
+        # Foreground serial execution is intentionally asynchronous now.
+        # It must not block the stdin command reader while a loop is running.
+        self.daemon._foreground_thread.join(timeout=3)
+        self.assertFalse(self.daemon._foreground_thread.is_alive())
         output = b"".join(base64.b64decode(data["data"])
                           for event, data in self.events
                           if event == "terminal_data")
