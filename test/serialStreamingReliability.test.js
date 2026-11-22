@@ -65,6 +65,26 @@ suite('Known-good 2.6.1 serial transport compatibility', () => {
         assert.ok(daemonSource.includes('_release_lock(self.port)'));
     });
 
+    test('MCU execution does not outrun opening the REPL terminal', () => {
+        const shellFirst = extensionSource.indexOf('await openDeviceTerminal(context, runPort);');
+        const runNext = extensionSource.indexOf("await wsQueue.run(() => connectionManager.runInTerminal(code)");
+        assert.ok(shellFirst > 0 && runNext > shellFirst,
+            'The PTY/REPL must be ready before a short script can print');
+        assert.ok(terminalSource.includes('await ready;'),
+            'Opening a terminal must await VS Code PTY connection');
+        assert.ok(terminalSource.includes('settleReady(err);'),
+            'Failed serial connections must reject readiness, not silently succeed');
+        assert.ok(terminalSource.includes('await connectionManager.connect(devicePort);'),
+            'Reopening a disconnected terminal must actually reconnect');
+    });
+
+    test('COM case changes do not tear down the shared serial daemon', () => {
+        const managerSource = fs.readFileSync(path.join(root, 'src', 'connectionManager.js'), 'utf8');
+        assert.ok(managerSource.includes('samePort(this.portName, portName)'));
+        assert.ok(managerSource.includes('samePort(this._connectingPort, portName)'));
+        assert.ok(extensionSource.includes('samePort(connectionManager.portName, runPort)'));
+    });
+
     test('CLI backend never kills other processes to seize COM ports', () => {
         const backend = fs.readFileSync(path.join(root, 'src', 'mps_backend.py'), 'utf8');
         assert.ok(!backend.includes('_kill_port_owner('));
