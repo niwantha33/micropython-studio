@@ -648,10 +648,21 @@ class MpyDaemon:
                 self._foreground_interrupt = False
                 self._foreground_fault = None
                 self.in_raw_repl = True
-            self._foreground_thread = threading.Thread(
-                target=self._run_foreground_worker, args=(code,), daemon=True
-            )
-            self._foreground_thread.start()
+            try:
+                self._foreground_thread = threading.Thread(
+                    target=self._run_foreground_worker, args=(code,), daemon=True
+                )
+                self._foreground_thread.start()
+            except Exception as error:
+                # A failed worker launch must not leave the port permanently
+                # marked as in raw mode or running.
+                with self._state_lock:
+                    self._foreground_active = False
+                    self._foreground_executing = False
+                    self.in_raw_repl = False
+                self.send_event("terminal_run_finished", {
+                    "success": False, "error": "Cannot start MCU worker: " + str(error)
+                })
         elif action == "suspend":
             with self._state_lock:
                 busy = self._foreground_active
