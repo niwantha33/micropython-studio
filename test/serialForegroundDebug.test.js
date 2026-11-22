@@ -94,6 +94,19 @@ suite('Serial foreground output and native-debug pause safety', () => {
         assert.ok(shell.includes('No new print() output appears until Continue or Step'));
     });
 
+    test('debug bridge and side webview cannot exhaust extension memory on event storms', () => {
+        const bridge = fs.readFileSync(path.join(__dirname, '..', 'src', 'dbg_bridge.py'), 'utf8');
+        const details = fs.readFileSync(path.join(__dirname, '..', 'src', 'mpyDebugger.js'), 'utf8');
+        assert.ok(bridge.includes('_event_output_lock = threading.Lock()'));
+        assert.ok(bridge.includes('with _event_output_lock:'));
+        assert.ok(details.includes('MAX_BRIDGE_LINE = 128 * 1024'));
+        assert.ok(details.includes('const MAX_RTA_EVENTS = 50000'));
+        assert.ok(details.includes('const MAX_RTA_EVENTS_PER_SECOND = 5000'));
+        assert.ok(details.includes("op: 'rta_off'"));
+        assert.ok(details.includes('Promise.resolve(view.webview.postMessage(message)).catch(() => false)'));
+        assert.ok(details.includes('rtaLimitTriggered &&'));
+    });
+
     test('daemon must not use blocking raw-paste result for foreground MCU scripts', () => {
         const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mpy_daemon.py'), 'utf8');
         const start = src.indexOf('elif action == "run_in_terminal"');
