@@ -328,6 +328,25 @@ async function createNewProject(context) {
             `virtualPython = "${venvPython}"`
         ].join('\n');
         await fs.writeFile(path.join(config.projectDir, 'device.cfg'), deviceCfgContent, 'utf8');
+        // Keep project-local paths, device IDs and any legacy credentials out of
+        // source control. Never overwrite a user's existing ignore rules.
+        const ignoreRules = [
+            '# Local board configuration may contain sensitive connection metadata.',
+            'device.cfg',
+            'settings.toml',
+            '**/settings.toml',
+            '.venv/',
+            '__pycache__/',
+            '*.pyc',
+            '.mps-*.tmp',
+            ''
+        ].join('\\n');
+        try {
+            await fs.writeFile(path.join(config.projectDir, '.gitignore'), ignoreRules, { flag: 'wx' });
+        } catch (ignoreError) {
+            if (ignoreError.code !== 'EEXIST') throw ignoreError;
+        }
+
 
         // Site-packages path for the venv (platform-aware)
         const sitePackagesPath = process.platform === 'win32'
