@@ -679,6 +679,15 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
             try {
                 const msg = JSON.parse(line);
 
+                if (msg.evt === 'error') {
+                    // Python bridge startup failures (missing pyserial, busy CDC,
+                    // invalid port) must reach VS Code's Debug Console too.
+                    const message = String(msg.msg || 'Debugger bridge reported an error.');
+                    if (panel) panel.webview.postMessage({ evt: 'error', msg: message });
+                    emitNative({ evt: 'error', msg: message });
+                    continue;
+                }
+
                 if (msg.evt === 'transport_lost') {
                     bridgeTransportFailureReported = true;
                     sessionReady = false;
@@ -707,7 +716,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                                 panel.webview.postMessage({ evt: 'error', msg: error });
                                 emitNative({ evt: 'error', msg: error });
                             }
-                        }, 3500);
+                        }, 10000);
                     } catch (e) {
                         panel.webview.postMessage({ evt: 'error', msg: 'Failed to start debugger handshake: ' + String(e) });
                     }
