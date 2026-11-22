@@ -13,7 +13,7 @@ const net = require('net');
 const { getConnectedDevices } = require('./runCommand');
 const { getDeviceSecret } = require('./deviceSecrets');
 const { getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
-const { selectConfiguredPort, isSavedUsbPort } = require('./devicePortSelection');
+const { selectConfiguredPort, isSavedUsbPort, normalizeSerialPort } = require('./devicePortSelection');
 
 let outputChannel = null;
 
@@ -118,6 +118,11 @@ async function getValidDevicePort(resource) {
     // port can have exactly the same VID:PID and serial number as debug CDC.
     // A refresh must not change [device] port based on VID:PID or COM ordering.
     const preferred = selectConfiguredPort(savedPort, devicesRaw);
+    // Case-only normalization never changes the actual COM interface.
+    if (/^com[1-9][0-9]*$/i.test(savedPort || '') &&
+        savedPort !== normalizeSerialPort(savedPort)) {
+        await updateCfgComponent(configPath, 'device', 'port', normalizeSerialPort(savedPort));
+    }
     if (preferred.port) {
         gRemoteDevicePort = preferred.port;
         if (preferred.present) {
