@@ -219,8 +219,8 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
     /**
      * Run esptool child process.
      */
-    function runEsptool(settings, action) {
-        if (activeProcess) {
+    async function runEsptool(settings, action) {
+        if (activeProcess || flashPending) {
             vscode.window.showWarningMessage('A flashing or erasing operation is already in progress.');
             return;
         }
@@ -234,6 +234,20 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
             return;
         }
 
+        // Use the actual project-selected USB port, not a stale globalState
+        // value or an unrelated debugger CDC interface.
+        const selectedPort = normalizeSerialPort(settings.port);
+        if (connectionManager.isConnected && !samePort(connectionManager.portName, selectedPort)) {
+            sendLog('[ERROR] Another serial adapter is active in the REPL. Select the project USB adapter before flashing.\\n');
+            return;
+        }
+        if (!settings.advanced) {
+            const profile = getSimpleFlashProfile(settings.chipType);
+            if (!profile) {
+                sendLog('[ERROR] No verified single-image offset for this chip. Use Advanced Mode.\\n');
+                return;
+            }
+        }
         const args = ['-m', 'esptool'];
 
         // Add serial port connection parameters
@@ -295,8 +309,10 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
                 // Simple mode: just write row 0 (MicroPython binary) at offset-0 (auto-determined address)
                 const mainRow = settings.rows[0];
                 if (mainRow && mainRow.path.trim()) {
-                    args.push(mainRow.offset.trim(), mainRow.path.trim());
-                    logDetails.push(`${mainRow.offset} -> ${path.basename(mainRow.path)}`);
+                    // Only supported single-image profiles can use Simple mode.
+                    const address = getSimpleFlashProfile(settings.chipType).offset;
+                    args.push(address, mainRow.path.trim());
+                    logDetails.push(`${address} -> ${path.basename(mainRow.path)}`);
                     filesAdded++;
                 }
             }
@@ -307,49 +323,84 @@ async function openEspFlashTool(context, outputChannel, currentDevicePort, optio
                 return;
             }
 
-            sendLog(`Executing: python -m esptool write_flash ${logDetails.join(', ')}\n`);
-            sendProgress(0, 'Connecting...');
+            sendLog(`Prepared: ${settings.chipType} on ${selectedPort}: ${logDetails.join(', ')}\n`);
+            sendProgress(0, 'Ready to confirm');
         }
 
-        panel.webview.postMessage({ type: 'processState', running: true });
-
-        activeProcess = spawn(venvPython, args);
-
-        activeProcess.stdout.on('data', (data) => {
-            const output = data.toString();
-            sendLog(output);
-
-            // Parse progress percentage (e.g. "(12 %)" or "Writing at 0x00004000... (32 %)")
-            const match = output.match(/(\d+)\s*%/);
-            if (match) {
-                const percent = parseInt(match[1], 10);
-                sendProgress(percent, `Writing... ${percent}%`);
+        // Fail before claiming the serial device if the binary file cannot
+        // be read. Do not accept malformed paths or wrong file types.
+        for (const row of settings.rows || []) {
+            if (!row.enabled || !row.path) continue;
+            if (!path.isAbsolute(row.path) || !/\.bin$/i.test(row.path)) {
+                sendLog('[ERROR] Select a local MicroPython .bin file, not a script or ZIP.\n');
+                sendProgress(0, 'Invalid firmware file');
+                return;
             }
-        });
-
-        activeProcess.stderr.on('data', (data) => {
-            sendLog(data.toString());
-        });
-
-        activeProcess.on('close', (code) => {
-            panel.webview.postMessage({ type: 'processState', running: false });
-            activeProcess = null;
-
-            if (code === 0) {
-                sendProgress(100, action === 'erase' ? 'Erase Complete' : 'Flash Complete');
-                sendLog(action === 'erase' ? '\n[SUCCESS] Flash erased successfully!\n' : '\n[SUCCESS] MicroPython firmware flashed successfully!\n');
-            } else {
-                sendProgress(0, 'Failed');
-                sendLog(`\n[ERROR] esptool exited with code ${code}\n`);
+            try {
+                const stat = fs.statSync(row.path);
+                if (!stat.isFile() || stat.size === 0 || stat.size > 64 * 1024 * 1024) {
+                    throw new Error('File is empty or unusually large');
+                }
+            } catch (err) {
+                sendLog('[ERROR] Firmware file is not readable: ' + err.message + '\n');
+                sendProgress(0, 'Invalid firmware file');
+                return;
             }
-        });
+        }
 
-        activeProcess.on('error', (err) => {
-            panel.webview.postMessage({ type: 'processState', running: false });
-            activeProcess = null;
-            sendProgress(0, 'Error');
-            sendLog(`\n[ERROR] Failed to start esptool subprocess: ${err.message}\n`);
-        });
+        if (action === 'flash') {
+            const confirmation = await vscode.window.showWarningMessage(
+                'Flash firmware to ' + selectedPort + ' (' + settings.chipType + ')?\n' +
+                logDetails.join('\n') + '\n\nBack up your MicroPython files. The selected binary will overwrite flash memory.',
+                { modal: true },
+                'Flash Firmware'
+            );
+            if (confirmation !== 'Flash Firmware') {
+                sendLog('Flashing cancelled. No device changes made.\n');
+                return;
+            }
+        }
+        flashPending = true;
+        try {
+            await wsQueue.run(() => new Promise((resolve) => {
+                // Exclusive handoff: the queue releases the REPL's COM handle
+                // before esptool opens it, then resumes it after process exit.
+                activeProcess = spawn(venvPython, args, { shell: false, windowsHide: true });
+                const child = activeProcess;
+                panel.webview.postMessage({ type: 'processState', running: true });
+                child.stdout.on('data', data => {
+                    const output = data.toString();
+                    sendLog(output);
+                    const match = output.match(/(\d+)\s*%/);
+                    if (match) sendProgress(parseInt(match[1], 10),
+                        'Writing... ' + match[1] + '%');
+                });
+                child.stderr.on('data', data => sendLog(data.toString()));
+                let closed = false;
+                const finish = (code, error) => {
+                    if (closed) return;
+                    closed = true;
+                    if (activeProcess === child) activeProcess = null;
+                    panel.webview.postMessage({ type: 'processState', running: false });
+                    if (code === 0) {
+                        sendProgress(100, action === 'erase' ? 'Erase Complete' : 'Flash Complete');
+                        sendLog(action === 'erase' ? '\n[SUCCESS] Flash erased.\n' :
+                            '\n[SUCCESS] Firmware write and esptool verification finished.\n');
+                    } else {
+                        sendProgress(0, 'Failed');
+                        sendLog('[ERROR] esptool failed: ' + (error || 'exit code ' + code) + '\n');
+                    }
+                    resolve(code);
+                };
+                child.on('close', code => finish(code));
+                child.on('error', err => finish(-1, err.message));
+            }), 'Firmware flash (exclusive COM handoff)');
+        } catch (err) {
+            sendProgress(0, 'Serial port busy');
+            sendLog('[ERROR] Flash operation could not acquire the serial port: ' + err.message + '\n');
+        } finally {
+            flashPending = false;
+        }
     }
 }
 
