@@ -133,6 +133,9 @@ async function openDeviceTerminal(_context, devicePort) {
             } catch (err) {
                 emit(terminalNotice(`Could not connect to ${devicePort}: ${err.message}`));
                 settleReady(err);
+                // A failed PTY must not be reused on every future Run attempt.
+                // Closing it detaches listeners but leaves other serial clients alone.
+                if (terminal) terminal.dispose();
             }
         },
         close: () => {
