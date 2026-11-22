@@ -120,7 +120,15 @@ class MpyDaemon:
         self.suspended = False
         self._read_buf = b""
         self._lock = threading.Lock()
-        
+        self._state_lock = threading.Lock()
+        self._event_lock = threading.Lock()
+        # A foreground MCU program runs on its own worker. The main stdin
+        # reader must stay responsive to Ctrl+C and port-state commands.
+        self._foreground_active = False
+        self._foreground_executing = False
+        self._foreground_interrupt = False
+        self._foreground_thread = None
+
         # New RX queue & lock
         self._rx_queue = bytearray()
         self._rx_lock = threading.Lock()
@@ -268,9 +276,11 @@ class MpyDaemon:
     def send_event(self, type_: str, payload: dict):
         """Sends an event to the Node.js host over stdout."""
         msg = {"type": type_, **payload}
-        # Print JSON separated by newline
-        sys.stdout.write(json.dumps(msg) + "\n")
-        sys.stdout.flush()
+        # Worker, RX and command threads all send events. Never interleave
+        # their JSON lines: a damaged event can make the terminal appear dead.
+        with self._event_lock:
+            sys.stdout.write(json.dumps(msg) + "\n")
+            sys.stdout.flush()
 
     def _try_reconnect(self, retries=50, delay=0.1) -> bool:
         """Tries to reopen the serial port after a transient disconnect (e.g. USB CDC reboot)."""
@@ -452,26 +462,136 @@ class MpyDaemon:
 
         return stdout, stderr
 
+    def _stream_terminal_bytes(self, data: bytes):
+        """Forward incremental stdout/stderr bytes without waiting for EOF."""
+        if not data:
+            return
+        import base64
+        self.send_event("terminal_data", {
+            "data": base64.b64encode(data).decode("ascii")
+        })
+
+    def _stream_raw_execution(self):
+        """Consume MicroPython raw REPL: stdout EOT, stderr EOT, prompt.
+
+        The raw-paste handshake has already consumed its first OK EOT.
+        Unlike exec_raw_paste(), this forwards each piece of output as soon
+        as the RX thread receives it. It remains active for infinite loops
+        until a user Ctrl+C actually interrupts target execution.
+        """
+        stage = 0
+        while self.running:
+            if not self.serial or not self.serial.is_open:
+                raise OSError("REPL disconnected while MCU program was running")
+            if self._read_buf:
+                data = self._read_buf
+                self._read_buf = b""
+            else:
+                data = self._rx_read(2048, timeout=0.04)
+            if not data:
+                continue
+            index = 0
+            while index < len(data):
+                if stage >= 2:
+                    if b">" in data[index:]:
+                        return
+                    # Final prompt is a protocol delimiter, not stdout.
+                    break
+                end = data.find(b"\x04", index)
+                if end < 0:
+                    self._stream_terminal_bytes(data[index:])
+                    break
+                self._stream_terminal_bytes(data[index:end])
+                index = end + 1
+                stage += 1
+        raise OSError("Serial daemon stopped during MCU execution")
+
+    def _run_foreground_worker(self, code: str):
+        failure = None
+        started = False
+        try:
+            with self._lock:
+                # This is an explicit Run action, not an implicit effect of
+                # opening Shell. It may interrupt an already running script.
+                self._paced_serial_write(b"\r\x02\r\x03")
+                time.sleep(0.1)
+                self.enter_raw_repl()
+                self._do_raw_paste(code)
+                with self._state_lock:
+                    self._foreground_executing = True
+                    pending_interrupt = self._foreground_interrupt
+                self.send_event("terminal_run_started", {})
+                started = True
+                if pending_interrupt:
+                    self._paced_serial_write(b"\x03")
+                self._stream_raw_execution()
+        except Exception as error:
+            failure = str(error)
+            self._stream_terminal_bytes(("\r\n[MCU Run] " + failure + "\r\n").encode("utf-8", errors="replace"))
+        finally:
+            # Never reset the target. Return the serial transport to the
+            # friendly REPL for the existing terminal and file explorer.
+            try:
+                if self.serial and self.serial.is_open:
+                    self.exit_raw_repl()
+            except Exception:
+                pass
+            with self._state_lock:
+                self._foreground_executing = False
+                self._foreground_active = False
+                self._foreground_interrupt = False
+                self.in_raw_repl = False
+            self._flush_terminal_input()
+            self.send_event("terminal_run_finished", {
+                "success": started and failure is None,
+                "error": failure or ""
+            })
+
     def process_command(self, cmd: dict):
         action = cmd.get("action")
         
         if action == "terminal_input":
             import base64
             data = base64.b64decode(cmd["data"])
+            with self._state_lock:
+                foreground = self._foreground_active
+                executing = self._foreground_executing
+                if foreground and b"\x03" in data and not executing:
+                    self._foreground_interrupt = True
+            if foreground:
+                # Control-C must bypass the long-running worker's serial lock.
+                # Regular terminal input also remains interactive once code
+                # is executing (for input() etc). During raw-paste upload,
+                # only record the pending interrupt; don't corrupt payload.
+                if executing and self.serial and self.serial.is_open:
+                    try:
+                        self._paced_serial_write(data)
+                    except Exception as error:
+                        self.send_event("error", {"message": "REPL input failed: " + str(error)})
+                return
             with self._lock:
                 if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
                     if len(self._terminal_input_buffer) + len(data) <= self._input_buffer_limit:
                         self._terminal_input_buffer += data
+                    else:
+                        self.send_event("error", {"message": "REPL input buffer full; input was not sent"})
                 else:
                     try:
                         self._paced_serial_write(data)
-                    except Exception as e:
-                        self.send_event("error", {"message": f"Write error: {e}"})
-                    
+                    except Exception as error:
+                        self.send_event("error", {"message": "Write error: " + str(error)})
         elif action == "run_code":
             req_id = cmd.get("id")
             code = cmd.get("code", "")
-            
+            with self._state_lock:
+                foreground = self._foreground_active
+            if foreground:
+                self.send_event("run_result", {
+                    "id": req_id, "success": False,
+                    "error": "MCU program is running. Stop it with Ctrl+C before using raw REPL tools."
+                })
+                return
+
             with self._lock:
                 self.in_raw_repl = True
                 try:
@@ -498,34 +618,30 @@ class MpyDaemon:
                     self._flush_terminal_input()
         elif action == "run_in_terminal":
             code = cmd.get("code", "")
-            with self._lock:
+            with self._state_lock:
+                if self._foreground_active or self.in_raw_repl or self.suspended:
+                    self.send_event("terminal_run_finished", {
+                        "success": False,
+                        "error": "REPL busy with another MCU/device operation."
+                    })
+                    return
+                self._foreground_active = True
+                self._foreground_executing = False
+                self._foreground_interrupt = False
                 self.in_raw_repl = True
-                try:
-                    # Switch to friendly REPL first to reset state cleanly, then raw REPL
-                    self._paced_serial_write(b'\r\x02\r\x03')
-                    time.sleep(0.1)
-                    self.enter_raw_repl()
-                    stdout, stderr = self.exec_raw_paste(code)
-                    if stdout:
-                        import base64
-                        self.send_event("terminal_data", {
-                            "data": base64.b64encode(stdout.encode('utf-8', errors='replace')).decode('ascii')
-                        })
-                    if stderr:
-                        import base64
-                        self.send_event("terminal_data", {
-                            "data": base64.b64encode(stderr.encode('utf-8', errors='replace')).decode('ascii')
-                        })
-                except Exception as e:
-                    self.send_event("error", {"message": f"Run failed: {e}"})
-                finally:
-                    try:
-                        self.exit_raw_repl()
-                    except:
-                        pass
-                    self.in_raw_repl = False
-                    self._flush_terminal_input()
+            self._foreground_thread = threading.Thread(
+                target=self._run_foreground_worker, args=(code,), daemon=True
+            )
+            self._foreground_thread.start()
         elif action == "suspend":
+            with self._state_lock:
+                busy = self._foreground_active
+            if busy:
+                self.send_event("transition_error", {
+                    "action": "suspend",
+                    "message": "A foreground MCU script is running; press Ctrl+C before transferring files."
+                })
+                return
             with self._lock:
                 self.suspended = True
                 if self.serial and self.serial.is_open:
