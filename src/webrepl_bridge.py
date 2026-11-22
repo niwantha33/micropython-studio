@@ -2,6 +2,7 @@ const vscode = require('vscode');
 const path = require('path');
 const { WebReplClient } = require('./webreplClient');
 const { getConfigValue } = require('./commonFxn');
+const { getDeviceSecret } = require('./deviceSecrets');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -28,7 +29,7 @@ async function resolveWebReplCredentials(devicePort) {
 
     const enabled = await getConfigValue(cfgPath, 'remote', 'webrepl_enabled');
     const ip = await getConfigValue(cfgPath, 'remote', 'webrepl_ip');
-    const password = await getConfigValue(cfgPath, 'remote', 'webrepl_password');
+    const password = await getDeviceSecret(cfgPath, 'webrepl_password');
 
     if (enabled === 'true' && ip) return { ip, password: password || '' };
     return null;
