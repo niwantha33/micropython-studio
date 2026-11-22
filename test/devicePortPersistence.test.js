@@ -54,7 +54,7 @@ suite('device.cfg selected port persistence', () => {
                 'deviceId = "2E8A:0005"',
                 '',
                 '[filePath]',
-                'deviceCodeDir = "' + main.replaceAll('\\', '\\\\') + '"',
+                'deviceCodeDir = "' + main + '"',
                 ''
             ].join('\n'));
             assert.strictEqual(await findProjectRoot(main), project);
@@ -93,7 +93,7 @@ suite('device.cfg selected port persistence', () => {
                 'device_firmware = "MicroPython"',
                 '',
                 '[filePath]',
-                'deviceCodeDir = "' + code.replaceAll('\\', '\\\\') + '"'
+                'deviceCodeDir = "' + code + '"'
             ].join('\n'));
             // Inject the exact dual-CDC enumeration order that previously
             // caused the explicit COM5 preference to snap back to COM3.
