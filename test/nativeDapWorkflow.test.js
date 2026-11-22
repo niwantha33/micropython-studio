@@ -23,6 +23,8 @@ suite('Native DAP workflow and real target scopes', () => {
         assert.ok(source('nativeDebugger.js').includes('DebugConfigurationProviderTriggerKind.Dynamic'));
         assert.ok(source('createNewProject.js').includes("path.join(config.settingsDir, 'launch.json')"));
         assert.ok(source('extension.js').includes('micropython-ide.configureNativeDebug'));
+        assert.ok(source('nativeDebugger.js').includes('getBuildInfo(this.context.extensionPath'));
+        assert.ok(source('nativeDebugger.js').includes("' (commit '"));
     });
 
     test('saved project COM7 takes priority over stale in-memory COM3', async () => {
