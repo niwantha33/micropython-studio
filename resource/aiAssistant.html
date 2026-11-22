@@ -6,7 +6,7 @@
     <title>Private AI Assistance</title>
     <!-- No remote scripts, fonts or styles: private AI stays entirely local. -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+          content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-__MPS_CSP_NONCE__'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
     
     <style>
         :root {
@@ -486,7 +486,7 @@
         </div>
     </div>
 
-    <script>
+    <script nonce="__MPS_CSP_NONCE__">
         const vscode = acquireVsCodeApi();
         const chatContainer = document.getElementById('chat-container');
         const userInput = document.getElementById('user-input');
@@ -572,7 +572,7 @@
                         ? hljs.highlight(code, { language }).value 
                         : hljs.highlightAuto(code).value;
 
-                    return `<div class="code-block-container"><pre><div class="code-header"><span>${escapeHtml(language)}</span><div class="code-actions"><button class="action-btn" onclick="handleAction('copy', this)" title="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button><button class="action-btn" onclick="handleAction('insert', this)" title="Insert into editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Insert</span></button><button class="action-btn" onclick="handleAction('run', this)" title="Run on device"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span></button><button class="action-btn" onclick="handleAction('new', this)" title="New file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg><span>New</span></button></div></div><code class="hljs language-${language}">${highlighted}</code><textarea style="display:none" class="raw-code">${escapeHtml(code)}</textarea></pre></div>`;
+                    return `<div class="code-block-container"><pre><div class="code-header"><span>${escapeHtml(language)}</span><div class="code-actions"><button class="action-btn" data-code-action="copy" title="Copy to clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button><button class="action-btn" data-code-action="insert" title="Insert into editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Insert</span></button><button class="action-btn" data-code-action="run" title="Run on device"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span></button><button class="action-btn" data-code-action="new" title="New file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg><span>New</span></button></div></div><code class="hljs language-${language}">${highlighted}</code><textarea style="display:none" class="raw-code">${escapeHtml(code)}</textarea></pre></div>`;
                 }
             }
         });
@@ -703,6 +703,14 @@
                 btn.style.color = '';
             }, 1000);
         };
+
+        // Delegate code actions instead of unsafe inline HTML event handlers.
+        document.addEventListener('click', event => {
+            const btn = event.target.closest('button[data-code-action]');
+            if (!btn) return;
+            const action = btn.dataset.codeAction;
+            if (['copy', 'insert', 'run', 'new'].includes(action)) window.handleAction(action, btn);
+        });
 
         function scrollToBottom() {
             chatContainer.scrollTop = chatContainer.scrollHeight;
