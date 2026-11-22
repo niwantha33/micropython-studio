@@ -14,6 +14,7 @@ const wsQueue = require('./wsQueue');
 const { setupVirtualEnv } = require('./setupEnv');
 const { createNewProject } = require('./createNewProject');
 const { getValidDevicePort, findProjectRoot } = require('./refreshSettings');
+const { isSavedUsbPort } = require('./devicePortSelection');
 const { getVenvPythonPathFolder, getVenvPythonPath, getVenvToolPath, getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
 const { DeviceFileExplorerProvider, readDeviceFile, deleteDeviceFile, deleteDeviceFolder, renameDeviceFile, uploadToDeviceFolder, newDeviceFolder } = require('./deviceFileExplorer');
 const { openPackageManager, openCircuitPythonPackageManager } = require('./packageManager');
@@ -114,7 +115,7 @@ async function _buildRunPortOptions() {
     if (enabled !== 'true' || !ip) return null;
 
     const items = [];
-    if (savedCom) {
+    if (isSavedUsbPort(savedCom)) {
         items.push({ label: `[OK] USB — ${savedCom}`, port: savedCom });
     }
     items.push({ label: `[OK] Wi-Fi — ${ip}`, port: `ws:${ip},${password || ''}` });
