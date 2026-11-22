@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { resolveDeviceDrivePath } = require('../src/pathSafety');
-const { writeSettingsToml } = require('../src/circuitpyWebWorkflow');
+const { writeSettingsToml, readSettingsToml } = require('../src/circuitpyWebWorkflow');
 const { loadVerifiedManifest } = require('../src/simulator');
 
 suite('Audit-driven security regression gates', () => {
@@ -42,6 +42,7 @@ suite('Audit-driven security regression gates', () => {
             assert.ok(toml.includes('CIRCUITPY_WIFI_SSID = ' + JSON.stringify(values.ssid)));
             assert.ok(toml.includes('CIRCUITPY_WIFI_PASSWORD = ' + JSON.stringify(values.wifiPassword)));
             assert.ok(toml.includes('CIRCUITPY_WEB_API_PASSWORD = ' + JSON.stringify(values.apiPassword)));
+            assert.deepStrictEqual(readSettingsToml(dir), values);
             assert.strictEqual(writeSettingsToml(dir, { ...values, apiPort: 70000 }).ok, false);
         } finally {
             fs.rmSync(dir, { force: true, recursive: true });
