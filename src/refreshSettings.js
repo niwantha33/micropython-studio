@@ -69,58 +69,6 @@ async function findProjectRoot(startDir) {
 }
 
 /**
- * Suggest a first-time REPL port when a physical device exposes multiple CDC ports.
- * IMPORTANT: the lowest COM number is only a heuristic. Never use this filter
- * to override an explicitly saved project port or infer the debugger interface.
- * @param {Array<{port: string, serial: string, vidpid: string}>} devices
- * @returns {Array<{port: string, serial: string, vidpid: string}>}
- */
-function filterDualCdcPorts(devices) {
-    const groups = new Map();
-    for (const d of devices) {
-        const ser = (d.serial || '').trim().toLowerCase();
-        if (ser && ser !== 'none') {
-            if (!groups.has(ser)) {
-                groups.set(ser, []);
-            }
-            groups.get(ser).push(d);
-        }
-    }
-
-    const secondaryPorts = new Set();
-    
-    // Helper to compare ports numerically (COM4 vs COM10) or lexicographically
-    const comparePorts = (a, b) => {
-        const numA = parseInt((a.match(/\d+/) || [])[0], 10);
-        const numB = parseInt((b.match(/\d+/) || [])[0], 10);
-        if (!isNaN(numA) && !isNaN(numB)) {
-            return numA - numB;
-        }
-        return a.localeCompare(b);
-    };
-
-    for (const [ser, groupDevices] of groups.entries()) {
-        if (groupDevices.length > 1) {
-            // Sort ports of the same physical device in ascending order
-            groupDevices.sort((a, b) => comparePorts(a.port, b.port));
-            
-            // The first one is primary (REPL), all others are secondary (debug/RTA)
-            const logStr = `[Port Detection] Multiple CDC ports for serial ${ser}: suggested initial USB port ${groupDevices[0].port}, additional ports ${groupDevices.slice(1).map(x => x.port).join(', ')} (manual selection takes priority)`;
-            console.log(logStr);
-            try {
-                getOutputChannel().appendLine(logStr);
-            } catch (_) {}
-
-            for (let i = 1; i < groupDevices.length; i++) {
-                secondaryPorts.add(groupDevices[i].port);
-            }
-        }
-    }
-
-    return devices.filter(d => !secondaryPorts.has(d.port));
-}
-
-/**
  * Detect the valid device port for the current project.
  * Reads the project's device.cfg and matches against connected devices.
  *
@@ -183,7 +131,9 @@ async function getValidDevicePort(resource) {
     } else if (preferredTransport !== 'webrepl') {
         // First-time USB setup only. Never override a saved Wi-Fi preference.
         // VID:PID alone cannot identify a REPL interface on a dual-CDC board.
-        const candidates = filterDualCdcPorts(devicesRaw);
+        // Show every interface: selecting the lowest COM would silently pick
+        // debugger CDC on some boards. User confirmation is required.
+        const candidates = devicesRaw;
         if (candidates.length === 0) {
             logMsg('[Port Detection] No connected USB devices detected for initial selection.');
         }
