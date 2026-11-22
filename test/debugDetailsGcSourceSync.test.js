@@ -40,7 +40,12 @@ suite('Studio debugger details, GC safety, on-device source validation', () => {
         assert.ok(ext.includes("comparePythonSource(diskSource, updated).same"));
         assert.ok(ext.includes("sys.modules.pop"));
         assert.ok(ext.includes('Check MCU Code'));
-        assert.ok(ext.indexOf("'Upload Local main.py'") < ext.indexOf("'micropython-ide.uploadFileToDevice'"));
+        const verifier = ext.slice(
+            ext.indexOf("registerCommand('micropython-ide.verifyDeviceMain'"),
+            ext.indexOf("registerCommand('micropython-ide.openMemoryAnalyzer'")
+        );
+        assert.ok(verifier.indexOf("'Upload Local main.py'") <
+            verifier.indexOf("'micropython-ide.uploadFileToDevice'"));
     });
 
     test('original detailed debugger can reopen beside the editor without restarting CDC bridge', () => {
