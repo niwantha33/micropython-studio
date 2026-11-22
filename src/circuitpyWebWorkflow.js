@@ -233,11 +233,22 @@ async function uploadFolder(ip, password, localFolder, remoteBase = '/', port = 
 function writeSettingsToml(drivePath, config) {
     try {
         if (!drivePath) throw new Error('CIRCUITPY drive not found — connect the device via USB.');
+        const port = config.apiPort === undefined ? 80 : Number(config.apiPort);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+            throw new Error('CircuitPython API port must be between 1 and 65535.');
+        }
+        for (const key of ['ssid', 'wifiPassword', 'apiPassword']) {
+            if (typeof config[key] !== 'string' || config[key].length > 256) {
+                throw new Error('Invalid CircuitPython credential: ' + key);
+            }
+        }
+        // JSON quoted strings have the escaping required for TOML basic strings.
+        // Never interpolate raw Wi-Fi or API credentials inside TOML quotes.
         const content = [
-            `CIRCUITPY_WIFI_SSID = "${config.ssid}"`,
-            `CIRCUITPY_WIFI_PASSWORD = "${config.wifiPassword}"`,
-            `CIRCUITPY_WEB_API_PASSWORD = "${config.apiPassword}"`,
-            `CIRCUITPY_WEB_API_PORT = ${config.apiPort || 80}`,
+            'CIRCUITPY_WIFI_SSID = ' + JSON.stringify(config.ssid),
+            'CIRCUITPY_WIFI_PASSWORD = ' + JSON.stringify(config.wifiPassword),
+            'CIRCUITPY_WEB_API_PASSWORD = ' + JSON.stringify(config.apiPassword),
+            'CIRCUITPY_WEB_API_PORT = ' + port,
         ].join('\n') + '\n';
         fs.writeFileSync(path.join(drivePath, 'settings.toml'), content, 'utf8');
         return { ok: true };
