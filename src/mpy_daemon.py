@@ -128,6 +128,7 @@ class MpyDaemon:
         self._foreground_executing = False
         self._foreground_interrupt = False
         self._foreground_thread = None
+        self._foreground_fault = None
 
         # New RX queue & lock
         self._rx_queue = bytearray()
@@ -153,6 +154,16 @@ class MpyDaemon:
             except Exception as e:
                 if not self.suspended:
                     err_str = str(e)
+                    with self._state_lock:
+                        foreground = self._foreground_active
+                        if foreground:
+                            self._foreground_fault = err_str
+                    if foreground:
+                        # Never silently reconnect/reset the transport while
+                        # a foreground raw program is executing. Its worker
+                        # will fail cleanly and release the port on exit.
+                        time.sleep(0.05)
+                        continue
                     is_transient = any(term in err_str for term in [
                         "device does not recognize",
                         "handle is invalid",
@@ -481,6 +492,10 @@ class MpyDaemon:
         """
         stage = 0
         while self.running:
+            with self._state_lock:
+                fault = self._foreground_fault
+            if fault:
+                raise OSError("Serial transport lost during MCU execution: " + fault)
             if not self.serial or not self.serial.is_open:
                 raise OSError("REPL disconnected while MCU program was running")
             if self._read_buf:
@@ -540,6 +555,7 @@ class MpyDaemon:
                 self._foreground_executing = False
                 self._foreground_active = False
                 self._foreground_interrupt = False
+                self._foreground_fault = None
                 self.in_raw_repl = False
             self._flush_terminal_input()
             self.send_event("terminal_run_finished", {
@@ -628,6 +644,7 @@ class MpyDaemon:
                 self._foreground_active = True
                 self._foreground_executing = False
                 self._foreground_interrupt = False
+                self._foreground_fault = None
                 self.in_raw_repl = True
             self._foreground_thread = threading.Thread(
                 target=self._run_foreground_worker, args=(code,), daemon=True
