@@ -65,6 +65,17 @@ suite('Known-good 2.6.1 serial transport compatibility', () => {
         assert.ok(daemonSource.includes('_release_lock(self.port)'));
     });
 
+    test('continuous print traffic is sent as bounded terminal frames', () => {
+        assert.ok(daemonSource.includes('self._rx_queue[:2048]'),
+            'Do not emit an unbounded JSON frame for continuous MCU print output');
+        assert.ok(daemonSource.includes('del self._rx_queue[:len(data)]'),
+            'Retain remaining bytes for subsequent frames without discarding output');
+        assert.ok(terminalSource.includes("['data', onData]"),
+            'Live terminal must subscribe to the shared serial data stream');
+        assert.ok(terminalSource.includes('samePort(connectionManager.portName, devicePort)'),
+            'Windows COM port case must not split terminal ownership');
+    });
+
     test('CLI backend never kills other processes to seize COM ports', () => {
         const backend = fs.readFileSync(path.join(root, 'src', 'mps_backend.py'), 'utf8');
         assert.ok(!backend.includes('_kill_port_owner('));
