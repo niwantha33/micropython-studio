@@ -1,7 +1,7 @@
 {
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
-  "description": "Live MicroPython debugger for Raspberry Pi Pico 2 W: breakpoints, stepping, locals, call stack and runtime tracing. Includes REPL, file tools, ESP32 and CircuitPython workflows.",
+  "description": "Native VS Code MicroPython debugger for Pico 2 W: real-device breakpoints, stepping, locals and RTA; memory & GC analyzer, REPL, ESP32 and CircuitPython tools.",
   "version": "2.6.1",
   "publisher": "niwantha33",
   "license": "MIT",
@@ -40,7 +40,11 @@
     "serial repl",
     "mpremote",
     "vs code",
-    "iot"
+    "iot",
+    "native MicroPython debugger",
+    "MicroPython memory profiler",
+    "garbage collection analyzer",
+    "VS Code debug adapter"
   ],
   "engines": {
     "vscode": "^1.75.0"
@@ -281,6 +285,16 @@
         "title": "MicroPython: Stop Emulated Simulator",
         "category": "MicroPython Studio",
         "icon": "$(stop-circle)"
+      },
+      {
+        "command": "micropython-ide.openMemoryAnalyzer",
+        "title": "MicroPython: Memory & Garbage Collection Analyzer",
+        "category": "MicroPython Studio"
+      },
+      {
+        "command": "micropython-ide.openLegacyDebugPanel",
+        "title": "MicroPython: Open Legacy Debug & RTA Panel",
+        "category": "MicroPython Studio"
       }
     ],
     "menus": {
@@ -360,6 +374,12 @@
         {
           "command": "micropython-ide.stopSimulator",
           "when": "true"
+        },
+        {
+          "command": "micropython-ide.openMemoryAnalyzer"
+        },
+        {
+          "command": "micropython-ide.openLegacyDebugPanel"
         }
       ],
       "explorer/context": [
@@ -463,7 +483,55 @@
           "group": "micropython@3"
         }
       ]
-    }
+    },
+    "debuggers": [
+      {
+        "type": "micropython-studio",
+        "label": "MicroPython Studio — Native Debugger",
+        "languages": [
+          "python"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [],
+            "properties": {
+              "replPort": {
+                "type": "string",
+                "description": "MicroPython REPL/upload port; must differ from the debugger CDC.",
+                "default": ""
+              },
+              "debugPort": {
+                "type": "string",
+                "description": "Dedicated firmware debugger CDC port (for example COM13).",
+                "default": ""
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "micropython-studio",
+            "request": "launch",
+            "name": "MicroPython Studio: Native Debugger",
+            "replPort": "",
+            "debugPort": ""
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "MicroPython Studio — Native Debugger",
+            "description": "Hardware debugger on a dedicated CDC, without uploading helper files.",
+            "body": {
+              "type": "micropython-studio",
+              "request": "launch",
+              "name": "MicroPython Studio: Native Debugger",
+              "replPort": "",
+              "debugPort": ""
+            }
+          }
+        ]
+      }
+    ]
   },
   "configuration": {
     "title": "MicroPython Studio",

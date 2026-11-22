@@ -8,6 +8,26 @@
 [![CircuitPython](https://img.shields.io/badge/CircuitPython-10.x-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
+## Native VS Code debugging and memory diagnostics (development branch)
+
+> **New 2.7 candidate functionality — hardware validation required before release.** The existing Pico 2 W debugger workflow remains the tested baseline. This change does not approve additional boards or automatically install/flash any debugger firmware.
+
+- **Native Run and Debug:** use VS Code F5 / Run and Debug with MicroPython Studio's Debug Adapter Protocol (DAP) integration. Standard Breakpoints, Variables, Watch (read-only lookup), Call Stack, and stepping connect to the **existing frozen-firmware debugger bridge**, not a second serial transport. Source frames are displayed only when mapping is available. The existing RTA webview remains available while a native session runs.
+- **Memory & Garbage Collection Analyzer:** open `MicroPython: Memory & Garbage Collection Analyzer` or the **Memory & GC** status-bar item. **Sample heap** reads `gc.mem_alloc()` and `gc.mem_free()` without forcing garbage collection. **Collect GC + compare** explicitly runs `gc.collect()`, reports reclaimed bytes and measured collection duration when supported. Export snapshots to CSV, compare observed peaks and growth.
+- **Safe measurements:** the Memory Analyzer uses an already-connected, idle USB REPL and refuses to create a competing COM connection. Do not sample a busy application; evaluating code via REPL may interrupt user code. It blocks requests while a native debug session is active. Heap totals reflect the GC-managed heap, not every RAM allocation or physical memory bank. Rising samples alone do not establish a memory leak.
+
+### Start native debugging
+
+1. Check the [board-specific debugger firmware matrix](https://niwantha33.github.io/micropython-studio/board-support.html) and ensure compatible firmware is already installed on the exact board.
+2. Connect the board's **REPL/upload COM port** normally. Select **Start Debug**, or use F5 and choose **MicroPython Studio — Native Debugger**.
+3. When prompted, select the **separate debugger CDC/COM port**. The native debugger only attaches to the frozen debugger; it never uploads Python helper files, overwrites `boot.py`, or flashes firmware.
+4. Set a source breakpoint in a `.py` function. When the firmware confirms its slot, the native Breakpoints pane marks it verified. Use VS Code stepping and inspect Variables/Call Stack. Unmapped source locations remain labelled as such instead of being guessed.
+5. To use the classic debugger/RTA panel by itself, run `MicroPython: Open Legacy Debug & RTA Panel`. Close any existing debug connection before switching modes.
+
+Detailed workflow: [Native DAP and Memory Analyzer guide](docs/native-dap-memory.md).
+
+---
+
 ## See what makes the debugger different
 
 On compatible **debugger-enabled firmware**, MicroPython Studio provides source breakpoints, step/continue controls, local/global variable inspection, call stacks and live RTA function tracing, without requiring a separate JTAG probe for those software-debugging features. The [demo](https://www.youtube.com/watch?v=or_aG-Rhnb8) shows the debugger operating on a real Pico 2 W.

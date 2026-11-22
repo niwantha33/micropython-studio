@@ -25,6 +25,8 @@ const { findCircuitPyDrive, readCircuitPyBootInfo, copyToCircuitPyDrive, syncFro
 const { getConnectedDevices } = require('./runCommand');
 const { AiAssistanceProvider } = require('./aiAssistance');
 const { startDebugger } = require('./mpyDebugger');
+const { registerNativeDebugger } = require('./nativeDebugger');
+const { MemoryAnalyzer } = require('./memoryAnalyzer');
 const { openWebReplTerminal } = require('./webrepl_bridge.py');
 const { startSimulator, stopSimulator } = require('./simulator');
 
@@ -484,6 +486,9 @@ async function sendCleanCommand(terminal, command) {
 function activate(context) {
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
+    registerNativeDebugger(context, () => gRemoteDevicePort, () => getVenvPythonPath(getVenvPythonPathFolder()));
+    const memoryAnalyzer = new MemoryAnalyzer(context, () => gRemoteDevicePort);
+    context.subscriptions.push({ dispose: () => memoryAnalyzer.dispose() });
 
     // Stop VS Code's Python extension from auto-typing the venv activate path
     // into our REPL terminal. This setting is workspace-scoped.
@@ -1336,13 +1341,21 @@ function activate(context) {
         })
     );
 
-    // Start Debug (placeholder — coming soon)
+    // Native VS Code Run & Debug uses the existing firmware-first debug bridge.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.startDebug', async () => {
-            const venvFolder = getVenvPythonPathFolder();
-            const venvPython = getVenvPythonPath(venvFolder);
+            await vscode.debug.startDebugging(vscode.workspace.workspaceFolders?.[0], {
+                type: 'micropython-studio',
+                request: 'launch',
+                name: 'MicroPython Studio: Native Debugger',
+                replPort: gRemoteDevicePort || ''
+            });
+        }),
+        vscode.commands.registerCommand('micropython-ide.openLegacyDebugPanel', async () => {
+            const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
             await startDebugger(context, gRemoteDevicePort, venvPython);
-        })
+        }),
+        vscode.commands.registerCommand('micropython-ide.openMemoryAnalyzer', () => memoryAnalyzer.open())
     );
 
     // Start QEMU Simulator
@@ -1864,10 +1877,17 @@ function createStatusBar(context) {
     // 6.5 Start MPy Debugger Button
     const startDebugButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.5);
     startDebugButton.text = '$(debug-alt) Start Debug';
-    startDebugButton.tooltip = 'Upload debugger files + start live debugger panel';
+    startDebugButton.tooltip = 'Start native VS Code debugger using board-matched frozen firmware (no helper upload)';
     startDebugButton.command = 'micropython-ide.startDebug';
     startDebugButton.show();
     context.subscriptions.push(startDebugButton);
+
+    const memoryButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.3);
+    memoryButton.text = '$(pulse) Memory & GC';
+    memoryButton.tooltip = 'Manual MicroPython heap snapshots and garbage collection analysis';
+    memoryButton.command = 'micropython-ide.openMemoryAnalyzer';
+    memoryButton.show();
+    context.subscriptions.push(memoryButton);
 
     // 7. Device Dashboard Button
     const dashboardButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
