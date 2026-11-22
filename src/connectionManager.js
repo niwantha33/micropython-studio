@@ -88,6 +88,7 @@ class ConnectionManager extends EventEmitter {
         this.isLocked = false;
         this.isSuspended = false;
         this.isScriptRunning = false;
+        this.isReconnecting = false;
         this._runStartPending = null;
         
         // Promises for run_code requests
@@ -228,7 +229,12 @@ class ConnectionManager extends EventEmitter {
 
     _handleDaemonMessage(msg, resolve, reject, connected) {
         switch (msg.type) {
+            case 'reconnecting':
+                this.isReconnecting = true;
+                this.emit('reconnecting', msg.port);
+                break;
             case 'connected':
+                this.isReconnecting = false;
                 logMsg(`[ConnectionManager] Received 'connected' event from daemon`);
                 this.isConnected = true;
                 this.isSuspended = false;
@@ -380,6 +386,7 @@ class ConnectionManager extends EventEmitter {
     }
 
     async suspend() {
+        if (this.isReconnecting) throw new Error('USB serial transport is reconnecting. Wait for recovery.');
         if (!this.isConnected) return;
         if (this.isScriptRunning) throw new Error('Serial port is running an MCU script. Press Stop before file transfer.');
         if (this.isSuspended) return;
@@ -411,8 +418,8 @@ class ConnectionManager extends EventEmitter {
      * Never spawn a second port owner or terminate unrelated processes.
      */
     hardReset() {
-        if (!this.isConnected || !this.daemonProcess || this.isSuspended) {
-            return Promise.reject(new Error('REPL serial port is not ready for reset.'));
+        if (!this.isConnected || !this.daemonProcess || this.isSuspended || this.isReconnecting) {
+            return Promise.reject(new Error('REPL serial port is busy or reconnecting; wait before resetting.'));
         }
         if (this._resetPending) return this._resetPending.promise;
         const id = this._nextReqId++;
@@ -449,6 +456,7 @@ class ConnectionManager extends EventEmitter {
     _daemonGone(error) {
         this.stopAutoResumeCheck();
         this.isScriptRunning = false;
+        this.isReconnecting = false;
         if (this._runStartPending) {
             const pending = this._runStartPending;
             this._runStartPending = null;
@@ -730,7 +738,7 @@ except Exception as e:
      * Executes code programmatically via raw paste in the background daemon.
      */
     async runCodeSilently(codeString) {
-        if (!this.isConnected || !this.daemonProcess || this.isSuspended ||
+        if (!this.isConnected || !this.daemonProcess || this.isSuspended || this.isReconnecting ||
             this.isScriptRunning || this._runStartPending) {
             throw new Error('REPL is busy or disconnected. Stop the MCU script or wait for the transfer.');
         }
@@ -767,7 +775,7 @@ except Exception as e:
      * Executes code in the foreground terminal (streams output, supports infinite loops).
      */
     runInTerminal(codeString) {
-        if (!this.isConnected || !this.daemonProcess || this.isSuspended ||
+        if (!this.isConnected || !this.daemonProcess || this.isSuspended || this.isReconnecting ||
             this.isScriptRunning || this._runCodeRequests.size > 0) {
             return Promise.reject(new Error('REPL busy or disconnected. Stop the previous script first.'));
         }
