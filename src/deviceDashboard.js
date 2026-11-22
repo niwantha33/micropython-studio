@@ -10,6 +10,7 @@ const { buildSessionWebReplScript, parseSessionWebReplResult, buildWebReplStatus
 const { buildWifiScanScript, parseWifiScanOutput } = require("./wifiScan");
 
 const { scanWorkspacePins } = require("./pinScanner");
+const { getDeviceSecret, setDeviceSecret } = require("./deviceSecrets");
 const {
   updateCfgComponent,
   getVenvPythonPath,
@@ -2448,16 +2449,11 @@ print('OK')
           )
         );
 
-        // Also persist Web Workflow credentials into device.cfg [remote] section
+        // Keep non-secret Web Workflow settings in device.cfg; password goes to SecretStorage.
         if (result.ok) {
           const cfgPath = path.join(workspaceRoot, "device.cfg");
           await updateCfgComponent(cfgPath, "remote", "webworkflow_ip", "");
-          await updateCfgComponent(
-            cfgPath,
-            "remote",
-            "webworkflow_password",
-            message.apiPassword,
-          );
+          await setDeviceSecret(cfgPath, "webworkflow_password", message.apiPassword);
           await updateCfgComponent(
             cfgPath,
             "remote",
@@ -2503,7 +2499,7 @@ print('OK')
 
           const running = status.state === "RUNNING";
           const savedSecret = running
-            ? await getConfigValue(cfgPath, "remote", "webrepl_password") : null;
+            ? await getDeviceSecret(cfgPath, "webrepl_password") : null;
           const secret = await vscode.window.showInputBox({
             prompt: running
               ? "WebREPL is already running. Enter its EXISTING password (no restart)."
@@ -2533,7 +2529,7 @@ print('OK')
           // the WebREPL Console (a listening port alone isn't authentication).
           await updateCfgComponent(cfgPath, "remote", "webrepl_enabled", "true");
           await updateCfgComponent(cfgPath, "remote", "webrepl_ip", ip);
-          await updateCfgComponent(cfgPath, "remote", "webrepl_password", secret);
+          await setDeviceSecret(cfgPath, "webrepl_password", secret);
           panel.webview.postMessage({ command: "webReplEnabled", ip, alreadyRunning: running });
           outputChannel.appendLine("[WebREPL] " +
             (running ? "Existing listener detected at " : "Listener started at ") +
@@ -2606,7 +2602,7 @@ print('OK')
         // Never hardcode credentials or show them in a tab title.
         const cfgPath = path.join(workspaceRoot, "device.cfg");
         const savedIp = await getConfigValue(cfgPath, "remote", "webrepl_ip");
-        const savedSecret = await getConfigValue(cfgPath, "remote", "webrepl_password");
+        const savedSecret = await getDeviceSecret(cfgPath, "webrepl_password");
         const enabled = await getConfigValue(cfgPath, "remote", "webrepl_enabled");
         if (enabled !== "true" || !savedIp || !savedSecret || savedIp !== message.ip) {
           panel.webview.postMessage({
