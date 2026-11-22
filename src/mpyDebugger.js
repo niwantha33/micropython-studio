@@ -899,7 +899,18 @@ function openDebuggerPanel(context, port, venvPython) {
                         localNames: loc ? (localNamesByFn.get(loc.fnKey) || []) : []
                     });
                     sendNativeCommand('call_stack');
-                } else if (msg.evt === 'step_line' || msg.evt === 'sent' ||
+                } else if (msg.evt === 'step_line') {
+                    let localNames = [], func = null;
+                    try {
+                        const sourceText = require('fs').readFileSync(msg.file, 'utf8');
+                        const fn = findEnclosingFunction(sourceText, msg.line);
+                        if (fn) {
+                            func = fn.func;
+                            localNames = extractLocalNames(sourceText, fn.defLine, fn.args);
+                        }
+                    } catch (_) { /* Source may be unavailable on host. */ }
+                    emitNative({ ...msg, localNames, func });
+                } else if (msg.evt === 'sent' ||
                            (msg.evt === 'reply' && /^(?:frame=|depth=|stack=)/.test(msg.text || ''))) {
                     emitNative(msg);
                 }
