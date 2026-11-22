@@ -994,7 +994,19 @@ function activate(context) {
 
             vscode.window.showInformationMessage(`Sending hard reset to ${redactDevicePort(gRemoteDevicePort)}...`);
             try {
-                await wsQueue.run(() => _spawnAsync(venvPython, hrArgs));
+                if (connectionManager.isConnected &&
+                    connectionManager.portName === gRemoteDevicePort) {
+                    // The REPL daemon already owns this COM port. Reset via
+                    // its serial handle, not a second Python subprocess.
+                    await wsQueue.run(() => connectionManager.hardReset(),
+                        'Hard Reset (shared REPL)', true);
+                } else {
+                    const code = await wsQueue.run(() => _spawnAsync(venvPython, hrArgs),
+                        'Hard Reset (standalone)');
+                    if (code !== 0) {
+                        throw new Error('Reset backend failed; see MicroPython IDE Output for details.');
+                    }
+                }
             } catch (e) {
                 vscode.window.showErrorMessage(`Hard reset failed: ${e.message}`);
             }
