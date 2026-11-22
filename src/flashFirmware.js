@@ -7,7 +7,7 @@
  */
 
 const vscode = require('vscode');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const { getVenvPythonPathFolder, getVenvToolPath } = require('./commonFxn');
 
 const FIRMWARE_VERSIONS = [
@@ -29,7 +29,8 @@ async function listBoards(outputChannel) {
     const mpflashExe = getVenvToolPath(getVenvPythonPathFolder(), 'mpflash');
 
     return new Promise((resolve) => {
-        exec(`"${mpflashExe}" list --json`, (error, stdout) => {
+        execFile(mpflashExe, ['list', '--json'],
+            { timeout: 20000, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout) => {
             if (error) {
                 outputChannel.appendLine(`[mpflash] Board scan failed: ${error.message}`);
                 outputChannel.appendLine('[TIP] If your ESP board is not detected, you can manually download the firmware and flash it using esptool.');
