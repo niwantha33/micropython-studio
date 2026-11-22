@@ -1405,10 +1405,52 @@ function activate(context) {
         vscode.commands.registerCommand('micropython-ide.startDebug', async () => {
             await vscode.debug.startDebugging(vscode.workspace.workspaceFolders?.[0], {
                 type: 'micropython-studio',
-                request: 'launch',
-                name: 'MicroPython Studio: Native Debugger',
+                request: 'attach',
+                name: 'MicroPython Studio: Attach to hardware',
                 replPort: gRemoteDevicePort || ''
             });
+        }),
+        vscode.commands.registerCommand('micropython-ide.configureNativeDebug', async () => {
+            const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!folder) {
+                vscode.window.showWarningMessage('Open a MicroPython project before configuring debugging.');
+                return;
+            }
+            const root = await findProjectRoot(folder);
+            if (!root) {
+                vscode.window.showErrorMessage('No device.cfg found for this project.');
+                return;
+            }
+            const vscodeDir = path.join(root, '.vscode');
+            const launchPath = path.join(vscodeDir, 'launch.json');
+            try {
+                if (!fs.existsSync(launchPath)) {
+                    fs.mkdirSync(vscodeDir, { recursive: true });
+                    const launch = {
+                        version: '0.2.0',
+                        configurations: [{
+                            type: 'micropython-studio',
+                            request: 'attach',
+                            name: 'MicroPython Studio: Attach to hardware',
+                            replPort: '',
+                            debugPort: ''
+                        }]
+                    };
+                    fs.writeFileSync(launchPath, JSON.stringify(launch, null, 2) + '\n', {
+                        encoding: 'utf8', flag: 'wx'
+                    });
+                } else {
+                    // Existing launch.json may be JSONC. Never overwrite
+                    // another debugger's configurations or comments.
+                    vscode.window.showInformationMessage(
+                        'Existing launch.json preserved. Use Add Configuration to add the MicroPython Studio attach profile.'
+                    );
+                }
+                const doc = await vscode.workspace.openTextDocument(launchPath);
+                await vscode.window.showTextDocument(doc);
+            } catch (error) {
+                vscode.window.showErrorMessage('Cannot configure MicroPython debugging: ' + error.message);
+            }
         }),
         vscode.commands.registerCommand('micropython-ide.openLegacyDebugPanel', async () => {
             const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
@@ -1921,7 +1963,7 @@ function createStatusBar(context) {
     // 6.5 Start MPy Debugger Button
     const startDebugButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.5);
     startDebugButton.text = '$(debug-alt) Start Debug';
-    startDebugButton.tooltip = 'Start native VS Code debugger using board-matched frozen firmware (no helper upload)';
+    startDebugButton.tooltip = 'Attach native VS Code debugger via dedicated USB CDC (does not auto-run main.py)';
     startDebugButton.command = 'micropython-ide.startDebug';
     startDebugButton.show();
     context.subscriptions.push(startDebugButton);
