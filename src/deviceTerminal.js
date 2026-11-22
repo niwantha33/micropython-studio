@@ -2,6 +2,7 @@
 
 const vscode = require('vscode');
 const connectionManager = require('./connectionManager');
+const { StringDecoder } = require('string_decoder');
 
 let activeTerminal = null;
 let activePort = null;
@@ -41,11 +42,12 @@ async function openDeviceTerminal(_context, devicePort) {
     }
 
     const emitter = new vscode.EventEmitter();
+    const utf8Decoder = new StringDecoder('utf8');
     let terminal = null;
     let closed = false;
 
     const emit = text => { if (!closed) emitter.fire(text); };
-    const onData = data => emit(data.toString('utf8'));
+    const onData = data => emit(utf8Decoder.write(data));
     const onConnected = () => {
         emit(terminalNotice(`Connected to ${devicePort}. Press Enter for >>>. If your script is running, press Ctrl+C to interrupt it. Opening Shell does not reset the board.`));
     };
@@ -75,6 +77,7 @@ async function openDeviceTerminal(_context, devicePort) {
             }
         },
         close: () => {
+            emit(utf8Decoder.end());
             closed = true;
             for (const [name, listener] of listeners) {
                 connectionManager.removeListener(name, listener);
