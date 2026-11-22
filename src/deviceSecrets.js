@@ -49,7 +49,7 @@ async function getDeviceSecret(cfgPath, key) {
         const match = typeof oldPort === 'string' && /^ws:[^,]+,(.*)$/.exec(oldPort);
         if (match) {
             embedded = match[1];
-            await updateCfgComponent(cfgPath, 'device', 'port', 'NOT_SET');
+            // Scrub only after the credential has been securely stored.
         }
     }
     if (legacy || embedded) {
@@ -59,6 +59,7 @@ async function getDeviceSecret(cfgPath, key) {
         }
         if (legacy) await updateCfgComponent(cfgPath, 'remote', key, '');
     }
+    if (embedded !== null) await updateCfgComponent(cfgPath, 'device', 'port', 'NOT_SET');
     return saved || '';
 }
 
