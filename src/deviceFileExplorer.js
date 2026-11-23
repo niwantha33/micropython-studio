@@ -780,6 +780,7 @@ async function newDeviceFolder(port, parentPath, provider) {
 }
 
 module.exports = {
+    canUseSharedSerial,
     DeviceFileExplorerProvider,
     DeviceFileItem,
     readDeviceFile,
