@@ -62,6 +62,14 @@ suite('Interactive Shell output through the real terminal controller', () => {
         await pty.handleInput('\x03');
         assert.strictEqual(writes[0].toString(), 'main.fxn()\r');
         assert.strictEqual(writes[1][0], 3);
+        // Raw operations may mark the REPL busy. Ctrl+C must still reach
+        // the emergency Stop path while ordinary input stays blocked.
+        manager.isLocked = true;
+        await pty.handleInput('print("blocked")\r');
+        assert.strictEqual(writes.length, 2, 'busy REPL must not accept ordinary input');
+        await pty.handleInput('\x03');
+        assert.strictEqual(writes.length, 3, 'Ctrl+C must bypass the busy-input gate');
+        assert.strictEqual(writes[2][0], 3);
         terminal.dispose();
         assert.strictEqual(manager.listenerCount('data'), 0);
     });

@@ -67,6 +67,19 @@ class KnownGoodReplProtocolTests(unittest.TestCase):
         self.events = []
         self.daemon.send_event = lambda name, data: self.events.append((name, data))
 
+    def test_explicit_stop_uses_two_ctrl_c_bytes_without_reset(self):
+        self.daemon.interrupt()
+        self.assertEqual(self.port.writes, [b'\x03', b'\x03'])
+        self.assertNotIn(b'\x04', self.port.writes)
+
+    def test_stop_during_foreground_start_is_latched(self):
+        self.daemon._foreground_active = True
+        self.daemon._foreground_executing = False
+        self.daemon.interrupt()
+        self.assertTrue(self.daemon._foreground_interrupt,
+                        'Stop must survive transition from upload to execution')
+        self.assertEqual(self.port.writes, [b'\x03', b'\x03'])
+
     def test_interactive_enter_and_control_c_are_written_directly(self):
         for raw in (b'\r', b'print(1 + 1)\r', b'\x03'):
             self.daemon.process_command({

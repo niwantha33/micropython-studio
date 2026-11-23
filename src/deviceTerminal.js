@@ -121,6 +121,18 @@ async function openDeviceTerminal(_context, devicePort) {
             }
         },
         handleInput: async data => {
+            // Ctrl+C is an emergency control, not an ordinary REPL write.
+            // Never reject it merely because a raw operation marked the
+            // connection busy: Stop must reach the daemon's priority reader.
+            const bytes = Buffer.from(data);
+            if (bytes.includes(3)) {
+                try {
+                    await stopExecution(devicePort);
+                } catch (err) {
+                    emit(terminalNotice('Ctrl+C failed: ' + err.message));
+                }
+                return;
+            }
             if (!connectionManager.isConnected || connectionManager.isSuspended
                 || connectionManager.isLocked || !samePort(connectionManager.portName, devicePort)) {
                 emit(terminalNotice('REPL is unavailable while another operation owns the serial port.'));
@@ -128,11 +140,6 @@ async function openDeviceTerminal(_context, devicePort) {
             }
             try {
                 // Match backspace behaviour expected by MicroPython friendly REPL.
-                const bytes = Buffer.from(data);
-                if (bytes.includes(3)) {
-                    await stopExecution(devicePort);
-                    return;
-                }
                 for (let i = 0; i < bytes.length; ++i) {
                     if (bytes[i] === 127) bytes[i] = 8;
                 }

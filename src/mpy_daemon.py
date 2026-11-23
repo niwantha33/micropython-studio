@@ -788,14 +788,24 @@ class MpyDaemon:
         """An explicit user stop bypasses queued raw operations and serial locks."""
         if self.suspended or not self.serial or not self.serial.is_open:
             raise OSError('REPL port is not available for interruption')
-        self._stop_generation += 1
+        with self._state_lock:
+            self._stop_generation += 1
+            # A Stop racing with the final raw-paste handshake must not be
+            # lost before the foreground worker enters its execution phase.
+            if self._foreground_active and not self._foreground_executing:
+                self._foreground_interrupt = True
         self._terminal_input_buffer = b''
         self._cancel_upload.set()
         if self._raw_uploading:
+            # The upload worker aborts the partial payload safely. Sending
+            # Ctrl+C into raw-paste source bytes would corrupt the protocol.
             return
-        else:
-            # No reconnect, reset, Ctrl+D, or application execution.
-            self.serial.write(b'\x03')
+        # MicroPython may need a second Ctrl+C to cancel nested asyncio tasks
+        # and return to the friendly prompt. Neither byte is a soft reset.
+        # Never acquire the raw-operation lock here; it may be held by a loop.
+        self.serial.write(b'\x03')
+        time.sleep(0.05)
+        self.serial.write(b'\x03')
 
 
 def read_commands(daemon, commands, stream):
