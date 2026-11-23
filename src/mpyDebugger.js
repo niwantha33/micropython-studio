@@ -1220,11 +1220,13 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     });
 
     panel.webview.onDidReceiveMessage((msg) => {
-        if (!bridge) return;
+        // Stop runs over the independent USB REPL transport. A crashed or
+        // disconnected debug CDC must never disable this emergency control.
         if (msg.op === 'stop') {
             vscode.commands.executeCommand('micropython-ide.stopRun');
             return;
         }
+        if (!bridge) return;
         if (!sessionReady && ['continue', 'step', 'step_in', 'step_out', 'globals', 'call_stack', 'rta_on'].includes(msg.op)) {
             panel.webview.postMessage({ evt: 'error', msg: 'Firmware has not acknowledged the debug connection. Command was not sent.' });
             return;
