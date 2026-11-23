@@ -180,16 +180,22 @@ async function getValidDevicePort(resource) {
     }
 
     const configuredCodeDir = await getConfigValue(configPath, 'filePath', 'deviceCodeDir');
-    deviceCodeDir = resolveProjectCodeDir(projectDir, configuredCodeDir);
-    if (!deviceCodeDir) {
-        vscode.window.showWarningMessage(
-            'Cannot locate the project code directory. Check [filePath] deviceCodeDir in device.cfg and the local main/ folder before uploading.'
-        );
-        logMsg('[Upload Path] No existing source directory was found for this project.');
-    } else if (configuredCodeDir && path.resolve(configuredCodeDir) !== path.resolve(deviceCodeDir)) {
-        logMsg('[Upload Path] Saved deviceCodeDir does not match this project. Using current source: ' + deviceCodeDir);
-    }
     const deviceFirmware = await getConfigValue(configPath, 'device', 'device_firmware');
+    // CircuitPython uses a real USB drive path. Never reinterpret E:\\ as
+    // a MicroPython project main/ folder during source-path recovery.
+    if (deviceFirmware === 'CircuitPython') {
+        deviceCodeDir = configuredCodeDir;
+    } else {
+        deviceCodeDir = resolveProjectCodeDir(projectDir, configuredCodeDir);
+        if (!deviceCodeDir) {
+            vscode.window.showWarningMessage(
+                'Cannot locate the project code directory. Check [filePath] deviceCodeDir in device.cfg and the local main/ folder before uploading.'
+            );
+            logMsg('[Upload Path] No existing source directory was found for this project.');
+        } else if (configuredCodeDir && path.resolve(configuredCodeDir) !== path.resolve(deviceCodeDir)) {
+            logMsg('[Upload Path] Saved deviceCodeDir does not match this project. Using current source: ' + deviceCodeDir);
+        }
+    }
 
     return [gRemoteDevicePort, deviceCodeDir, deviceFirmware || 'MicroPython', configPath];
 }
