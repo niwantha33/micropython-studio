@@ -33,6 +33,7 @@ const { chooseDebugAdapter, findPotentialDebugPorts } = require('./debugAdapterC
 const { MemoryAnalyzer } = require('./memoryAnalyzer');
 const { comparePythonSource, isInsideProject } = require('./deviceSourceCheck');
 const { samePort } = require('./devicePortSelection');
+const { fileRemotePath, folderRemotePath } = require('./deviceUploadPaths');
 const { openWebReplTerminal } = require('./webreplBridge.js');
 const { startSimulator, stopSimulator } = require('./simulator');
 
@@ -358,7 +359,7 @@ async function _spawnAsync(exe, args) {
  * @param {()=>void} [onDone]
  */
 async function _runUploadQueued(exe, baseArgs, onDone) {
-    const code = await wsQueue.run(() => _spawnAsync(exe, baseArgs));
+    let code = await wsQueue.run(() => _spawnAsync(exe, baseArgs));
     if (code === 3) {
         const answer = await vscode.window.showWarningMessage(
             'Some files already exist on the device. Overwrite them?',
@@ -366,11 +367,15 @@ async function _runUploadQueued(exe, baseArgs, onDone) {
             'Overwrite',
             'Cancel'
         );
-        if (answer === 'Overwrite') {
-            await wsQueue.run(() => _spawnAsync(exe, [...baseArgs, '--overwrite']));
-        }
+        if (answer !== 'Overwrite') return false;
+        code = await wsQueue.run(() => _spawnAsync(exe, [...baseArgs, '--overwrite']));
+    }
+    if (code !== 0) {
+        throw new Error('Backend upload failed (exit code ' +
+            (code === null ? 'unknown' : code) + '). Check Output → MicroPython IDE.');
     }
     if (onDone) onDone();
+    return true;
 }
 
 /**
@@ -1130,17 +1135,22 @@ function activate(context) {
                 else files.push(full);
             }
         };
+        if (!fsSync.existsSync(localFolderPath) || !fsSync.statSync(localFolderPath).isDirectory()) {
+            throw new Error('Local upload folder does not exist: ' + localFolderPath);
+        }
         walk(localFolderPath);
-        
+        if (!files.length) throw new Error('Local upload folder is empty: ' + localFolderPath);
+
         for (const file of files) {
             const rel = path.relative(localFolderPath, file).replace(/\\/g, '/');
             const destPath = remoteDestPath === '/' ? `/${rel}` : `${remoteDestPath}/${rel}`;
+            outputChannel.appendLine('[UPLOAD] ' + file + ' → ' + destPath);
             const buffer = fsSync.readFileSync(file);
             await wsQueue.run(() => connectionManager.writeFile(destPath, buffer), 'Upload File', true);
         }
     }
 
-    // Upload current file to device root
+    // Upload the selected local file to its mirrored device path.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.uploadFileToDevice', async (uri) => {
             const filePath = uri ? uri.fsPath : vscode.window.activeTextEditor?.document.fileName;
@@ -1148,55 +1158,60 @@ function activate(context) {
                 vscode.window.showWarningMessage('No file selected to upload.');
                 return;
             }
-
-            // CircuitPython — copy directly to USB drive, no COM port needed
             if (gDeviceFirmware === 'CircuitPython') {
                 const localRoot = getLocalCodeRootCpy(filePath);
                 await cpUploadFiles([filePath], localRoot);
                 return;
             }
-
             if (!gRemoteDevicePort) {
                 vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
                 return;
             }
-
             if (gRemoteDevicePort.startsWith('tcp:')) {
-                vscode.window.showWarningMessage(
-                    'Cannot upload files to the simulator because the emulated device\'s filesystem is read-only. ' +
-                    'Please use the "Run" button (which mounts your workspace in RAM) or "Run MCU" instead. ' +
-                    'If your project is missing library files (like "asyncio"), you can copy them into a "lib/" folder in your local workspace.'
-                );
+                vscode.window.showWarningMessage('Simulator filesystem is read-only. Use Run MCU instead.');
                 return;
             }
-
-            const baseDest = isXBeeDevice() ? '/flash' : '';
-
-            if (connectionManager.isConnected && !connectionManager.isSuspended &&
-                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
-                try {
-                    const filename = path.basename(filePath);
-                    const destPath = baseDest === '' ? `/${filename}` : `${baseDest}/${filename}`;
-                    const buffer = fs.readFileSync(filePath);
-                    await wsQueue.run(() => connectionManager.writeFile(destPath, buffer), 'Upload File', true);
-                    if (deviceFileExplorer) deviceFileExplorer.refresh();
-                } catch (error) {
-                    vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
+            try {
+                const document = vscode.workspace.textDocuments.find(doc => doc.fileName === filePath && doc.isDirty);
+                if (document && !(await document.save())) {
+                    throw new Error('Save the edited local file before uploading.');
                 }
-                return;
+                if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+                    throw new Error('Local upload file does not exist: ' + filePath);
+                }
+                const deviceRoot = isXBeeDevice() ? '/flash' : '/';
+                const destPath = fileRemotePath(filePath, gDeviceCodeDir, deviceRoot);
+                const destDir = path.posix.dirname(destPath);
+                outputChannel.appendLine('[UPLOAD] ' + filePath + ' → ' + destPath +
+                    ' (' + redactDevicePort(gRemoteDevicePort) + ')');
+
+                if (connectionManager.isConnected &&
+                    samePort(connectionManager.portName, gRemoteDevicePort)) {
+                    if (connectionManager.isSuspended || connectionManager.isReconnecting) {
+                        throw new Error('REPL is temporarily owned by another operation. Retry when it resumes.');
+                    }
+                    await wsQueue.run(
+                        () => connectionManager.writeFile(destPath, fs.readFileSync(filePath)),
+                        'Upload File', true
+                    );
+                    if (deviceFileExplorer) deviceFileExplorer.refresh();
+                } else {
+                    const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+                    const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
+                    await _runUploadQueued(venvPython,
+                        [scriptPath, '--python', venvPython, 'upload',
+                            '--port', gRemoteDevicePort, '--source', filePath, '--dest', destDir],
+                        () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+                }
+                outputChannel.appendLine('[UPLOAD] Completed: ' + destPath);
+            } catch (error) {
+                vscode.window.showErrorMessage('Upload failed: ' + error.message);
+                outputChannel.appendLine('[UPLOAD ERROR] ' + error.message);
             }
-
-            const venvFolder = getVenvPythonPathFolder();
-            const venvPython = getVenvPythonPath(venvFolder);
-            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
-            const uploadArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', filePath, '--dest', baseDest];
-            const onDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
-
-            _runUploadQueued(venvPython, uploadArgs, onDone);
         })
     );
 
-    // Upload a folder (with all subfolders/files) to the device — right-click in explorer
+    // Upload a folder. The project's code root maps to device '/', not '/main'.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.uploadFolderToDevice', async (uri) => {
             const folderPath = uri ? uri.fsPath : null;
@@ -1204,99 +1219,77 @@ function activate(context) {
                 vscode.window.showWarningMessage('No folder selected.');
                 return;
             }
-
-            // CircuitPython — copy all files to USB drive directly
             if (gDeviceFirmware === 'CircuitPython') {
-                const fsSync = require('fs');
-                const allFiles = [];
-                /** @param {string} dir */
-                const walk = (dir) => {
-                    for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
+                const files = [];
+                const walk = dir => {
+                    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
                         const full = path.join(dir, e.name);
                         if (e.isDirectory()) walk(full);
-                        else allFiles.push(full);
+                        else files.push(full);
                     }
                 };
                 walk(folderPath);
-                const localRoot = getLocalCodeRootCpy(folderPath);
-                await cpUploadFiles(allFiles, localRoot);
+                await cpUploadFiles(files, getLocalCodeRootCpy(folderPath));
                 return;
             }
-
             if (!gRemoteDevicePort) {
                 vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
                 return;
             }
-
             if (gRemoteDevicePort.startsWith('tcp:')) {
-                vscode.window.showWarningMessage(
-                    'Cannot upload folders to the simulator because the emulated device\'s filesystem is read-only. ' +
-                    'Please use the "Run" button (which mounts your workspace in RAM) or "Run MCU" instead. ' +
-                    'If your project is missing library files (like "asyncio"), you can copy them into a "lib/" folder in your local workspace.'
-                );
+                vscode.window.showWarningMessage('Simulator filesystem is read-only. Use Run MCU instead.');
                 return;
             }
-
-            // Use folder name as dest — no leading slash to avoid MSYS2/Git Bash
-            // path conversion (which turns /foo into C:/Program Files/Git/foo).
-            // _normalize_dest() in mps_backend.py adds the leading slash.
-            const dest = path.basename(folderPath);
-            const baseDest = isXBeeDevice() ? `/flash/${dest}` : dest;
-
-            if (connectionManager.isConnected && !connectionManager.isSuspended &&
-                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
-                try {
-                    const remoteFolder = isXBeeDevice() ? `/flash/${dest}` : `/${dest}`;
-                    await uploadFolderDirect(folderPath, remoteFolder);
-                    if (deviceFileExplorer) deviceFileExplorer.refresh();
-                } catch (error) {
-                    vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
+            try {
+                if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
+                    throw new Error('Local folder does not exist: ' + folderPath);
                 }
-                return;
+                const deviceRoot = isXBeeDevice() ? '/flash' : '/';
+                const dest = folderRemotePath(folderPath, gDeviceCodeDir, deviceRoot);
+                outputChannel.appendLine('[UPLOAD] Folder ' + folderPath + ' → ' + dest);
+                if (connectionManager.isConnected &&
+                    samePort(connectionManager.portName, gRemoteDevicePort)) {
+                    if (connectionManager.isSuspended || connectionManager.isReconnecting) {
+                        throw new Error('REPL is temporarily owned by another operation. Retry when it resumes.');
+                    }
+                    await uploadFolderDirect(folderPath, dest);
+                    if (deviceFileExplorer) deviceFileExplorer.refresh();
+                } else {
+                    const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+                    const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
+                    await _runUploadQueued(venvPython,
+                        [scriptPath, '--python', venvPython, 'upload',
+                            '--port', gRemoteDevicePort, '--source', folderPath, '--dest', dest],
+                        () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+                }
+                outputChannel.appendLine('[UPLOAD] Folder completed: ' + dest);
+            } catch (error) {
+                vscode.window.showErrorMessage('Upload failed: ' + error.message);
+                outputChannel.appendLine('[UPLOAD ERROR] ' + error.message);
             }
-
-            const venvFolder = getVenvPythonPathFolder();
-            const venvPython = getVenvPythonPath(venvFolder);
-            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
-            const folderArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', folderPath, '--dest', baseDest];
-            const onFolderDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
-
-            _runUploadQueued(venvPython, folderArgs, onFolderDone);
         })
     );
 
-    // Upload entire project code folder to device
+    // Upload the configured project code root to device root.
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.uploadProjectToDevice', async () => {
             if (!gDeviceCodeDir) {
-                vscode.window.showWarningMessage('No project detected. Run "Refresh Device Files" first.');
+                vscode.window.showWarningMessage('No valid project code directory. Refresh Device Files and check device.cfg.');
                 return;
             }
-
-            // CircuitPython — copy all files to USB drive directly
             if (gDeviceFirmware === 'CircuitPython') {
-                const fsSync = require('fs');
                 let localTarget = gDeviceCodeDir;
-                // If gDeviceCodeDir is the USB drive itself (e.g. E:\), fallback to workspace folder
-                if (localTarget && /^[A-Za-z]:[/\\]?$/.test(localTarget.replace(/[/\\]+$/, '') + '\\')) {
-                    const wsFolders = vscode.workspace.workspaceFolders;
-                    if (wsFolders && wsFolders.length > 0) {
-                        localTarget = wsFolders[0].uri.fsPath;
-                        const mainPath = path.join(localTarget, 'main');
-                        if (fsSync.existsSync(mainPath)) {
-                            localTarget = mainPath;
-                        }
-                    } else {
+                if (/^[A-Za-z]:[/\\]?$/.test(localTarget)) {
+                    const folders = vscode.workspace.workspaceFolders;
+                    if (!folders?.length) {
                         vscode.window.showWarningMessage('No local project folder to upload.');
                         return;
                     }
+                    localTarget = path.join(folders[0].uri.fsPath, 'main');
                 }
-
                 const allFiles = [];
-                /** @param {string} dir */
-                const walk = (dir) => {
-                    if (!fsSync.existsSync(dir)) return;
-                    for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
+                const walk = dir => {
+                    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
                         const full = path.join(dir, e.name);
                         if (e.isDirectory()) walk(full);
                         else allFiles.push(full);
@@ -1306,43 +1299,40 @@ function activate(context) {
                 await cpUploadFiles(allFiles, localTarget);
                 return;
             }
-
             if (!gRemoteDevicePort) {
                 vscode.window.showWarningMessage('No device port set. Run "Refresh Device Files" first.');
                 return;
             }
-
             if (gRemoteDevicePort.startsWith('tcp:')) {
-                vscode.window.showWarningMessage(
-                    'Cannot upload projects to the simulator because the emulated device\'s filesystem is read-only. ' +
-                    'Please use the "Run" button (which mounts your workspace in RAM) or "Run MCU" instead. ' +
-                    'If your project is missing library files (like "asyncio"), you can copy them into a "lib/" folder in your local workspace.'
-                );
+                vscode.window.showWarningMessage('Simulator filesystem is read-only. Use Run MCU instead.');
                 return;
             }
-
-            const baseDest = isXBeeDevice() ? '/flash' : '';
-
-            if (connectionManager.isConnected && !connectionManager.isSuspended &&
-                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
-                try {
-                    let localTarget = gDeviceCodeDir;
-                    const remoteDest = isXBeeDevice() ? '/flash' : '/';
-                    await uploadFolderDirect(localTarget, remoteDest);
-                    if (deviceFileExplorer) deviceFileExplorer.refresh();
-                } catch (error) {
-                    vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
+            try {
+                if (!fs.existsSync(gDeviceCodeDir) || !fs.statSync(gDeviceCodeDir).isDirectory()) {
+                    throw new Error('Project code directory does not exist: ' + gDeviceCodeDir);
                 }
-                return;
+                const dest = isXBeeDevice() ? '/flash' : '/';
+                outputChannel.appendLine('[UPLOAD] Project ' + gDeviceCodeDir + ' → ' + dest);
+                if (connectionManager.isConnected &&
+                    samePort(connectionManager.portName, gRemoteDevicePort)) {
+                    if (connectionManager.isSuspended || connectionManager.isReconnecting) {
+                        throw new Error('REPL is temporarily owned by another operation. Retry when it resumes.');
+                    }
+                    await uploadFolderDirect(gDeviceCodeDir, dest);
+                    if (deviceFileExplorer) deviceFileExplorer.refresh();
+                } else {
+                    const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
+                    const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
+                    await _runUploadQueued(venvPython,
+                        [scriptPath, '--python', venvPython, 'upload',
+                            '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', dest],
+                        () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+                }
+                outputChannel.appendLine('[UPLOAD] Project completed: ' + dest);
+            } catch (error) {
+                vscode.window.showErrorMessage('Upload failed: ' + error.message);
+                outputChannel.appendLine('[UPLOAD ERROR] ' + error.message);
             }
-
-            const venvFolder = getVenvPythonPathFolder();
-            const venvPython = getVenvPythonPath(venvFolder);
-            const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
-            const projArgs = [scriptPath, '--python', venvPython, 'upload', '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', baseDest];
-            const onProjDone = () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); };
-
-            _runUploadQueued(venvPython, projArgs, onProjDone);
         })
     );
 
