@@ -16,13 +16,15 @@ const pathMod = require('path');
 const { getVenvPythonPathFolder, getVenvPythonPath, redactDevicePort } = require('./commonFxn');
 const wsQueue = require('./wsQueue');
 const { isSafeDeviceEntryName, resolveDeviceDrivePath } = require('./pathSafety');
+const { samePort } = require('./devicePortSelection');
+const { remoteJoin } = require('./deviceUploadPaths');
 
 const execFileAsync = promisify(execFile);
 
 /** Serial operations must address the same port owned by the shared daemon. */
 function canUseSharedSerial(manager, targetPort) {
     return Boolean(targetPort && manager.isConnected && !manager.isSuspended &&
-        !manager.isReconnecting && manager.portName === targetPort);
+        !manager.isReconnecting && samePort(manager.portName, targetPort));
 }
 
 
@@ -673,45 +675,62 @@ async function renameDeviceFile(port, oldPath, provider) {
  * Upload a file from PC directly into a specific folder on the device.
  */
 async function uploadToDeviceFolder(port, targetFolder, provider) {
-    if (!port) return;
-
+    if (!port) {
+        vscode.window.showWarningMessage('Select the device REPL port before uploading.');
+        return;
+    }
     const files = await vscode.window.showOpenDialog({
         canSelectMany: true,
         openLabel: 'Upload to Device'
     });
-
-    if (!files || files.length === 0) return;
+    if (!files?.length) return;
 
     const connectionManager = require('./connectionManager');
-    if (canUseSharedSerial(connectionManager, port)) {
-        for (const file of files) {
-            try {
-                const destPath = targetFolder === '/' ? `/${pathMod.basename(file.fsPath)}` : `${targetFolder}/${pathMod.basename(file.fsPath)}`;
-                const buffer = fs.readFileSync(file.fsPath);
-                await wsQueue.run(() => connectionManager.writeFile(destPath, buffer), 'Upload File', true);
-            } catch (error) {
-                vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
-            }
-        }
-        provider.refresh();
+    // If Studio owns this COM interface, use the shared daemon only.
+    // A suspended daemon still owns a transfer; competing backend opens fail.
+    if (connectionManager.isConnected && samePort(connectionManager.portName, port) &&
+        (connectionManager.isSuspended || connectionManager.isReconnecting)) {
+        vscode.window.showErrorMessage('Upload failed: REPL is busy with another device operation.');
         return;
     }
 
-    const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
-    const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
-
+    const shared = canUseSharedSerial(connectionManager, port);
+    const venvPython = shared ? null : getVenvPythonPath(getVenvPythonPathFolder());
+    const scriptPath = shared ? null : pathMod.join(__dirname, 'mps_backend.py');
+    const remoteFolder = targetFolder || '/';
+    let completed = 0;
     for (const file of files) {
-        const args = [scriptPath, "--python", venvPython, "upload", "--port", port, "--source", file.fsPath, "--dest", targetFolder, "--overwrite"];
-        await wsQueue.run(() => new Promise((resolve) => {
-            backendExec(venvPython, args, (error) => {
-                if (error) {
-                    vscode.window.showErrorMessage(`Upload failed: ${error.message}`);
-                }
-                resolve();
-            });
-        }));
+        try {
+            const localFile = file.fsPath;
+            if (!fs.existsSync(localFile) || !fs.statSync(localFile).isFile()) {
+                throw new Error('Source file does not exist: ' + localFile);
+            }
+            const filename = pathMod.basename(localFile);
+            if (!isSafeDeviceEntryName(filename)) {
+                throw new Error('Unsafe device filename: ' + filename);
+            }
+            const destination = remoteJoin(remoteFolder, filename);
+            if (shared) {
+                await wsQueue.run(() => connectionManager.writeFile(destination, fs.readFileSync(localFile)),
+                    'Upload File', true);
+            } else {
+                const args = [scriptPath, '--python', venvPython, 'upload',
+                    '--port', port, '--source', localFile, '--dest', remoteFolder, '--overwrite'];
+                await wsQueue.run(() => new Promise((resolve, reject) => {
+                    backendExec(venvPython, args, (error, _stdout, stderr) => {
+                        if (error) reject(new Error(stderr?.trim() || error.message));
+                        else resolve();
+                    });
+                }), 'Upload File', true);
+            }
+            completed++;
+        } catch (error) {
+            vscode.window.showErrorMessage('Upload failed: ' + error.message);
+            if (completed) provider.refresh();
+            return;
+        }
     }
-    provider.refresh();
+    if (completed) provider.refresh();
 }
 
 /**
