@@ -6,6 +6,7 @@ import threading
 import struct
 import os
 import tempfile
+import queue
 from typing import Optional, Tuple
 
 def _is_pid_running(pid: int) -> bool:
@@ -131,6 +132,10 @@ class MpyDaemon:
         self._foreground_interrupt = False
         self._foreground_thread = None
         self._foreground_fault = None
+        self._raw_uploading = False
+        self._raw_payload_open = False
+        self._cancel_upload = threading.Event()
+        self._stop_generation = 0
 
         # New RX queue & lock
         self._rx_queue = bytearray()
@@ -255,6 +260,7 @@ class MpyDaemon:
             self.serial.port = self.port
             self.serial.baudrate = self.baudrate
             self.serial.timeout = 0.1
+            self.serial.write_timeout = 1.0
             self.serial.exclusive = True
             
             # Prevent asserting DTR/RTS during open()
@@ -315,6 +321,7 @@ class MpyDaemon:
                     self.serial.port = self.port
                     self.serial.baudrate = self.baudrate
                     self.serial.timeout = 0.1
+                    self.serial.write_timeout = 1.0
                     self.serial.exclusive = True
                     self.serial.dtr = False
                     self.serial.rts = False
@@ -402,6 +409,33 @@ class MpyDaemon:
             pass
 
     def _do_raw_paste(self, code: str):
+        self._raw_uploading = True
+        try:
+            return self._upload_raw_paste(code)
+        except Exception:
+            if self._raw_payload_open:
+                # Raw-paste still expects source bytes. Force a syntax error
+                # before EOT so a partial user file is never executed.
+                self.serial.write(b'\x03\x04')
+                try:
+                    self._read_until(b'>', timeout=1.0)
+                except Exception:
+                    pass
+            raise
+        finally:
+            self._raw_uploading = False
+            self._raw_payload_open = False
+
+    def _check_upload(self, deadline):
+        if self._cancel_upload.is_set():
+            raise InterruptedError('MCU upload cancelled by Ctrl+C')
+        if not self.running or not self.serial or not self.serial.is_open:
+            raise OSError('Serial connection lost during MCU upload')
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Raw-paste flow control stopped responding')
+
+    def _upload_raw_paste(self, code: str):
+        self._check_upload(time.monotonic() + 5.0)
         code_bytes = code.encode('utf-8')
         
         # Enter raw paste
@@ -424,14 +458,24 @@ class MpyDaemon:
                 raise TimeoutError("Timeout waiting for window size bytes")
             
             window_size = struct.unpack("<H", window_size_bytes[:2])[0]
+            if window_size == 0:
+                raise RuntimeError('Invalid zero raw-paste window')
+            self._raw_payload_open = True
+            # Preserve an initial credit coalesced with the window header.
+            with self._rx_lock:
+                self._rx_queue[:0] = window_size_bytes[2:]
             window_remain = window_size
+            deadline = time.monotonic() + 5.0
  
             i = 0
             while i < len(code_bytes):
+                self._check_upload(deadline)
                 while window_remain == 0:
+                    self._check_upload(deadline)
                     b = self._rx_read(1, timeout=0.01)
                     if b == b'\x01':
                         window_remain += window_size
+                        deadline = time.monotonic() + 5.0
                     elif b == b'\x04':
                         self._paced_serial_write(b'\x04')
                         raise RuntimeError("Device aborted raw paste")
@@ -440,9 +484,11 @@ class MpyDaemon:
                 
                 # Also drain any pending updates
                 while True:
+                    self._check_upload(deadline)
                     b = self._rx_read(1, timeout=0.0)
                     if b == b'\x01':
                         window_remain += window_size
+                        deadline = time.monotonic() + 5.0
                     elif b == b'\x04':
                         self._paced_serial_write(b'\x04')
                         raise RuntimeError("Device aborted raw paste")
@@ -453,11 +499,13 @@ class MpyDaemon:
                 self._paced_serial_write(chunk)
                 window_remain -= len(chunk)
                 i += len(chunk)
+                deadline = time.monotonic() + 5.0
         finally:
             pass
 
         # End of data
         self._paced_serial_write(b'\x04')
+        self._raw_payload_open = False
         self._read_until(b'\x04')
 
     def exec_raw_paste(self, code: str) -> Tuple[str, str]:
@@ -523,7 +571,9 @@ class MpyDaemon:
                 stage += 1
         raise OSError("Serial daemon stopped during MCU execution")
 
-    def _run_foreground_worker(self, code: str):
+    def _run_foreground_worker(self, code: str, generation=None):
+        if generation is None:
+            generation = self._stop_generation
         failure = None
         started = False
         try:
@@ -532,7 +582,11 @@ class MpyDaemon:
                 # opening Shell. It may interrupt an already running script.
                 self._paced_serial_write(b"\r\x02\r\x03")
                 time.sleep(0.1)
+                if generation != self._stop_generation:
+                    raise InterruptedError('MCU Run cancelled by Stop')
                 self.enter_raw_repl()
+                if generation != self._stop_generation:
+                    raise InterruptedError('MCU Run cancelled by Stop')
                 self._do_raw_paste(code)
                 with self._state_lock:
                     self._foreground_executing = True
@@ -567,6 +621,16 @@ class MpyDaemon:
 
     def process_command(self, cmd: dict):
         action = cmd.get("action")
+        generation = cmd.get('_stop_generation', self._stop_generation)
+        if generation != self._stop_generation:
+            if action == 'run_code':
+                self.send_event('run_result', {'id': cmd.get('id'), 'success': False, 'error': 'Cancelled by Stop'})
+            elif action == 'run_in_terminal':
+                self.send_event('terminal_run_finished', {'success': False, 'error': 'Cancelled by Stop'})
+            if action in ('terminal_input', 'run_code', 'run_in_terminal'):
+                return
+        if action in ('run_code', 'run_in_terminal'):
+            self._cancel_upload.clear()
         
         if action == "terminal_input":
             import base64
@@ -588,6 +652,8 @@ class MpyDaemon:
                         self.send_event("error", {"message": "REPL input failed: " + str(error)})
                 return
             with self._lock:
+                if generation != self._stop_generation:
+                    return
                 if self.in_raw_repl or self.suspended or not self.serial or not self.serial.is_open:
                     if len(self._terminal_input_buffer) + len(data) <= self._input_buffer_limit:
                         self._terminal_input_buffer += data
@@ -614,6 +680,8 @@ class MpyDaemon:
                 self.in_raw_repl = True
                 try:
                     self.enter_raw_repl()
+                    if generation != self._stop_generation:
+                        raise InterruptedError('Device operation cancelled by Stop')
                     stdout, stderr = self.exec_raw_paste(code)
                     self.send_event("run_result", {
                         "id": req_id,
@@ -650,7 +718,7 @@ class MpyDaemon:
                 self.in_raw_repl = True
             try:
                 self._foreground_thread = threading.Thread(
-                    target=self._run_foreground_worker, args=(code,), daemon=True
+                    target=self._run_foreground_worker, args=(code, generation), daemon=True
                 )
                 self._foreground_thread.start()
             except Exception as error:
@@ -716,6 +784,46 @@ class MpyDaemon:
                 self.send_event("resumed", {})
                 self._flush_terminal_input()
 
+    def interrupt(self):
+        """An explicit user stop bypasses queued raw operations and serial locks."""
+        if self.suspended or not self.serial or not self.serial.is_open:
+            raise OSError('REPL port is not available for interruption')
+        self._stop_generation += 1
+        self._terminal_input_buffer = b''
+        self._cancel_upload.set()
+        if self._raw_uploading:
+            return
+        else:
+            # No reconnect, reset, Ctrl+D, or application execution.
+            self.serial.write(b'\x03')
+
+
+def read_commands(daemon, commands, stream):
+    """Keep Ctrl+C readable even while run_code holds the command worker."""
+    import base64
+    try:
+        for line in stream:
+            try:
+                cmd = json.loads(line)
+                if not isinstance(cmd, dict):
+                    continue
+                data = base64.b64decode(cmd.get('data', '')) if cmd.get('action') == 'terminal_input' else b''
+                if cmd.get('action') == 'interrupt' or b'\x03' in data:
+                    try:
+                        daemon.interrupt()
+                        if cmd.get('id') is not None:
+                            daemon.send_event('run_result', {'id': cmd['id'], 'success': True, 'stdout': '', 'stderr': ''})
+                    except Exception as error:
+                        daemon.send_event('run_result' if cmd.get('id') is not None else 'error',
+                                          {'id': cmd.get('id'), 'success': False, 'error': str(error), 'message': str(error)})
+                else:
+                    cmd['_stop_generation'] = daemon._stop_generation
+                    commands.put(cmd)
+            except (ValueError, TypeError):
+                continue
+    finally:
+        commands.put(None)
+
 def main():
     # Read first line as initialization config
     try:
@@ -752,17 +860,16 @@ def main():
 
     daemon.connect()
 
-    # Read loop for incoming commands
+    # Input reading and device operations are separate. A synchronous raw
+    # query must never prevent the host's Stop/Ctrl+C from reaching the MCU.
+    commands = queue.Queue()
+    threading.Thread(target=read_commands, args=(daemon, commands, sys.stdin), daemon=True).start()
     try:
         while True:
-            line = sys.stdin.readline()
-            if not line:
+            cmd = commands.get()
+            if cmd is None:
                 break
-            try:
-                cmd = json.loads(line)
-                daemon.process_command(cmd)
-            except json.JSONDecodeError:
-                pass
+            daemon.process_command(cmd)
     finally:
         _release_lock(daemon.port)
 

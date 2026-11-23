@@ -177,6 +177,7 @@ class ConnectionManager extends EventEmitter {
             }, 10000);
 
             daemon.stdout.on('data', (data) => {
+                if (this.daemonProcess !== daemon) return;
                 stdoutBuffer += data.toString();
                 let newlineIndex;
                 while ((newlineIndex = stdoutBuffer.indexOf('\n')) !== -1) {
@@ -197,6 +198,13 @@ class ConnectionManager extends EventEmitter {
             daemon.on('error', (err) => {
                 logMsg(`[ConnectionManager] Daemon spawn error: ${err.message}`);
                 settle(err);
+            });
+            daemon.stdin.on('error', err => {
+                settle(err);
+                if (this.daemonProcess !== daemon) return;
+                this._daemonGone(err);
+                if (this.listenerCount('error')) this.emit('error', err);
+                try { daemon.kill(); } catch (_) {}
             });
 
             daemon.stderr.on('data', (data) => {
@@ -693,6 +701,27 @@ except Exception as e:
             data: b64
         };
         this.daemonProcess.stdin.write(JSON.stringify(cmd) + '\n');
+    }
+
+    async interrupt() {
+        if (!this.isConnected || !this.daemonProcess || this.isSuspended)
+            throw new Error('USB REPL is not available for Stop.');
+        const id = this._nextReqId++;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this._runCodeRequests.delete(id);
+                reject(new Error('Stop was not acknowledged by the serial daemon.'));
+            }, 2500);
+            this._runCodeRequests.set(id, { resolve, reject, timer });
+            const fail = error => {
+                if (!error || !this._runCodeRequests.has(id)) return;
+                clearTimeout(timer);
+                this._runCodeRequests.delete(id);
+                reject(error);
+            };
+            try { this.daemonProcess.stdin.write(JSON.stringify({ action: 'interrupt', id }) + '\n', fail); }
+            catch (error) { fail(error); }
+        });
     }
 
     /**

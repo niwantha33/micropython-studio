@@ -27,6 +27,12 @@ suite('Interactive Shell output through the real terminal controller', () => {
             module, exports: module.exports, Buffer,
             require(name) {
                 if (name === './connectionManager') return manager;
+                if (name === './stopExecution') return {
+                    stopExecution: async port => {
+                        assert.strictEqual(port, 'com7');
+                        writes.push(Buffer.from([3]));
+                    }
+                };
                 if (name === './debugExecutionState') return {
                     onDebugExecutionState: () => ({ dispose() {} }),
                     getDebugExecutionState: () => ({ status: 'detached' })

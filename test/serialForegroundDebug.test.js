@@ -62,6 +62,19 @@ suite('Serial foreground output and native-debug pause safety', () => {
         assert.strictEqual(manager._foregroundPending, null);
     });
 
+    test('Stop uses a priority command and waits for daemon acknowledgement', async () => {
+        const stop = manager.interrupt();
+        assert.strictEqual(sent[0].action, 'interrupt');
+        assert.strictEqual(manager._runCodeRequests.size, 1);
+        manager._handleDaemonMessage({
+            type: 'run_result', id: sent[0].id, success: true, stdout: '', stderr: ''
+        }, () => {}, () => {}, true);
+        await stop;
+        assert.strictEqual(manager._runCodeRequests.size, 0);
+        manager.isSuspended = true;
+        await assert.rejects(manager.interrupt(), /not available/);
+    });
+
     test('busy suspend request fails immediately without a false suspended state', async () => {
         const request = manager.suspend();
         assert.strictEqual(sent[0].action, 'suspend');
