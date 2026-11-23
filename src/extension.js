@@ -1198,10 +1198,11 @@ function activate(context) {
                 } else {
                     const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
                     const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
-                    await _runUploadQueued(venvPython,
+                    const completed = await _runUploadQueued(venvPython,
                         [scriptPath, '--python', venvPython, 'upload',
                             '--port', gRemoteDevicePort, '--source', filePath, '--dest', destDir],
                         () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+                    if (!completed) return;
                 }
                 outputChannel.appendLine('[UPLOAD] Completed: ' + destPath);
             } catch (error) {
@@ -1257,10 +1258,11 @@ function activate(context) {
                 } else {
                     const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
                     const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
-                    await _runUploadQueued(venvPython,
+                    const completed = await _runUploadQueued(venvPython,
                         [scriptPath, '--python', venvPython, 'upload',
                             '--port', gRemoteDevicePort, '--source', folderPath, '--dest', dest],
                         () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+                    if (!completed) return;
                 }
                 outputChannel.appendLine('[UPLOAD] Folder completed: ' + dest);
             } catch (error) {
@@ -1323,10 +1325,11 @@ function activate(context) {
                 } else {
                     const venvPython = getVenvPythonPath(getVenvPythonPathFolder());
                     const scriptPath = path.join(context.extensionPath, 'src', 'mps_backend.py');
-                    await _runUploadQueued(venvPython,
+                    const completed = await _runUploadQueued(venvPython,
                         [scriptPath, '--python', venvPython, 'upload',
                             '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', dest],
                         () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
+                    if (!completed) return;
                 }
                 outputChannel.appendLine('[UPLOAD] Project completed: ' + dest);
             } catch (error) {
