@@ -157,4 +157,81 @@ suite('Live RTA viewer', () => {
         assert.ok(source.includes('It is not scheduler CPU%'));
         assert.ok(source.includes('Observed VM % is the share of completed MicroPython execution segments'));
     });
+    // Run the actual viewer functions, not a reimplementation of their
+    // timestamp arithmetic. The debugger HTML is generated from this source.
+    function profilerFixture() {
+        const functionSource = name => {
+            const start = source.indexOf('function ' + name + '(');
+            assert.ok(start >= 0, name + ' is available');
+            const end = source.indexOf('\n}\n', start);
+            assert.ok(end > start, name + ' closes');
+            return source.slice(start, end + 2);
+        };
+        let hostNow = 100000;
+        const state = {
+            rtaProfiles: new Map(),
+            rtaNames: new Map(),
+            rtaStack: [],
+            rtaEventCount: 0,
+            rtaFirstTs: null,
+            rtaLastTs: null,
+            rtaFirstHostMs: null,
+            rtaInvalidEventCount: 0,
+            Date: { now: () => hostNow },
+            scheduleRtaRender() {}
+        };
+        vm.runInNewContext([
+            functionSource('rtaTsDiff'),
+            functionSource('getRtaProfile'),
+            functionSource('handleRtaEvent'),
+            'this.feed = handleRtaEvent;',
+            'this.delta = rtaTsDiff;'
+        ].join('\n'), state);
+        return { state, advance(ms) { hostNow += ms; } };
+    }
+
+    test('32-bit microsecond rollover remains a small valid call', () => {
+        const { state } = profilerFixture();
+        state.feed({ evt: 'rta_entry', fun: 7, ts: 0xfffffff0 });
+        state.feed({ evt: 'rta_exit', fun: 7, ts: 0x30 });
+        const p = state.rtaProfiles.get('7');
+        assert.strictEqual(p.calls, 1);
+        assert.strictEqual(p.totalInclusive, 64);
+        assert.strictEqual(state.rtaInvalidEventCount, 0);
+        assert.strictEqual(state.delta(state.rtaLastTs, state.rtaFirstTs), 64);
+    });
+
+    test('backwards timestamp never inflates RTA runtime to 4295 seconds', () => {
+        const { state } = profilerFixture();
+        state.feed({ evt: 'rta_entry', fun: 7, ts: 1000000 });
+        state.feed({ evt: 'rta_exit', fun: 7, ts: 999900 });
+        assert.strictEqual(state.rtaInvalidEventCount, 1);
+        assert.strictEqual(state.rtaProfiles.get('7').calls, 0);
+        assert.strictEqual(state.rtaStack.length, 0);
+        state.feed({ evt: 'rta_entry', fun: 7, ts: 1000100 });
+        state.feed({ evt: 'rta_exit', fun: 7, ts: 1000300 });
+        assert.strictEqual(state.rtaProfiles.get('7').totalInclusive, 200);
+        assert.strictEqual(state.rtaInvalidEventCount, 1);
+    });
+
+    test('corrupt future timestamp is ignored instead of inventing hours', () => {
+        const { state } = profilerFixture();
+        state.feed({ evt: 'rta_entry', fun: 8, ts: 100 });
+        state.feed({ evt: 'rta_exit', fun: 8, ts: 4228000000 });
+        assert.strictEqual(state.rtaInvalidEventCount, 1);
+        assert.strictEqual(state.rtaProfiles.get('8').calls, 0);
+        assert.strictEqual(state.rtaStack.length, 0);
+    });
+
+    test('valid nested events retain exclusive-time accounting', () => {
+        const { state } = profilerFixture();
+        state.feed({ evt: 'rta_entry', fun: 1, ts: 100 });
+        state.feed({ evt: 'rta_entry', fun: 2, ts: 150 });
+        state.feed({ evt: 'rta_exit', fun: 2, ts: 250 });
+        state.feed({ evt: 'rta_exit', fun: 1, ts: 400 });
+        assert.strictEqual(state.rtaProfiles.get('1').totalInclusive, 300);
+        assert.strictEqual(state.rtaProfiles.get('1').totalExclusive, 200);
+        assert.strictEqual(state.rtaProfiles.get('2').totalExclusive, 100);
+    });
+
 });
