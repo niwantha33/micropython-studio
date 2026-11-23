@@ -7,6 +7,7 @@ const path = require('path');
 const {
     relativeInside, remoteJoin, resolveProjectCodeDir, fileRemotePath, folderRemotePath
 } = require('../src/deviceUploadPaths');
+const { canUseSharedSerial } = require('../src/deviceFileExplorer');
 
 suite('MicroPython upload source and destination paths', () => {
     test('current project main maps to MCU root, including nested library files', () => {
@@ -40,8 +41,7 @@ suite('MicroPython upload source and destination paths', () => {
             assert.strictEqual(resolveProjectCodeDir(current, original), currentMain);
             assert.strictEqual(resolveProjectCodeDir(current, path.join('main')), currentMain);
             assert.strictEqual(resolveProjectCodeDir(current, path.join(current, 'missing')), currentMain);
-            assert.strictEqual(resolveProjectCodeDir(current, path.join(current, 'missing')),
-                currentMain);
+
         } finally {
             fs.rmSync(temp, { recursive: true, force: true });
         }
@@ -64,6 +64,17 @@ suite('MicroPython upload source and destination paths', () => {
         assert.strictEqual(remoteJoin('/flash', 'lib/i2c.py'), '/flash/lib/i2c.py');
         assert.throws(() => remoteJoin('/', '../boot.py'), /escape/);
         assert.throws(() => remoteJoin('C:\\temp', 'main.py'), /absolute POSIX/);
+    });
+
+    test('Device Files upload reuses COM7 even when device.cfg says com7', () => {
+        const manager = {
+            isConnected: true, isSuspended: false,
+            isReconnecting: false, portName: 'COM7'
+        };
+        assert.strictEqual(canUseSharedSerial(manager, 'com7'), true);
+        assert.strictEqual(canUseSharedSerial(manager, 'COM5'), false);
+        manager.isSuspended = true;
+        assert.strictEqual(canUseSharedSerial(manager, 'COM7'), false);
     });
 
     test('extension checks actual upload success before refreshing and uses port-insensitive shared serial', () => {
