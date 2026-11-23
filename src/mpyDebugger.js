@@ -14,26 +14,21 @@ const { parseDeviceLiteral, evaluateCondition } = require('./safeCondition');
 const REQUIRED_PUMP_PROTOCOL = 5;
 const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
 
-let panel = null;
-let bridge = null;
+let activePanel = null;
+let activeBridge = null;
 let nativeEventSink = null;
 
-function emitNative(evt) {
-    if (!nativeEventSink) return;
-    try { nativeEventSink(evt); } catch (error) { console.error('[MicroPython Native Debug]', error); }
-}
-
 function sendNativeCommand(op) {
-    if (!bridge || !bridge.stdin || bridge.killed) return false;
+    if (!activeBridge || !activeBridge.stdin || activeBridge.killed) return false;
     if (!['continue', 'step', 'step_in', 'step_out', 'locals', 'globals', 'call_stack'].includes(op)) return false;
     try {
-        bridge.stdin.write(JSON.stringify({ op }) + '\n');
+        activeBridge.stdin.write(JSON.stringify({ op }) + '\n');
         return true;
     } catch (_) { return false; }
 }
 
 function connectNativeDebugger(context, debugPort, venvPython, onEvent) {
-    if (panel) throw new Error('A MicroPython debug connection is already open. Close the existing debugger panel first.');
+    if (activePanel) throw new Error('A MicroPython debug connection is already open. Close the existing debugger panel first.');
     if (typeof onEvent !== 'function') throw new Error('Native debugger event sink is required.');
     nativeEventSink = onEvent;
     try { openDebuggerPanel(context, debugPort, venvPython, true); }
@@ -41,7 +36,7 @@ function connectNativeDebugger(context, debugPort, venvPython, onEvent) {
 }
 
 function disconnectNativeDebugger() {
-    if (panel) panel.dispose();
+    if (activePanel) activePanel.dispose();
     nativeEventSink = null;
 }
 
@@ -284,16 +279,23 @@ function createNativeDetailPanel(context, port) {
 }
 
 function showDebuggerDetails() {
-    if (!panel) return false;
-    panel.reveal();
+    if (!activePanel) return false;
+    activePanel.reveal();
     return true;
 }
 
 function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
-    if (panel) {
-        panel.reveal();
+    if (activePanel) {
+        activePanel.reveal();
         return;
     }
+    let panel;
+    const sessionNativeSink = nativeEventSink;
+    const emitNative = evt => {
+        if (sessionNativeSink) {
+            try { sessionNativeSink(evt); } catch (error) { console.error(error); }
+        }
+    };
     if (nativeOnly) {
         // The detailed original Studio view is preserved beside VS Code's
         // native controls. Both share this ONE bridge/COM owner.
@@ -308,6 +310,8 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         const buildInfo = getBuildInfo(context.extensionPath, context.extensionMode);
         panel.webview.html = getHtml(buildInfo);
     }
+
+    activePanel = panel;
 
     if (!nativeOnly) hlDeco = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(255, 200, 0, 0.25)',
@@ -349,7 +353,11 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     const script = path.join(context.extensionPath, 'src', 'dbg_bridge.py');
     const pyCmd = venvPython || (process.platform === 'win32' ? 'python' : 'python3');
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
-    bridge = spawn(pyCmd, [script, port, workspaceFolder], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let bridge = spawn(pyCmd, [script, port, workspaceFolder], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+    activeBridge = bridge;
+    const child = bridge;
+    let shutdownTimer = null;
 
     // A new debugger session owns the target breakpoint table, but target
     // commands are not sent until the SECOND COM/debug CDC has opened and the
@@ -655,6 +663,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     let buf = '';
     const MAX_BRIDGE_LINE = 128 * 1024;
     bridge.stdout.on('data', (d) => {
+        if (bridgeExpectedShutdown || activeBridge !== child) return;
         buf += d.toString();
         if (buf.length > MAX_BRIDGE_LINE && buf.indexOf('\n') === -1) {
             buf = '';
@@ -665,6 +674,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         }
         let idx;
         while ((idx = buf.indexOf('\n')) >= 0) {
+            if (bridgeExpectedShutdown || activeBridge !== child) return;
             const line = buf.slice(0, idx).trim();
             buf = buf.slice(idx + 1);
             if (!line) continue;
@@ -1144,16 +1154,23 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         }
     });
     bridge.stderr.on('data', (d) => {
+        if (bridgeExpectedShutdown || activeBridge !== child) return;
         if (panel) panel.webview.postMessage({ evt: 'stderr', text: d.toString() });
         emitNative({ evt: 'stderr', text: d.toString() });
     });
-    bridge.on('error', (error) => {
+    const onBridgeError = error => {
+        if (bridgeExpectedShutdown || activeBridge !== child) return;
         bridgeTransportFailureReported = true;
         const message = 'Cannot start MicroPython debugger bridge: ' + error.message;
         if (panel) panel.webview.postMessage({ evt: 'error', msg: message });
         emitNative({ evt: 'transport_lost', msg: message });
-    });
+    };
+    bridge.on('error', onBridgeError);
+    bridge.stdin.on('error', onBridgeError);
     bridge.on('close', (code, signal) => {
+        if (shutdownTimer) { clearTimeout(shutdownTimer); shutdownTimer = null; }
+        if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+        if (bridgeExpectedShutdown || activeBridge !== child) return;
         if (!bridgeExpectedShutdown && !bridgeTransportFailureReported) {
             const diagnostic = 'MicroPython debugger bridge exited unexpectedly ' +
                 '(exit=' + (code === null ? 'unknown' : code) +
@@ -1165,6 +1182,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         }
         if (panel) panel.webview.postMessage({ evt: 'closed' });
         emitNative({ evt: 'closed' });
+        if (activeBridge === child) activeBridge = null;
         bridge = null;
     });
 
@@ -1386,6 +1404,8 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
 
     panel.onDidDispose(() => {
         bridgeExpectedShutdown = true;
+        if (activePanel === panel) activePanel = null;
+        if (activeBridge === child) activeBridge = null;
         if (startupTimer) {
             clearTimeout(startupTimer);
             startupTimer = null;
@@ -1400,12 +1420,17 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         }
         if (bridge) {
             try { bridge.stdin.write(JSON.stringify({ op: 'quit' }) + '\n'); } catch (e) {}
-            bridge.kill();
+            // Give Python time to clear breakpoints and resume a paused VM.
+            // Capture this child: a new session may start before it exits.
+            shutdownTimer = setTimeout(() => {
+                try { child.kill(); } catch (_) {}
+            }, 2000);
+            shutdownTimer.unref();
             bridge = null;
         }
         panel = null;
         emitNative({ evt: 'closed' });
-        nativeEventSink = null;
+        if (nativeEventSink === sessionNativeSink) nativeEventSink = null;
     });
 }
 
