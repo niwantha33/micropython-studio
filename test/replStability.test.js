@@ -20,7 +20,7 @@ suite('Passive and reliable MicroPython REPL', () => {
         assert.ok(!terminal.includes('removeAllListeners'));
         assert.ok(terminal.includes("connectionManager.removeListener(name, listener)"));
         assert.ok(!terminal.includes('connectionManager.disconnect()'));
-        assert.ok(terminal.includes('connectionManager.portName !== devicePort'));
+        assert.ok(terminal.includes('!samePort(connectionManager.portName, devicePort)'));
     });
     test('connect does not kill another process based only on a live lock', () => {
         assert.ok(manager.includes('is already owned by PID'));

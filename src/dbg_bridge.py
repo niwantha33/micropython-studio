@@ -80,7 +80,14 @@ def reader_loop(ser, stop_evt):
         if not data:
             continue
         buf.extend(data)
-        while len(buf) >= 3 and buf[0] == 0xAA:
+        while buf:
+            # Resynchronize before parsing, in this same read. A complete
+            # handshake/breakpoint behind noise must not wait for more bytes.
+            if buf[0] != 0xAA:
+                del buf[0]
+                continue
+            if len(buf) < 3:
+                break
             t = buf[1]
             n = buf[2]
 
@@ -99,11 +106,6 @@ def reader_loop(ser, stop_evt):
                 is_valid = False
             elif n > 256: # Avoid huge buffer reads on corrupt length
                 is_valid = False
-
-            if is_valid:
-                total = 3 + n
-                if len(buf) > total and buf[total] != 0xAA:
-                    is_valid = False
 
             if not is_valid:
                 buf.pop(0)
@@ -228,8 +230,6 @@ def reader_loop(ser, stop_evt):
             else:
                 say(evt="raw", type=t, payload=payload.hex())
             del buf[:total]
-        while buf and buf[0] != 0xAA:
-            buf.pop(0)
 
 
 def main():
@@ -279,14 +279,6 @@ def main():
                 continue
             op = msg.get("op")
             if op == "quit":
-                # Best-effort safety shutdown: do not leave target RTA running
-                # after a normal debugger-panel close. Older firmware will
-                # simply reply that RTA is unsupported.
-                try:
-                    ser.write(bytes([0xAA, 0x1C, 0x00]))
-                    time.sleep(0.05)
-                except Exception:
-                    pass
                 break
             code = CMDS.get(op)
             if code is None and op not in ("set_bp", "clear_bp", "poke_local", "poke_global"):
@@ -323,8 +315,24 @@ def main():
                 stop_evt.set()
                 break
     finally:
+        # A paused VM cannot process REPL Ctrl+C. Release debugger-owned
+        # breakpoints before continuing it, otherwise it can stop again with
+        # no host connected and Shell print() output remains frozen.
+        # Also do this on stdin EOF (extension shutdown).
+        for command in (0x1C, 0x1D, 0x10):
+            try:
+                ser.write(bytes([0xAA, command, 0x00]))
+            except Exception:
+                pass
+        try:
+            ser.flush()
+        except Exception:
+            pass
+        # Keep DTR asserted while the device pump consumes the queued commands.
+        # Flushing the host driver alone does not mean the VM has resumed.
+        time.sleep(0.20)
         stop_evt.set()
-        time.sleep(0.2)
+        t.join(timeout=0.3)
         try:
             ser.close()
         except Exception:
