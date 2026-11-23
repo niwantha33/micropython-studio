@@ -2308,6 +2308,8 @@ const rtaStack = [];
 let rtaEventCount = 0;
 let rtaFirstTs = null;
 let rtaLastTs = null;
+let rtaFirstHostMs = null;
+let rtaInvalidEventCount = 0;
 let rtaRenderTimer = null;
 let currentBreakpoints = [];
 
@@ -2611,6 +2613,8 @@ function resetRtaProfiler() {
   rtaEventCount = 0;
   rtaFirstTs = null;
   rtaLastTs = null;
+  rtaFirstHostMs = null;
+  rtaInvalidEventCount = 0;
   renderRtaProfiler();
 }
 
@@ -2623,13 +2627,38 @@ function scheduleRtaRender() {
 }
 
 function handleRtaEvent(m) {
+  const rawTs = Number(m.ts);
+  const ts = rawTs >>> 0;
+  // Firmware timestamps are 32-bit microseconds. A real wrap is a small
+  // forward delta; a backwards packet must NOT become a ~4295-second call.
+  // Compare with host elapsed time as well: corrupt but forward-looking
+  // frame timestamps must not create multi-hour totals in a short capture.
+  const backwards = rtaLastTs !== null &&
+    rtaTsDiff(ts, rtaLastTs) > 0x7fffffff;
+  const hostElapsedUs = rtaFirstHostMs === null
+    ? 0 : Math.max(0, Date.now() - rtaFirstHostMs) * 1000;
+  const implausibleLeap = rtaFirstTs !== null &&
+    rtaTsDiff(ts, rtaFirstTs) > hostElapsedUs + 60000000;
+  if (!Number.isInteger(rawTs) || rawTs < 0 || rawTs > 0xffffffff ||
+      backwards || implausibleLeap) {
+    rtaInvalidEventCount += 1;
+    // The call stack can no longer be paired reliably after lost/invalid
+    // events. Retain completed measurements; discard only open frames.
+    rtaStack.length = 0;
+    scheduleRtaRender();
+    return;
+  }
+
   rtaEventCount += 1;
-  if (rtaFirstTs === null) rtaFirstTs = Number(m.ts) >>> 0;
-  rtaLastTs = Number(m.ts) >>> 0;
+  if (rtaFirstTs === null) {
+    rtaFirstTs = ts;
+    rtaFirstHostMs = Date.now();
+  }
+  rtaLastTs = ts;
 
   if (m.evt === 'rta_entry') {
     getRtaProfile(m.fun);
-    rtaStack.push({ fun: Number(m.fun), start: Number(m.ts) >>> 0, childTime: 0 });
+    rtaStack.push({ fun: Number(m.fun), start: ts, childTime: 0 });
     scheduleRtaRender();
     return;
   }
@@ -2647,7 +2676,15 @@ function handleRtaEvent(m) {
   }
 
   const frame = rtaStack[matchIndex];
-  const duration = rtaTsDiff(m.ts, frame.start);
+  const duration = rtaTsDiff(ts, frame.start);
+  // No completed call can last longer than the entire accepted trace span.
+  // In particular this rejects an unmatched stale entry across a wrap.
+  if (duration > rtaTsDiff(ts, rtaFirstTs)) {
+    rtaInvalidEventCount += 1;
+    rtaStack.splice(matchIndex);
+    scheduleRtaRender();
+    return;
+  }
   const exclusive = Math.max(0, duration - frame.childTime);
 
   // Drop the matched frame plus any malformed deeper frames. Normal traces
@@ -2691,7 +2728,8 @@ function renderRtaProfiler() {
   document.getElementById('rta-kpi-events').textContent = String(rtaEventCount);
   document.getElementById('rta-kpi-functions').textContent = String(profiles.length);
   document.getElementById('rta-kpi-span').textContent =
-    (rtaFirstTs !== null && rtaLastTs !== null) ? formatRtaTime(rtaTsDiff(rtaLastTs, rtaFirstTs)) : '—';
+    ((rtaFirstTs !== null && rtaLastTs !== null) ? formatRtaTime(rtaTsDiff(rtaLastTs, rtaFirstTs)) : '—') +
+    (rtaInvalidEventCount ? ' · ' + rtaInvalidEventCount + ' invalid ignored' : '');
   document.getElementById('rta-kpi-hot').textContent = profiles.length ? profiles[0].name : '—';
 
   if (!profiles.length) {
