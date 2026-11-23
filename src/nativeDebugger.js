@@ -171,17 +171,14 @@ class NativeMicroPythonAdapter {
             return;
         }
         const input = args.breakpoints || [];
-        const desired = new Map(input.map(bp => [bp.line, bp]));
-        const existing = vscode.debug.breakpoints.filter(bp =>
-            bp instanceof vscode.SourceBreakpoint && bp.location.uri.fsPath === file);
-        const remove = existing.filter(bp => !desired.has(bp.location.range.start.line + 1));
-        if (remove.length) vscode.debug.removeBreakpoints(remove);
-        const add = input.filter(bp => !existing.some(old =>
-            old.location.range.start.line + 1 === bp.line)).map(bp => new vscode.SourceBreakpoint(
-            new vscode.Location(vscode.Uri.file(file), new vscode.Position(Math.max(0, bp.line - 1), 0)),
-            true, bp.condition, bp.hitCondition, bp.logMessage
-        ));
-        if (add.length) vscode.debug.addBreakpoints(add);
+        const desired = new Set(input.map(bp => bp.line));
+        // VS Code already owns and displays the breakpoints that triggered
+        // this DAP request. Never add or remove those same breakpoints from
+        // inside setBreakpoints: that can re-enter breakpoint-change events,
+        // duplicate entries or remove the editor's red gutter marker.
+        // The shared bridge listens to vscode.debug.onDidChangeBreakpoints
+        // to register changes with the target. This handler only responds
+        // with target verification state for the requested source lines.
         const result = input.map(bp => {
             const key = file + ':' + bp.line;
             const record = this.breakpoints.get(key) || { id: this.nextBreakpointId++, verified: false, state: 'PENDING' };

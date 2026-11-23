@@ -28,6 +28,52 @@ suite('Native DAP workflow and real target scopes', () => {
         }
     });
 
+    test('DAP setBreakpoints never changes editor gutter breakpoints and reports target verification', async () => {
+        const vscode = require('vscode');
+        const adapter = new NativeMicroPythonAdapter({}, {
+            replPort: 'COM7', debugPort: 'COM5'
+        }, 'python');
+        const messages = [];
+        const listener = adapter.onDidSendMessage(msg => messages.push(msg));
+        const file = path.join(os.tmpdir(), 'mps-native-breakpoint-gutter-regression.py');
+        const before = [...vscode.debug.breakpoints];
+        const request = (seq, breakpoints) => ({
+            type: 'request', seq, command: 'setBreakpoints',
+            arguments: { source: { path: file }, breakpoints }
+        });
+        try {
+            await adapter.handleMessage(request(101, [{ line: 9 }]));
+            assert.deepStrictEqual([...vscode.debug.breakpoints], before,
+                'DAP must not create a second breakpoint or alter the VS Code gutter');
+            const initial = messages.find(msg => msg.request_seq === 101);
+            assert.ok(initial?.success);
+            assert.strictEqual(initial.body.breakpoints.length, 1);
+            assert.strictEqual(initial.body.breakpoints[0].verified, false,
+                'Do not claim an MCU breakpoint before firmware confirms it');
+            const id = initial.body.breakpoints[0].id;
+
+            adapter._onBridgeEvent({
+                evt: 'breakpoints',
+                items: [{ fsPath: file, line1: 9, state: 'VERIFIED' }]
+            });
+            const verified = messages.find(msg => msg.event === 'breakpoint' &&
+                msg.body?.breakpoint?.verified === true);
+            assert.ok(verified, 'MCU confirmation must update VS Code breakpoint status');
+            assert.strictEqual(verified.body.breakpoint.id, id);
+
+            await adapter.handleMessage(request(102, [{ line: 9 }]));
+            assert.strictEqual(messages.find(msg => msg.request_seq === 102)
+                .body.breakpoints[0].id, id, 'Repeated DAP requests must keep IDs stable');
+            await adapter.handleMessage(request(103, []));
+            assert.deepStrictEqual([...vscode.debug.breakpoints], before,
+                'Clearing target requests must not remove editor gutter breakpoints');
+            assert.strictEqual(adapter.breakpoints.size, 0);
+        } finally {
+            listener.dispose();
+            adapter.dispose();
+        }
+    });
+
     test('Run and Debug defaults to MicroPython ATTACH, not generic Python host runner', () => {
         const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
         const debuggerEntry = manifest.contributes.debuggers.find(d => d.type === 'micropython-studio');
