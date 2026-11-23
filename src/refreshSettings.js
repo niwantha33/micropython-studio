@@ -14,6 +14,7 @@ const { getConnectedDevices } = require('./runCommand');
 const { getDeviceSecret } = require('./deviceSecrets');
 const { getConfigValue, updateCfgComponent, redactDevicePort } = require('./commonFxn');
 const { selectConfiguredPort, isSavedUsbPort } = require('./devicePortSelection');
+const { resolveProjectCodeDir } = require('./deviceUploadPaths');
 
 let outputChannel = null;
 
@@ -178,7 +179,16 @@ async function getValidDevicePort(resource) {
         gRemoteDevicePort = savedPort.trim();
     }
 
-    deviceCodeDir = await getConfigValue(configPath, 'filePath', 'deviceCodeDir');
+    const configuredCodeDir = await getConfigValue(configPath, 'filePath', 'deviceCodeDir');
+    deviceCodeDir = resolveProjectCodeDir(projectDir, configuredCodeDir);
+    if (!deviceCodeDir) {
+        vscode.window.showWarningMessage(
+            'Cannot locate the project code directory. Check [filePath] deviceCodeDir in device.cfg and the local main/ folder before uploading.'
+        );
+        logMsg('[Upload Path] No existing source directory was found for this project.');
+    } else if (configuredCodeDir && path.resolve(configuredCodeDir) !== path.resolve(deviceCodeDir)) {
+        logMsg('[Upload Path] Saved deviceCodeDir does not match this project. Using current source: ' + deviceCodeDir);
+    }
     const deviceFirmware = await getConfigValue(configPath, 'device', 'device_firmware');
 
     return [gRemoteDevicePort, deviceCodeDir, deviceFirmware || 'MicroPython', configPath];
