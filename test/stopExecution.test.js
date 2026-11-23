@@ -23,6 +23,17 @@ function controller(state, interrupt) {
 }
 
 suite('Explicit Stop ordering', () => {
+    test('debug panel Stop remains routed when debug bridge is disconnected', () => {
+        const source = fs.readFileSync(path.join(__dirname, '../src/mpyDebugger.js'), 'utf8');
+        const start = source.indexOf('panel.webview.onDidReceiveMessage((msg) => {');
+        assert.ok(start !== -1);
+        const handler = source.slice(start, start + 900);
+        const stop = handler.indexOf("if (msg.op === 'stop')");
+        const disconnected = handler.indexOf('if (!bridge) return;');
+        assert.ok(stop !== -1 && disconnected > stop,
+            'Stop must run independently of the debug CDC bridge');
+        assert.ok(handler.includes("executeCommand('micropython-ide.stopRun')"));
+    });
     test('only releases a known debug pause after the REPL interrupt is delivered', async () => {
         let release;
         const c = controller({ status: 'paused', replPort: 'COM7' }, () => new Promise(r => { release = r; }));
