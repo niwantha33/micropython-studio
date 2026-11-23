@@ -145,6 +145,9 @@ class NativeMicroPythonAdapter {
                 status: 'running', replPort: this.config.replPort, debugPort: this.config.debugPort
             });
             this.sendEvent('continued', { threadId: 1, allThreadsContinued: true });
+        } else if (msg.evt === 'handshake_timeout') {
+            this.ready = false;
+            this.sendEvent('output', { category: 'stderr', output: String(msg.msg) + '\nSee Output → MicroPython Debugger. The session is retained for diagnosis.\n' });
         } else if (msg.evt === 'stderr') {
             this.sendEvent('output', { category: 'stderr', output: String(msg.text || '') });
         } else if (msg.evt === 'transport_lost' || msg.evt === 'error') {
@@ -293,6 +296,10 @@ class NativeMicroPythonAdapter {
                 }
                 case 'disconnect':
                 case 'terminate':
+                    if (args.terminateDebuggee !== false) {
+                        try { await require('./stopExecution').stopExecution(this.config.replPort); }
+                        catch (error) { this.sendEvent('output', { category: 'stderr', output: 'Stop: ' + error.message + '\n' }); }
+                    }
                     this.respond(request);
                     disconnectNativeDebugger();
                     this.terminate();

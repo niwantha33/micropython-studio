@@ -55,7 +55,7 @@ class DebugBridgeOutputTests(unittest.TestCase):
         events = self.read_frames([frame[:1], frame[1:4], frame[4:] + frame])
         self.assertEqual(events, [{'evt': 'bp_hit', 'ip': 8}] * 2)
 
-    def test_quit_releases_paused_vm_before_closing_debug_cdc(self):
+    def test_quit_never_resumes_application_or_starts_printing(self):
         module = self.load_bridge()
         operations = []
 
@@ -76,7 +76,8 @@ class DebugBridgeOutputTests(unittest.TestCase):
              patch.object(module.threading, 'Thread'), \
              patch.object(module.time, 'sleep'):
             module.main()
-        self.assertEqual(operations[:3], [b'\xaa\x1c\x00', b'\xaa\x1d\x00', b'\xaa\x10\x00'])
+        self.assertEqual(operations[:2], [b'\xaa\x1c\x00', b'\xaa\x1d\x00'])
+        self.assertNotIn(b'\xaa\x10\x00', operations)
         self.assertLess(operations.index('flush'), operations.index('close'))
 
     def test_reader_and_command_events_remain_atomic_json_lines(self):

@@ -12,6 +12,22 @@ suite('Native DAP workflow and real target scopes', () => {
     const root = path.resolve(__dirname, '..');
     const source = name => fs.readFileSync(path.join(root, 'src', name), 'utf8');
 
+    test('a missing firmware handshake preserves the native session and diagnosis', () => {
+        const adapter = new NativeMicroPythonAdapter({}, { replPort: 'COM7', debugPort: 'COM5' }, 'python');
+        const messages = [];
+        const listener = adapter.onDidSendMessage(msg => messages.push(msg));
+        try {
+            adapter._onBridgeEvent({ evt: 'handshake_timeout', msg: 'Firmware did not answer' });
+            assert.strictEqual(adapter.terminated, false);
+            assert.strictEqual(adapter.ready, false);
+            assert.ok(messages.some(msg => msg.event === 'output' && msg.body.output.includes('MicroPython Debugger')));
+            assert.ok(!messages.some(msg => msg.event === 'terminated'));
+        } finally {
+            listener.dispose();
+            adapter.dispose();
+        }
+    });
+
     test('Run and Debug defaults to MicroPython ATTACH, not generic Python host runner', () => {
         const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
         const debuggerEntry = manifest.contributes.debuggers.find(d => d.type === 'micropython-studio');

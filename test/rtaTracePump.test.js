@@ -20,8 +20,8 @@ suite('RTA on/off regression', () => {
             path.resolve(__dirname, '..', 'src', 'dbg_bridge.py'),
             'utf8'
         );
-        assert.ok(bridge.includes('for command in (0x1C, 0x1D, 0x10):'));
-        assert.ok(bridge.indexOf('for command in (0x1C, 0x1D, 0x10):') < bridge.indexOf('ser.close()'));
+        assert.ok(bridge.includes('for command in (0x1C, 0x1D):'));
+        assert.ok(bridge.indexOf('for command in (0x1C, 0x1D):') < bridge.indexOf('ser.close()'));
     });
 
     test('host waits for device confirmation before changing RTA state', () => {

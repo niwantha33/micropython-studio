@@ -5,6 +5,7 @@ const connectionManager = require('./connectionManager');
 const { StringDecoder } = require('string_decoder');
 const { samePort } = require('./devicePortSelection');
 const { onDebugExecutionState, getDebugExecutionState } = require('./debugExecutionState');
+const { stopExecution } = require('./stopExecution');
 
 let activeTerminal = null;
 let activePort = null;
@@ -128,6 +129,10 @@ async function openDeviceTerminal(_context, devicePort) {
             try {
                 // Match backspace behaviour expected by MicroPython friendly REPL.
                 const bytes = Buffer.from(data);
+                if (bytes.includes(3)) {
+                    await stopExecution(devicePort);
+                    return;
+                }
                 for (let i = 0; i < bytes.length; ++i) {
                     if (bytes[i] === 127) bytes[i] = 8;
                 }

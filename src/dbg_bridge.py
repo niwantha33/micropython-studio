@@ -315,11 +315,9 @@ def main():
                 stop_evt.set()
                 break
     finally:
-        # A paused VM cannot process REPL Ctrl+C. Release debugger-owned
-        # breakpoints before continuing it, otherwise it can stop again with
-        # no host connected and Shell print() output remains frozen.
-        # Also do this on stdin EOF (extension shutdown).
-        for command in (0x1C, 0x1D, 0x10):
+        # Transport cleanup must not execute/resume the user's application.
+        # Continue is sent only by an explicit Continue/Step/Stop operation.
+        for command in (0x1C, 0x1D):
             try:
                 ser.write(bytes([0xAA, command, 0x00]))
             except Exception:

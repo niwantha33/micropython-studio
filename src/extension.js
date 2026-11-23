@@ -978,10 +978,10 @@ function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.stopRun', async () => {
             if (connectionManager.isConnected && !connectionManager.isSuspended &&
-                !connectionManager.isReconnecting && connectionManager.portName === gRemoteDevicePort) {
+                !connectionManager.isReconnecting && samePort(connectionManager.portName, gRemoteDevicePort)) {
                 try {
-                    await connectionManager.write(Buffer.from('\r\x03'));
-                    outputChannel.appendLine('[REPL] Ctrl+C sent to MCU. Hard Reset was not requested.');
+                    await require('./stopExecution').stopExecution(gRemoteDevicePort);
+                    outputChannel.appendLine('[REPL] Stop delivered to serial transport. Waiting for the device prompt.');
                 } catch (err) {
                     vscode.window.showErrorMessage('Stop failed: ' + err.message);
                 }
@@ -2138,7 +2138,7 @@ function createStatusBar(context) {
     // 5. Stop button (warning accent)
     const stopButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
     stopButton.text = '$(debug-stop) Stop';
-    stopButton.tooltip = 'Stop running script (soft reset)';
+    stopButton.tooltip = 'Interrupt running script without resetting the MCU';
     stopButton.command = 'micropython-ide.stopRun';
     stopButton.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     stopButton.show();

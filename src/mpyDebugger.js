@@ -17,6 +17,13 @@ const REQUIRED_PUMP_BUILD = '2026-10-07-rta-viewer-v5';
 let activePanel = null;
 let activeBridge = null;
 let nativeEventSink = null;
+let debugLog = null;
+function logDebug(message) {
+    try {
+        if (!debugLog) debugLog = vscode.window.createOutputChannel('MicroPython Debugger');
+        debugLog.appendLine(new Date().toISOString() + ' ' + message);
+    } catch (_) { console.error('[MicroPython Debugger] ' + message); }
+}
 
 function sendNativeCommand(op) {
     if (!activeBridge || !activeBridge.stdin || activeBridge.killed) return false;
@@ -372,6 +379,8 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     let supportsListBp = false;
     let rtaSupported = null;
     let startupTimer = null;
+    let probeTimer = null;
+    let legacyProbePending = false;
     let targetBreakpointList = [];
     let detailsPaused = false;
 
@@ -686,6 +695,8 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
             }
             try {
                 const msg = JSON.parse(line);
+                if (['open', 'error', 'transport_lost', 'closed'].includes(msg.evt)) logDebug(line);
+                if (msg.evt === 'reply' && /^(cleared|bp |err:|no code)/.test(msg.text || '')) logDebug(msg.text);
 
                 if (msg.evt === 'transport_lost') {
                     bridgeTransportFailureReported = true;
@@ -709,13 +720,21 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                     try {
                         bridge.stdin.write(JSON.stringify({ op: 'clear_all_bp' }) + '\n');
                         panel.webview.postMessage({ evt: 'sent', op: 'debug CDC open; synchronizing breakpoint table' });
+                        logDebug('Debug CDC open on ' + port + '; waiting for firmware acknowledgement.');
+                        probeTimer = setTimeout(() => {
+                            if (sessionReady || bridgeExpectedShutdown || !bridge) return;
+                            legacyProbePending = true;
+                            logDebug('No clear-all reply; probing legacy firmware with read-only locals command.');
+                            bridge.stdin.write(JSON.stringify({ op: 'locals' }) + '\n');
+                        }, 2000);
                         startupTimer = setTimeout(() => {
                             if (!sessionReady && panel) {
                                 const error = 'Debugger port opened but firmware did not answer. Check the dedicated debug COM and matching debugger-enabled firmware.';
-                                panel.webview.postMessage({ evt: 'error', msg: error });
-                                emitNative({ evt: 'error', msg: error });
+                                logDebug(error);
+                                panel.webview.postMessage({ evt: 'handshake_timeout', msg: error });
+                                emitNative({ evt: 'handshake_timeout', msg: error });
                             }
-                        }, 3500);
+                        }, 8000);
                     } catch (e) {
                         panel.webview.postMessage({ evt: 'error', msg: 'Failed to start debugger handshake: ' + String(e) });
                     }
@@ -735,7 +754,11 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                             kind: 'function'
                         });
                     }
-                    if (!sessionReady && msg.text.startsWith('cleared all bp slots')) {
+                    const legacyReply = legacyProbePending &&
+                        (/^\(not paused\)$/.test(msg.text.trim()) || /^frame=\(\d+,/.test(msg.text));
+                    if (!sessionReady && (msg.text.startsWith('cleared all bp slots') || legacyReply)) {
+                        if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
+                        if (legacyReply) logDebug('Legacy debug transport answered; target inventory is unavailable.');
                         const cap = msg.text.match(/\spump=(\d+)\s+build=([^\s]+)\s+rta=(\d+)/);
                         if (cap) {
                             const protocol = parseInt(cap[1], 10);
@@ -776,6 +799,11 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                         installCurrentBreakpoints();
                         panel.webview.postMessage({ evt: 'pump_ready', rtaSupported, legacy: legacyPump });
                         emitNative({ evt: 'pump_ready', rtaSupported, legacy: legacyPump });
+                        if (legacyReply && msg.text.startsWith('frame=')) {
+                            detailsPaused = true;
+                            panel.webview.postMessage({ evt: 'status', paused: true });
+                            emitNative({ evt: 'bp_hit' });
+                        }
                     }
                     const m = msg.text.match(/^bp (\d+) @ (.*)\.([^:]+):(\d+) ip=(\d+)(?: fun=(\d+))?/);
                     if (m) {
@@ -1147,21 +1175,24 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
             } catch (e) {
                 // A damaged bridge record should be diagnosed, not blindly
                 // injected into the UI (or allowed to crash its message loop).
+                logDebug('Debugger event processing failed: ' + String(e));
                 if (panel) panel.webview.postMessage({
-                    evt: 'error', msg: 'Malformed debugger message ignored.'
+                    evt: 'error', msg: 'Debugger event processing failed: ' + String(e)
                 });
             }
         }
     });
     bridge.stderr.on('data', (d) => {
         if (bridgeExpectedShutdown || activeBridge !== child) return;
+        logDebug('bridge stderr: ' + d.toString());
         if (panel) panel.webview.postMessage({ evt: 'stderr', text: d.toString() });
         emitNative({ evt: 'stderr', text: d.toString() });
     });
     const onBridgeError = error => {
         if (bridgeExpectedShutdown || activeBridge !== child) return;
         bridgeTransportFailureReported = true;
-        const message = 'Cannot start MicroPython debugger bridge: ' + error.message;
+        const message = 'MicroPython debugger transport error: ' + error.message;
+        logDebug(message);
         if (panel) panel.webview.postMessage({ evt: 'error', msg: message });
         emitNative({ evt: 'transport_lost', msg: message });
     };
@@ -1170,6 +1201,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     bridge.on('close', (code, signal) => {
         if (shutdownTimer) { clearTimeout(shutdownTimer); shutdownTimer = null; }
         if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+        if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
         if (bridgeExpectedShutdown || activeBridge !== child) return;
         if (!bridgeExpectedShutdown && !bridgeTransportFailureReported) {
             const diagnostic = 'MicroPython debugger bridge exited unexpectedly ' +
@@ -1178,6 +1210,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                 '). Check the MicroPython IDE Output and verify the dedicated debug COM port.';
             if (panel) panel.webview.postMessage({ evt: 'error', msg: diagnostic });
             emitNative({ evt: 'transport_lost', msg: diagnostic });
+            logDebug(diagnostic);
             console.error('[MicroPython Native Debug] ' + diagnostic);
         }
         if (panel) panel.webview.postMessage({ evt: 'closed' });
@@ -1188,6 +1221,14 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
 
     panel.webview.onDidReceiveMessage((msg) => {
         if (!bridge) return;
+        if (msg.op === 'stop') {
+            vscode.commands.executeCommand('micropython-ide.stopRun');
+            return;
+        }
+        if (!sessionReady && ['continue', 'step', 'step_in', 'step_out', 'globals', 'call_stack', 'rta_on'].includes(msg.op)) {
+            panel.webview.postMessage({ evt: 'error', msg: 'Firmware has not acknowledged the debug connection. Command was not sent.' });
+            return;
+        }
         if (msg.op === 'ready') {
             if (typeof panel.webview.replayHistory === 'function') {
                 panel.webview.replayHistory();
@@ -1406,6 +1447,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         bridgeExpectedShutdown = true;
         if (activePanel === panel) activePanel = null;
         if (activeBridge === child) activeBridge = null;
+        if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
         if (startupTimer) {
             clearTimeout(startupTimer);
             startupTimer = null;
@@ -1420,7 +1462,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
         }
         if (bridge) {
             try { bridge.stdin.write(JSON.stringify({ op: 'quit' }) + '\n'); } catch (e) {}
-            // Give Python time to clear breakpoints and resume a paused VM.
+            // Give Python time to stop tracing and clear breakpoint slots.
             // Capture this child: a new session may start before it exits.
             shutdownTimer = setTimeout(() => {
                 try { child.kill(); } catch (_) {}
@@ -2135,9 +2177,9 @@ td.v:focus, td.vg:focus {
     <div class="build-identity">Studio v${safeVersion} · Build ${safeBuildDate} · Commit ${safeCommit}</div>
   </div>
   <div class="header-right">
-    <div id="status" class="status-badge running">
+    <div id="status" class="status-badge">
       <span class="status-dot"></span>
-      <span class="status-text">running</span>
+      <span class="status-text">connecting</span>
     </div>
   </div>
 </div>
@@ -2256,6 +2298,7 @@ let currentNames = [];
 const funNames = {};
 let lastIp = 0;
 let debugReady = false;
+let connectionFailed = false;
 let rtaEnabled = false;
 let rtaAvailable = null; // true / false / null = legacy capability unknown
 const rtaProfiles = new Map();
@@ -2270,6 +2313,7 @@ let currentBreakpoints = [];
 
 // Configuration list of commands to enable modular scaling
 const COMMANDS = [
+  { op: 'stop', label: 'Stop Script', icon: 'stop', category: 'control', desc: 'Interrupt the application through the REPL without resetting' },
   { op: 'continue', label: 'Continue', key: 'c', icon: 'play', category: 'control', desc: 'Resume script execution' },
   { op: 'step', label: 'Step Over', key: 's', icon: 'step-over', category: 'control', desc: 'Execute next statement' },
   { op: 'step_in', label: 'Step In', key: 'i', icon: 'step-in', category: 'control', desc: 'Step inside function call' },
@@ -2302,6 +2346,12 @@ const ICONS = {
 };
 
 // Render controls dynamically on startup
+function setConnectionLabel(label) {
+  const badge = document.getElementById('status');
+  badge.className = 'status-badge';
+  badge.querySelector('.status-text').textContent = label;
+}
+
 function renderButtons() {
   const container = document.getElementById('controls-container');
   container.innerHTML = '';
@@ -2431,6 +2481,9 @@ function renderBreakpoints(items) {
 }
 
 function updateRtaControls(enabled) {
+  document.querySelectorAll('button[data-op]').forEach(button => {
+    if (['continue', 'step', 'step_in', 'step_out', 'globals', 'call_stack'].includes(button.dataset.op)) button.disabled = !debugReady;
+  });
   rtaEnabled = !!enabled;
   const onBtn = document.querySelector('button[data-op="rta_on"]');
   const offBtn = document.querySelector('button[data-op="rta_off"]');
@@ -2449,7 +2502,7 @@ function updateRtaControls(enabled) {
 
   if (badge) {
     if (!debugReady) {
-      badge.textContent = 'CHECKING';
+      badge.textContent = connectionFailed ? 'NO RESPONSE' : 'CHECKING';
       badge.className = 'rta-live-badge';
     } else if (rtaAvailable === false) {
       badge.textContent = 'FW REQUIRED';
@@ -2732,10 +2785,21 @@ window.addEventListener('message', (e) => {
   }
   else if (m.evt === 'pump_ready') {
     debugReady = true;
+    connectionFailed = false;
     updateRtaControls(false);
-    add('reply', 'DEBUG CDC READY · breakpoint table synchronized' + (m.legacy ? ' · legacy pump' : ''));
+    setConnectionLabel('attached');
+    add('reply', 'DEBUG CDC READY · transport confirmed' + (m.legacy ? ' · legacy pump' : ''));
+  }
+  else if (m.evt === 'handshake_timeout') {
+    debugReady = false;
+    connectionFailed = true;
+    setConnectionLabel('no response');
+    updateRtaControls(false);
+    add('err', m.msg + ' · Details retained in Output → MicroPython Debugger');
   }
   else if (m.evt === 'transport_lost') {
+    connectionFailed = true;
+    setConnectionLabel('disconnected');
     debugReady = false;
     updateRtaControls(false);
     add('err', 'DEBUG CDC LOST · ' + (m.msg || 'transport disconnected'));
@@ -2862,7 +2926,7 @@ window.addEventListener('message', (e) => {
     add('err', 'ERR ' + m.msg);
     if (m.ip) lastIp = m.ip;
   }
-  else if (m.evt === 'closed') add('err', '(bridge closed)');
+  else if (m.evt === 'closed') { setConnectionLabel('disconnected'); add('err', '(bridge closed)'); }
   else if (m.evt === 'open') add('reply', 'connected to ' + m.port);
   else if (m.evt === 'names') { currentNames = m.names || []; }
   else if (m.evt === 'rta_name') { setRtaName(m.fun, m.name, m.kind || 'task'); }

@@ -2,6 +2,10 @@
 import base64
 import importlib.util
 import time
+import io
+import json
+import queue
+import threading
 from pathlib import Path
 import sys
 import types
@@ -72,6 +76,110 @@ class KnownGoodReplProtocolTests(unittest.TestCase):
         self.assertIn(b'\r', self.port.writes)
         self.assertIn(b'print(1 + 1)\r', self.port.writes)
         self.assertIn(b'\x03', self.port.writes)
+
+    def test_stdin_ctrl_c_interrupts_a_blocked_raw_query_without_serial_lock(self):
+        self.daemon.enter_raw_repl = lambda: None
+        self.daemon._do_raw_paste = lambda code: None
+        self.daemon.exit_raw_repl = lambda: None
+        original = self.port.write
+
+        def write(data):
+            result = original(data)
+            if data == b'\x03':
+                with self.daemon._rx_lock:
+                    self.daemon._rx_queue.extend(b'KeyboardInterrupt\r\n\x04\x04>')
+            return result
+
+        self.port.write = write
+        worker = threading.Thread(target=self.daemon.process_command,
+                                  args=({'action': 'run_code', 'id': 10, 'code': 'loop()'},), daemon=True)
+        worker.start()
+        self.wait_for(lambda: self.daemon.in_raw_repl)
+        self.mod.read_commands(self.daemon, queue.Queue(), io.StringIO(
+            json.dumps({'action': 'interrupt', 'id': 11}) + '\n'))
+        worker.join(1)
+        self.assertFalse(worker.is_alive(), 'A raw query must not trap Ctrl+C in the stdin queue')
+        self.assertIn(b'\x03', self.port.writes)
+        self.assertTrue(any(name == 'run_result' and data.get('id') == 11 and data.get('success')
+                            for name, data in self.events))
+
+    def test_stop_cancels_queued_runs_instead_of_restarting_print_loop(self):
+        commands = queue.Queue()
+        self.mod.read_commands(self.daemon, commands, io.StringIO(
+            json.dumps({'action': 'run_in_terminal', 'code': 'loop()'}) + '\n' +
+            json.dumps({'action': 'interrupt', 'id': 12}) + '\n'))
+        self.daemon.process_command(commands.get_nowait())
+        self.assertIsNone(self.daemon._foreground_thread)
+        self.assertTrue(any(name == 'terminal_run_finished' and not data.get('success')
+                            for name, data in self.events))
+
+    def test_raw_paste_keeps_credit_coalesced_with_window_header(self):
+        original = self.port.write
+
+        def write(data):
+            if data == b'\x05A\x01':
+                self.port.writes.append(data)
+                with self.daemon._rx_lock:
+                    self.daemon._rx_queue.extend(b'R\x01\x04\x00\x01')
+                return len(data)
+            return original(data)
+
+        self.port.write = write
+        error = []
+        def upload():
+            try:
+                self.daemon._do_raw_paste('abcdefgh')
+            except Exception as exc:
+                error.append(exc)
+        worker = threading.Thread(target=upload, daemon=True)
+        worker.start()
+        worker.join(1)
+        if worker.is_alive():
+            self.daemon.interrupt()
+            worker.join(1)
+            self.fail('Initial raw-paste credit was lost; upload stalled')
+        self.assertEqual(error, [])
+        self.assertIn(b'abcdefgh', self.port.writes)
+
+    def test_stop_during_run_start_does_not_execute_user_code(self):
+        uploaded = []
+        self.daemon.enter_raw_repl = lambda: self.daemon.interrupt()
+        self.daemon._do_raw_paste = lambda code: uploaded.append(code)
+        self.daemon.exit_raw_repl = lambda: None
+        self.daemon.process_command({'action': 'run_in_terminal', 'code': 'loop()'})
+        self.daemon._foreground_thread.join(1)
+        self.assertEqual(uploaded, [])
+
+    def test_ctrl_c_aborts_a_stalled_upload_without_executing_partial_source(self):
+        original = self.port.write
+        errors = []
+        def write(data):
+            if data == b'\x05A\x01':
+                self.port.writes.append(data)
+                with self.daemon._rx_lock:
+                    self.daemon._rx_queue.extend(b'R\x01\x04\x00')
+                return len(data)
+            if data == b'\x03\x04':
+                self.port.writes.append(data)
+                with self.daemon._rx_lock:
+                    self.daemon._rx_queue.extend(b'\x04SyntaxError\r\n\x04>')
+                return len(data)
+            return original(data)
+        self.port.write = write
+        def upload():
+            try:
+                self.daemon._do_raw_paste('abcdefgh')
+            except Exception as error:
+                errors.append(error)
+        worker = threading.Thread(target=upload, daemon=True)
+        worker.start()
+        self.wait_for(lambda: b'abcd' in self.port.writes)
+        self.daemon.interrupt()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(any(isinstance(error, InterruptedError) for error in errors))
+        self.assertIn(b'\x03\x04', self.port.writes)
+        self.assertNotIn(b'\x04', self.port.writes, 'Partial valid source must not be executed')
 
     def test_input_buffered_while_raw_repl_and_released_when_idle(self):
         self.daemon.in_raw_repl = True
