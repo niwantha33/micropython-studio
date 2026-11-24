@@ -64,6 +64,22 @@ function fixture() {
 }
 
 suite('Serial file access and queued port handoff', () => {
+    test('package action waits for Shell startup before selecting the COM owner', async () => {
+        const f = fixture();
+        let connected;
+        f.manager.isConnected = false;
+        f.manager.daemonProcess = null;
+        f.setLock('234:daemon');
+        f.manager._connectPromise = new Promise(resolve => { connected = resolve; });
+        const operation = f.queue.run(async () => f.calls.push('package'), 'Install Package', false, 'COM7');
+        await Promise.resolve();
+        assert.deepStrictEqual(f.calls, []);
+        f.manager.daemonProcess = { pid: 234 };
+        f.manager.isConnected = true;
+        connected();
+        await operation;
+        assert.deepStrictEqual(f.calls, ['suspend', 'package', 'resume']);
+    });
     test('our acknowledged suspension reservation does not impose a 12 second wait', async () => {
         const f = fixture();
         f.manager.isSuspended = true;

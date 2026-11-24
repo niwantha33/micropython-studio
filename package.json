@@ -511,6 +511,7 @@
         }
       ]
     },
+    "breakpoints": [{ "language": "python" }],
     "debuggers": [
       {
         "type": "micropython-studio",

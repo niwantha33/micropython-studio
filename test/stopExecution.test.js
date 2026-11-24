@@ -10,7 +10,8 @@ function controller(state, interrupt) {
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/stopExecution.js'), 'utf8'), {
         module, exports: module.exports,
         require(name) {
-            if (name === './connectionManager') return { portName: 'COM7', interrupt: async () => {
+            if (name === './connectionManager') return { portName: 'COM7',
+                observeStop: () => ({ wait: Promise.resolve(), cancel() {} }), interrupt: async () => {
                 actions.push('interrupt');
                 await interrupt?.();
             } };

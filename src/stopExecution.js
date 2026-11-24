@@ -10,13 +10,19 @@ async function stopExecution(replPort) {
     }
     // First deliver the user interrupt on the REPL, independently of raw
     // operation queues. Only an explicit Stop may release a known debug pause.
-    await connectionManager.interrupt();
-    const state = getDebugExecutionState();
-    if (state.status === 'paused' && samePort(state.replPort, replPort)) {
-        const { sendNativeCommand } = require('./mpyDebugger');
-        if (!sendNativeCommand('continue')) {
-            throw new Error('Ctrl+C was delivered, but the paused debugger transport is unavailable.');
+    const confirmation = connectionManager.observeStop();
+    try {
+        await connectionManager.interrupt();
+        const state = getDebugExecutionState();
+        if (state.status === 'paused' && samePort(state.replPort, replPort)) {
+            const { sendNativeCommand } = require('./mpyDebugger');
+            if (!sendNativeCommand('continue')) {
+                throw new Error('Ctrl+C was delivered, but the paused debugger transport is unavailable.');
+            }
         }
+        await confirmation.wait;
+    } finally {
+        confirmation.cancel();
     }
 }
 
