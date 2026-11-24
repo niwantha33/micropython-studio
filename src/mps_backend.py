@@ -1380,6 +1380,13 @@ def _acquire_port_friendly(python_exe, port, retries=4):
     return False
 
 
+def _safe_package_port_label(port: str) -> str:
+    """Never echo a WebREPL password into the VS Code Output panel."""
+    if port.lower().startswith(('ws:', 'wss:')):
+        return port.split(',', 1)[0] + ' [credential hidden]'
+    return port
+
+
 def _has_package_files(directory: Path) -> bool:
     """A successful download must have at least one regular file to install."""
     return directory.is_dir() and any(f.is_file() for f in directory.rglob('*'))
@@ -1387,7 +1394,7 @@ def _has_package_files(directory: Path) -> bool:
 
 def cmd_mip(python_exe: str, port: str, package: str, index: str = None, dest: str = '/lib'):
     """Install a package on-device, falling back to PC-side download if needed."""
-    sys.stderr.write(f"   Starting mip installation for '{package}' on {port}\n")
+    sys.stderr.write(f"   Starting mip installation for '{package}' on {_safe_package_port_label(port)}\n")
     sys.stderr.write(f"Installing '{package}' on device via mip...\n")
     # Robust port acquisition — clears stale locks, retries on busy
     if not _acquire_port_friendly(python_exe, port):
