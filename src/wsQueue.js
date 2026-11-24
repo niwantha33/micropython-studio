@@ -20,6 +20,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { samePort, normalizeSerialPort } = require('./devicePortSelection');
 
 function getLogChannel() {
   return require('./studioOutput').getStudioOutputChannel();
@@ -40,7 +41,7 @@ function isPidRunning(pid) {
   }
 }
 
-function isPortLocked(port, daemonPid) {
+function isPortLocked(port, daemonPid, isSuspended) {
   const lockPath = getLockFilePath(port);
   if (!lockPath || !fs.existsSync(lockPath)) {
     return false;
@@ -54,6 +55,12 @@ function isPortLocked(port, daemonPid) {
       return false;
     }
     if (daemonPid && pid === daemonPid) {
+      return false;
+    }
+    // The acknowledged suspension reserves this port for our own backend
+    // children. It is not a foreign operation; the queue already serializes
+    // those children. Never bypass another host's reservation or a live CLI.
+    if (isSuspended && pid === process.pid && owner === 'suspended_lock') {
       return false;
     }
     
@@ -83,9 +90,10 @@ class DeviceOperationQueue {
    * @param {() => Promise<T>} fn
    * @param {string} [label]
    * @param {boolean} [runDirectIfConnected]
+   * @param {string} [targetPort] device addressed by this operation
    * @returns {Promise<T>}
    */
-  run(fn, label = '', runDirectIfConnected = false) {
+  run(fn, label = '', runDirectIfConnected = false, targetPort) {
     this._pending++;
 
     if (!label) {
@@ -127,18 +135,20 @@ class DeviceOperationQueue {
 
     const wrappedFn = async () => {
       const connectionManager = require('./connectionManager');
-      const port = connectionManager.portName;
-      const daemonPid = connectionManager.daemonProcess ? connectionManager.daemonProcess.pid : null;
+      const port = normalizeSerialPort(targetPort || connectionManager.portName);
+      const sharedPort = samePort(port, connectionManager.portName);
+      const daemonPid = sharedPort && connectionManager.daemonProcess ? connectionManager.daemonProcess.pid : null;
 
       logMsg(`[wsQueue] Requesting access for: ${label}`);
 
-      const useDirect = runDirectIfConnected && connectionManager.isConnected && !connectionManager.isSuspended;
+      const useDirect = runDirectIfConnected && sharedPort && connectionManager.isConnected &&
+        !connectionManager.isSuspended && !connectionManager.isReconnecting;
 
       // If the port is locked by another process (e.g. terminal run session), wait for it to release
       if (!useDirect && port) {
         let lockChecked = false;
         const waitStart = Date.now();
-        while (isPortLocked(port, daemonPid)) {
+        while (isPortLocked(port, daemonPid, sharedPort && connectionManager.isSuspended)) {
           if (Date.now() - waitStart > 12000) {
             throw new Error(`Serial port ${port} is still owned by another operation after 12 seconds. Close the other terminal or retry when upload completes.`);
           }
@@ -163,7 +173,7 @@ class DeviceOperationQueue {
       }
 
       const wasSuspended = connectionManager.isSuspended;
-      const shouldSuspend = !useDirect && !wasSuspended && connectionManager.isConnected;
+      const shouldSuspend = !useDirect && sharedPort && !wasSuspended && connectionManager.isConnected;
       if (shouldSuspend) {
         logMsg(`[wsQueue] Suspending connectionManager for: ${label}`);
         await connectionManager.suspend();
