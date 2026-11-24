@@ -21,6 +21,21 @@
       "id": "SER-004",
       "test": "test_SER_004_suspend_resume_releases_real_lock",
       "expected": "Repeated simulated port handoff releases and reacquires the daemon lock; no reset or interrupt bytes."
+    },
+    {
+      "id": "SER-005",
+      "test": "test_SER_005_disconnect_during_foreground",
+      "expected": "Disconnect reports failure and clears foreground/raw state."
+    },
+    {
+      "id": "SER-006",
+      "test": "test_SER_006_foreign_lock_preserved",
+      "expected": "Live foreign owner is neither acquired nor removed."
+    },
+    {
+      "id": "SER-007",
+      "test": "test_SER_007_invalid_credit_fails_without_execution",
+      "expected": "Invalid zero raw-paste credit fails without executing source."
     }
   ]
 }

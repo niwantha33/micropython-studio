@@ -129,6 +129,35 @@ class VirtualSerialBaselineTests(unittest.TestCase):
         self.assertEqual(self.port.writes, [])
 
 
+    def test_SER_005_disconnect_during_foreground(self):
+        self.daemon.process_command({"action": "run_in_terminal", "code": "loop()"})
+        self.wait_for(lambda: self.messages("terminal_run_started"))
+        self.port.close()
+        self.wait_for(lambda: self.messages("terminal_run_finished"))
+        result = self.messages("terminal_run_finished")[0]
+        self.assertFalse(result["success"])
+        self.assertTrue(result["error"])
+        self.assertFalse(self.daemon.in_raw_repl)
+        self.assertFalse(self.daemon._foreground_active)
+
+    def test_SER_006_foreign_lock_preserved(self):
+        import os
+        owner = f"{os.getpid()}:cli"
+        self.lock_path.write_text(owner, encoding="utf-8")
+        self.assertFalse(self.mod._acquire_lock(self.daemon.port))
+        self.mod._release_lock(self.daemon.port)
+        self.assertEqual(self.lock_path.read_text(encoding="utf-8"), owner)
+
+    def test_SER_007_invalid_credit_fails_without_execution(self):
+        self.port.window = 0
+        self.daemon.process_command({"action": "run_in_terminal", "code": "loop()"})
+        self.wait_for(lambda: self.messages("terminal_run_finished"))
+        self.assertFalse(self.messages("terminal_run_finished")[0]["success"])
+        self.assertEqual(self.port.executed, [])
+        self.assertFalse(self.messages("terminal_run_started"))
+        self.assertFalse(self.daemon.in_raw_repl)
+
+
 class BaselineRegistryTests(unittest.TestCase):
     def test_registry_maps_every_serial_scenario(self):
         registry = json.loads((Path(__file__).parent / "baselines" /
