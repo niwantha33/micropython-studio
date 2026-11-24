@@ -2037,7 +2037,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.uploadToDeviceFolder', async (item) => {
             const path = item ? item.devicePath : '/';
-            await uploadToDeviceFolder(gRemoteDevicePort, path, deviceFileExplorer);
+            await uploadToDeviceFolder(gRemoteDevicePort, path, deviceFileExplorer, outputChannel);
         })
     );
 
