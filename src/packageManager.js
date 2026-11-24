@@ -3,8 +3,9 @@ const https = require('https');
 const path = require('path');
 const { execFile } = require('child_process');
 const { getDeviceSecret } = require('./deviceSecrets');
-const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const { getVenvPythonPathFolder, getVenvPythonPath, redactDevicePort } = require('./commonFxn');
 const wsQueue = require('./wsQueue');
+const { createDeviceOperation, waitForProcess, assertSuccessfulExit } = require('./deviceOperationLog');
 
 
 /**
@@ -58,7 +59,7 @@ async function fetchXBeePackageIndex() {
  * @param {function} runProcess Function to run a python process (usually runPythonProcess)
  * @param {boolean} isXBee Whether the connected device is an XBee
  */
-async function openPackageManager(context, currentDevicePort, runProcess, isXBee = false) {
+async function openPackageManager(context, currentDevicePort, runProcess, isXBee = false, outputChannel) {
     if (!currentDevicePort) {
         vscode.window.showWarningMessage('No device connected. Please connect a device and run "Refresh Device Files" first.');
         return;
@@ -135,11 +136,19 @@ async function openPackageManager(context, currentDevicePort, runProcess, isXBee
                 mipArgs = [scriptPath, '--python', venvPython, 'mip', '--port', currentDevicePort, '--package', selected.pkgName, '--dest', destPath];
             }
 
-            wsQueue.run(() => new Promise((resolve) => {
-                runProcess(venvPython, mipArgs, resolve);
-            }));
-
-            vscode.window.showInformationMessage(`Installation of ${selected.pkgName} started. Check Output Panel for progress.`);
+            const operation = createDeviceOperation(outputChannel,
+                'Package install', selected.pkgName + ' → ' + destPath);
+            try {
+                const code = await wsQueue.run(
+                    () => waitForProcess(runProcess, venvPython, mipArgs),
+                    'Install MicroPython Package'
+                );
+                assertSuccessfulExit(code, 'Package ' + selected.pkgName);
+                operation.success('Installed ' + selected.pkgName + ' on ' + redactDevicePort(currentDevicePort));
+            } catch (error) {
+                operation.fail(error);
+                vscode.window.showErrorMessage('Package installation failed: ' + error.message);
+            }
         }
     } catch (err) {
         vscode.window.showErrorMessage(`Failed to load Package Manager: ${err.message}`);
@@ -242,7 +251,7 @@ function _cpFallbackList() {
  * @param {function} findDrive   findCircuitPyDrive() from circuitpyDrive
  * @param {function} getConfig   getConfigValue(path, section, key)
  */
-async function openCircuitPythonPackageManager(deviceCodeDir, runProcess, findDrive, getConfig, onAfterInstall) {
+async function openCircuitPythonPackageManager(deviceCodeDir, runProcess, findDrive, getConfig, onAfterInstall, outputChannel) {
     // ── Resolve install target ─────────────────────────────────────────────────
     const drive   = findDrive ? findDrive() : null;
 
@@ -328,8 +337,27 @@ async function openCircuitPythonPackageManager(deviceCodeDir, runProcess, findDr
     );
     if (confirmed !== 'Install') return;
 
-    runProcess(circup, circupArgs, onAfterInstall || null);
-    vscode.window.showInformationMessage(`Installing ${selected.pkgName}… check the output panel.`);
+    const operation = createDeviceOperation(outputChannel,
+        'Package install', selected.pkgName + ' → ' + targetLabel);
+    try {
+        const code = await wsQueue.run(
+            () => waitForProcess(runProcess, circup, circupArgs),
+            'Install CircuitPython Package'
+        );
+        assertSuccessfulExit(code, 'Package ' + selected.pkgName);
+        operation.success('Installed ' + selected.pkgName + ' on ' + targetLabel);
+        // Post-install sync or refresh is only allowed after an actual exit 0.
+        if (typeof onAfterInstall === 'function') {
+            try { await onAfterInstall(code); }
+            catch (error) {
+                outputChannel.appendLine('[ERROR] Post-install sync failed: ' + error.message);
+                vscode.window.showErrorMessage('Post-install sync failed: ' + error.message);
+            }
+        }
+    } catch (error) {
+        operation.fail(error);
+        vscode.window.showErrorMessage('Package installation failed: ' + error.message);
+    }
 }
 
 module.exports = { openPackageManager, openCircuitPythonPackageManager };

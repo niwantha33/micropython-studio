@@ -5,11 +5,11 @@ const path = require('path');
 suite('Resource leak regression', () => {
     test('wsQueue reuses one output channel instead of opening one per log line', () => {
         const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'wsQueue.js'), 'utf8');
-        assert.ok(source.includes('let logChannel = null;'));
+        assert.ok(source.includes("require('./studioOutput').getStudioOutputChannel()"));
         assert.ok(source.includes('function getLogChannel()'));
         assert.ok(source.includes('getLogChannel().appendLine(msg)'));
         const creates = source.match(/createOutputChannel\('MicroPython IDE'\)/g) || [];
-        assert.strictEqual(creates.length, 1);
+        assert.strictEqual(creates.length, 0);
     });
 
     test('firmware-first debugger creates no file-upload setup output channel', () => {
@@ -26,16 +26,26 @@ suite('Resource leak regression', () => {
 
         assert.ok(cm.includes('function getOutputChannel()'));
         assert.ok(cm.includes('getOutputChannel().appendLine(msg)'));
-        assert.strictEqual((cm.match(/createOutputChannel\('MicroPython IDE'\)/g) || []).length, 1);
+        assert.strictEqual((cm.match(/createOutputChannel\('MicroPython IDE'\)/g) || []).length, 0);
+        assert.ok(cm.includes("require('./studioOutput').getStudioOutputChannel()"));
 
         assert.ok(rs.includes('function getOutputChannel()'));
         assert.ok(rs.includes('getOutputChannel().appendLine'));
-        assert.strictEqual((rs.match(/createOutputChannel\('MicroPython IDE'\)/g) || []).length, 1);
+        assert.strictEqual((rs.match(/createOutputChannel\('MicroPython IDE'\)/g) || []).length, 0);
+        assert.ok(rs.includes("require('./studioOutput').getStudioOutputChannel()"));
+    });
+
+    test('Output channel is allocated once and shared by all modules', () => {
+        const studio = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'studioOutput.js'), 'utf8');
+        assert.strictEqual((studio.match(/vscode\.window\.createOutputChannel\('MicroPython IDE'\)/g) || []).length, 1);
+        const { getStudioOutputChannel } = require('../src/studioOutput');
+        assert.strictEqual(getStudioOutputChannel(), getStudioOutputChannel());
     });
 
     test('subprocess helpers reuse the extension-wide output channel', () => {
         const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'extension.js'), 'utf8');
-        assert.ok(source.includes("const outputChannel = vscode.window.createOutputChannel('MicroPython IDE');"));
+        assert.ok(source.includes("let outputChannel = require('./studioOutput').getStudioOutputChannel();"));
+        assert.ok(source.includes("require('./studioOutput').disposeStudioOutputChannel()"));
         assert.ok(!source.includes("createOutputChannel('MicroPython Studio')"));
         assert.ok(source.includes('const channel = outputChannel;'));
     });
