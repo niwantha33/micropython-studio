@@ -43,7 +43,7 @@ const { startSimulator, stopSimulator } = require('./simulator');
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
-const outputChannel = require('./studioOutput').getStudioOutputChannel();
+let outputChannel = require('./studioOutput').getStudioOutputChannel();
 
 let gMpremoteTerminal = null;
 let gRemoteDevicePort = null;
@@ -586,6 +586,7 @@ async function sendCleanCommand(terminal, command) {
 }
 
 function activate(context) {
+    outputChannel = require('./studioOutput').getStudioOutputChannel();
     initializeSecretStorage(context);
     console.log('MicroPython Studio extension activated');
     checkPythonAvailability();
@@ -2256,8 +2257,8 @@ function deactivate() {
         gMpremoteTerminal = null;
     }
 
-    // Dispose output channel
-    outputChannel.dispose();
+    // Dispose the shared channel and allow a fresh one on reactivation.
+    require('./studioOutput').disposeStudioOutputChannel();
 }
 
 module.exports = { activate, deactivate };
