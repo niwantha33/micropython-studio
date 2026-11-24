@@ -75,6 +75,55 @@ suite('Serial foreground output and native-debug pause safety', () => {
         await assert.rejects(manager.interrupt(), /not available/);
     });
 
+    test('disconnect waits for an already signalled daemon to actually close COM', async () => {
+        const { EventEmitter } = require('events');
+        const daemon = new EventEmitter();
+        daemon.exitCode = null;
+        daemon.killed = true;
+        daemon.kill = () => { throw new Error('Should already be signalled'); };
+        manager.daemonProcess = daemon;
+        let finished = false;
+        const shutdown = manager.disconnect().then(() => { finished = true; });
+        await Promise.resolve();
+        assert.strictEqual(finished, false);
+        daemon.emit('close', 0);
+        await shutdown;
+        assert.strictEqual(finished, true);
+    });
+
+    test('Stop confirmation waits for the raw execution to finish, not write acknowledgement', async () => {
+        manager.isScriptRunning = true;
+        const confirmation = manager.observeStop();
+        let complete = false;
+        confirmation.wait.then(() => { complete = true; });
+        manager.emit('data', Buffer.from('still printing\r\n>>> '));
+        await Promise.resolve();
+        assert.strictEqual(complete, false);
+        manager._handleDaemonMessage({ type: 'terminal_run_finished', success: true }, () => {}, () => {}, true);
+        await confirmation.wait;
+        assert.strictEqual(complete, true);
+        assert.strictEqual(manager.listenerCount('run-finished'), 0);
+        assert.strictEqual(manager.listenerCount('data'), 0);
+    });
+
+    test('Stop recognises a fragmented friendly REPL prompt', async () => {
+        const confirmation = manager.observeStop();
+        manager.emit('data', Buffer.from('KeyboardInterrupt\r\n>'));
+        manager.emit('data', Buffer.from('>> '));
+        await confirmation.wait;
+        assert.strictEqual(manager.listenerCount('data'), 0);
+    });
+
+    test('Stop reports missing prompt and disconnect, and removes observers', async () => {
+        const timeout = manager.observeStop(5);
+        await assert.rejects(timeout.wait, /has not returned/);
+        assert.strictEqual(manager.listenerCount('data'), 0);
+        const lost = manager.observeStop();
+        manager.emit('disconnected');
+        await assert.rejects(lost.wait, /disconnected/);
+        assert.strictEqual(manager.listenerCount('run-finished'), 0);
+    });
+
     test('busy suspend request fails immediately without a false suspended state', async () => {
         const request = manager.suspend();
         assert.strictEqual(sent[0].action, 'suspend');

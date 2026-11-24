@@ -990,7 +990,7 @@ function activate(context) {
                 !connectionManager.isReconnecting && samePort(connectionManager.portName, gRemoteDevicePort)) {
                 try {
                     await require('./stopExecution').stopExecution(gRemoteDevicePort);
-                    outputChannel.appendLine('[REPL] Stop delivered to serial transport. Waiting for the device prompt.');
+                    outputChannel.appendLine('[REPL] Stop complete. MCU returned to the REPL.');
                 } catch (err) {
                     vscode.window.showErrorMessage('Stop failed: ' + err.message);
                 }
@@ -1374,9 +1374,11 @@ function activate(context) {
             qp.items = options;
             qp.placeholder = `Current: Run on ${currentTarget}`;
 
-            qp.onDidChangeSelection(selection => {
-                if (!selection[0]) return;
-                currentTarget = /** @type {any} */ (selection[0]).target;
+            qp.activeItems = [options.find(item => item.target === currentTarget) || options[1]];
+            qp.onDidAccept(() => {
+                const selected = qp.selectedItems[0];
+                if (!selected) return;
+                currentTarget = /** @type {any} */ (selected).target;
                 updateRunTargetButton();
                 console.log(`Run target changed to: ${currentTarget}`);
                 qp.hide();
@@ -2248,7 +2250,7 @@ function createStatusBar(context) {
 
 // ─── Extension Deactivation ──────────────────────────────────────────────────
 
-function deactivate() {
+async function deactivate() {
     console.log('MicroPython Studio extension deactivated');
 
     // Stop simulator if running
@@ -2262,6 +2264,10 @@ function deactivate() {
         gMpremoteTerminal.dispose();
         gMpremoteTerminal = null;
     }
+
+    // Await the owned daemon's exit before a reactivated extension opens COM.
+    // Disposing a terminal only removes its listeners; it does not close USB.
+    await connectionManager.disconnect();
 
     // Dispose the shared channel and allow a fresh one on reactivation.
     require('./studioOutput').disposeStudioOutputChannel();

@@ -45,7 +45,6 @@ function isPortLocked(port, daemonPid) {
         const content = fs.readFileSync(lockPath, 'utf8').trim();
         const parts = content.split(':');
         const pid = parseInt(parts[0], 10);
-        const owner = parts[1] || 'unknown';
         if (isNaN(pid)) {
             return false;
         }
@@ -53,18 +52,7 @@ function isPortLocked(port, daemonPid) {
             return false;
         }
         
-        // If it's a temporary suspended lock written by the extension,
-        // we check the age of the file. If it is older than 8 seconds,
-        // we assume the spawned process failed to claim it or start,
-        // so we treat it as stale/unlocked.
-        if (owner === 'suspended_lock') {
-            const stats = fs.statSync(lockPath);
-            const ageMs = Date.now() - stats.mtimeMs;
-            if (ageMs > 8000) {
-                logMsg(`[ConnectionManager] Stale suspended_lock detected (age: ${(ageMs/1000).toFixed(1)}s), ignoring.`);
-                return false;
-            }
-        }
+        // A live reservation remains owned regardless of its age.
         
         return isPidRunning(pid);
     } catch (err) {
@@ -120,7 +108,7 @@ class ConnectionManager extends EventEmitter {
             return;
         }
         
-        if (this.isConnected) {
+        if (this.daemonProcess) {
             logMsg(`[ConnectionManager] Disconnecting from old port ${this.portName} first`);
             await this.disconnect();
         }
@@ -163,7 +151,12 @@ class ConnectionManager extends EventEmitter {
                 if (settled) return;
                 settled = true;
                 clearTimeout(startTimeout);
-                if (err) reject(err); else resolve();
+                if (err) {
+                    // Failed startup must not leave an untracked daemon
+                    // holding COM when the user retries Shell or Run.
+                    try { daemon.kill(); } catch (_) {}
+                    reject(err);
+                } else resolve();
             };
             const startTimeout = setTimeout(() => {
                 settle(new Error(`Timed out connecting to ${portName}. Check COM selection and close other serial tools.`));
@@ -447,19 +440,28 @@ class ConnectionManager extends EventEmitter {
         this.stopAutoResumeCheck();
         if (!this.daemonProcess) return;
         const daemon = this.daemonProcess;
-        if (daemon.exitCode !== null || daemon.killed) return;
-        await new Promise(resolve => {
+        if (daemon.exitCode !== null) return;
+        // ChildProcess.killed only means a signal was sent. The Windows COM
+        // handle is released on exit, so even a signalled child must be awaited.
+        await new Promise((resolve, reject) => {
+            let forcedDeadline;
+            const closed = () => {
+                clearTimeout(deadline);
+                clearTimeout(forcedDeadline);
+                resolve();
+            };
             const deadline = setTimeout(() => {
                 try { daemon.kill('SIGKILL'); } catch (_) {}
-                resolve();
+                forcedDeadline = setTimeout(() => {
+                    daemon.removeListener('close', closed);
+                    reject(new Error('Serial daemon did not exit; its COM handle may still be open.'));
+                }, 1000);
             }, 2500);
-            daemon.once('close', () => {
+            daemon.once('close', closed);
+            try { if (!daemon.killed) daemon.kill(); } catch (error) {
                 clearTimeout(deadline);
-                resolve();
-            });
-            try { daemon.kill(); } catch (_) {
-                clearTimeout(deadline);
-                resolve();
+                daemon.removeListener('close', closed);
+                reject(error);
             }
         });
     }
@@ -719,6 +721,40 @@ except Exception as e:
             try { this.daemonProcess.stdin.write(JSON.stringify({ action: 'interrupt', id }) + '\n', fail); }
             catch (error) { fail(error); }
         });
+    }
+
+    observeStop(timeoutMs = 5000) {
+        // Register BEFORE sending Ctrl+C: a fast MCU can return its prompt
+        // before the daemon's write acknowledgement reaches this process.
+        let finish;
+        let text = '';
+        let timer;
+        const onData = data => {
+            text = (text + data.toString('utf8')).slice(-256);
+            if (!this.isScriptRunning && /(?:^|[\r\n])>>> $/.test(text)) finish();
+        };
+        const onFinished = result => finish(result.success ? null :
+            new Error(result.error || 'MCU execution failed while stopping.'));
+        const onDisconnected = () => finish(new Error('REPL disconnected before Stop completed.'));
+        const wait = new Promise((resolve, reject) => {
+            finish = error => {
+                clearTimeout(timer);
+                this.off('data', onData);
+                this.off('run-finished', onFinished);
+                this.off('disconnected', onDisconnected);
+                if (error) reject(error); else resolve();
+            };
+            this.on('data', onData);
+            this.on('run-finished', onFinished);
+            this.on('disconnected', onDisconnected);
+            timer = setTimeout(() => finish(new Error(
+                'Ctrl+C was sent, but the MCU has not returned to the REPL prompt. Check the debugger pause and device output.'
+            )), timeoutMs);
+        });
+        // The caller first awaits the transport acknowledgement and may need
+        // to release a debug pause before awaiting this independent result.
+        wait.catch(() => {});
+        return { wait, cancel: () => finish() };
     }
 
     /**

@@ -135,9 +135,13 @@ class DeviceOperationQueue {
 
     const wrappedFn = async () => {
       const connectionManager = require('./connectionManager');
+      // Shell may still be starting its daemon when a file/package action is
+      // clicked. Wait for that handshake before deciding who must release COM.
+      if (connectionManager._connectPromise) await connectionManager._connectPromise;
       const port = normalizeSerialPort(targetPort || connectionManager.portName);
       const sharedPort = samePort(port, connectionManager.portName);
-      const daemonPid = sharedPort && connectionManager.daemonProcess ? connectionManager.daemonProcess.pid : null;
+      const daemonPid = sharedPort && connectionManager.isConnected && connectionManager.daemonProcess
+        ? connectionManager.daemonProcess.pid : null;
 
       logMsg(`[wsQueue] Requesting access for: ${label}`);
 

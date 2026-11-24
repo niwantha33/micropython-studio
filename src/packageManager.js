@@ -141,7 +141,7 @@ async function openPackageManager(context, currentDevicePort, runProcess, isXBee
             try {
                 const code = await wsQueue.run(
                     () => waitForProcess(runProcess, venvPython, mipArgs),
-                    'Install MicroPython Package'
+                    'Install MicroPython Package', false, currentDevicePort
                 );
                 assertSuccessfulExit(code, 'Package ' + selected.pkgName);
                 operation.success('Installed ' + selected.pkgName + ' on ' + redactDevicePort(currentDevicePort));
