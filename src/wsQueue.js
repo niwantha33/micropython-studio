@@ -21,14 +21,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-let logChannel = null;
-
 function getLogChannel() {
-  if (!logChannel) {
-    const vscode = require('vscode');
-    logChannel = vscode.window.createOutputChannel('MicroPython IDE');
-  }
-  return logChannel;
+  return require('./studioOutput').getStudioOutputChannel();
 }
 
 function getLockFilePath(port) {
