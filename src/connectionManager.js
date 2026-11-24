@@ -579,15 +579,18 @@ except Exception as _e:
             `_f=open(${JSON.stringify(deviceFilePath)},'wb')`,
             ...chunks.map(chunk => `_f.write(_b.unhexlify(${JSON.stringify(chunk)}))`),
             `_f.close()`,
-            `print('OK_PUT')`
+            `if _o.stat(${JSON.stringify(deviceFilePath)})[6] != ${buffer.length}: raise OSError('Upload size mismatch')`,
+            `print('OK_PUT:${buffer.length}')`
         ].join('\n');
         
         const res = await this.runCodeSilently(code);
         if (res.stderr && res.stderr.trim()) {
             throw new Error(res.stderr.trim());
         }
-        if (!res.stdout.includes('OK_PUT')) {
-            throw new Error("Write failed: " + res.stdout);
+        const expected = 'OK_PUT:' + buffer.length;
+        if (!res.stdout.split(/\r?\n/).some(line => line.trim() === expected)) {
+            throw new Error('Device did not confirm uploaded byte count for ' +
+                deviceFilePath + ': ' + res.stdout);
         }
     }
 
