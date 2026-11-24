@@ -18,6 +18,7 @@ const wsQueue = require('./wsQueue');
 const { isSafeDeviceEntryName, resolveDeviceDrivePath } = require('./pathSafety');
 const { samePort } = require('./devicePortSelection');
 const { remoteJoin } = require('./deviceUploadPaths');
+const { createDeviceOperation } = require('./deviceOperationLog');
 
 const execFileAsync = promisify(execFile);
 
@@ -674,22 +675,26 @@ async function renameDeviceFile(port, oldPath, provider) {
 /**
  * Upload a file from PC directly into a specific folder on the device.
  */
-async function uploadToDeviceFolder(port, targetFolder, provider) {
-    if (!port) {
-        vscode.window.showWarningMessage('Select the device REPL port before uploading.');
-        return;
-    }
+async function uploadToDeviceFolder(port, targetFolder, provider, outputChannel) {
     const files = await vscode.window.showOpenDialog({
         canSelectMany: true,
         openLabel: 'Upload to Device'
     });
     if (!files?.length) return;
+    const operation = createDeviceOperation(outputChannel, 'Device Files upload',
+        files.length + ' file(s) → ' + (targetFolder || '/'));
+    if (!port) {
+        operation.fail('No REPL/upload port selected.');
+        vscode.window.showWarningMessage('Select the device REPL port before uploading.');
+        return;
+    }
 
     const connectionManager = require('./connectionManager');
     // If Studio owns this COM interface, use the shared daemon only.
     // A suspended daemon still owns a transfer; competing backend opens fail.
     if (connectionManager.isConnected && samePort(connectionManager.portName, port) &&
         (connectionManager.isSuspended || connectionManager.isReconnecting)) {
+        operation.fail('REPL is busy with another device operation.');
         vscode.window.showErrorMessage('Upload failed: REPL is busy with another device operation.');
         return;
     }
@@ -724,13 +729,16 @@ async function uploadToDeviceFolder(port, targetFolder, provider) {
                 }), 'Upload File', true);
             }
             completed++;
+            operation.progress(localFile + ' → ' + destination);
         } catch (error) {
-            vscode.window.showErrorMessage('Upload failed: ' + error.message);
             if (completed) provider.refresh();
+            operation.fail(error.message + ' (' + completed + '/' + files.length + ' file(s) transferred)');
+            vscode.window.showErrorMessage('Upload failed: ' + error.message);
             return;
         }
     }
     if (completed) provider.refresh();
+    operation.success(completed + '/' + files.length + ' file(s) uploaded to ' + remoteFolder);
 }
 
 /**
