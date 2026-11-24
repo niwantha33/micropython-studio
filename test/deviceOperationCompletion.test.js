@@ -102,8 +102,8 @@ suite('Upload and package completion integrity', () => {
         const pkg = fs.readFileSync(path.join(root, 'src', 'packageManager.js'), 'utf8');
         const explorer = fs.readFileSync(path.join(root, 'src', 'deviceFileExplorer.js'), 'utf8');
         assert.ok(ext.includes('operation.success(filePath +'));
-        assert.ok(ext.includes('operation.success(folderPath +'));
-        assert.ok(ext.includes('operation.success(gDeviceCodeDir +'));
+        assert.ok(ext.includes("operation.success(fileCount + ' file(s): ' + folderPath"));
+        assert.ok(ext.includes("operation.success(fileCount + ' file(s): ' + gDeviceCodeDir"));
         assert.ok(ext.includes("operation.fail(error);"));
         assert.ok(ext.includes("operation.cancel('Overwrite not confirmed"));
         assert.ok(ext.includes("operation.success(completed + '/' + count"));
