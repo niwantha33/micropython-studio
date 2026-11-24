@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "reference": "Proposed debugger bridge protocol contracts; not hardware qualification",
+  "contracts": [
+    {
+      "id": "DBG-001",
+      "test": "test_DBG_001_bridge_roundtrip",
+      "expected": "Breakpoint registration, continue, step and locals produce expected framed responses; detach cleans up without resume."
+    },
+    {
+      "id": "DBG-002",
+      "test": "test_DBG_002_read_loss_is_reported",
+      "expected": "Read failure preserves earlier hit and emits transport_lost."
+    }
+  ]
+}

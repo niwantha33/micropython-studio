@@ -1,0 +1,27 @@
+name: Serial behavioural baseline
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  serial-baseline:
+    name: Serial simulation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run behavioural contracts
+        run: python -m unittest discover -s test -p test_virtual_*_baseline.py -v
+      - name: Verify regression detection with isolated mutations
+        run: python -m unittest discover -s test -p test_mutation_baseline.py -v
