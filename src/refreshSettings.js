@@ -16,13 +16,8 @@ const { getConfigValue, updateCfgComponent, redactDevicePort } = require('./comm
 const { selectConfiguredPort, isSavedUsbPort } = require('./devicePortSelection');
 const { resolveProjectCodeDir } = require('./deviceUploadPaths');
 
-let outputChannel = null;
-
 function getOutputChannel() {
-    if (!outputChannel) {
-        outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
-    }
-    return outputChannel;
+    return require('./studioOutput').getStudioOutputChannel();
 }
 
 /**
