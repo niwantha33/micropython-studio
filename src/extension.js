@@ -33,7 +33,7 @@ const { chooseDebugAdapter, findPotentialDebugPorts } = require('./debugAdapterC
 const { MemoryAnalyzer } = require('./memoryAnalyzer');
 const { comparePythonSource, isInsideProject } = require('./deviceSourceCheck');
 const { samePort } = require('./devicePortSelection');
-const { fileRemotePath, folderRemotePath } = require('./deviceUploadPaths');
+const { fileRemotePath, folderRemotePath, countLocalUploadFiles } = require('./deviceUploadPaths');
 const { createDeviceOperation } = require('./deviceOperationLog');
 const { openWebReplTerminal } = require('./webreplBridge.js');
 const { startSimulator, stopSimulator } = require('./simulator');
@@ -1256,6 +1256,8 @@ function activate(context) {
                 if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
                     throw new Error('Local folder does not exist: ' + folderPath);
                 }
+                const fileCount = countLocalUploadFiles(folderPath);
+                if (!fileCount) throw new Error('Local upload folder is empty: ' + folderPath);
                 const deviceRoot = isXBeeDevice() ? '/flash' : '/';
                 const dest = folderRemotePath(folderPath, gDeviceCodeDir, deviceRoot);
                 operation.progress(folderPath + ' → ' + dest);
@@ -1278,7 +1280,7 @@ function activate(context) {
                         return;
                     }
                 }
-                operation.success(folderPath + ' → ' + dest);
+                operation.success(fileCount + ' file(s): ' + folderPath + ' → ' + dest);
             } catch (error) {
                 operation.fail(error);
                 vscode.window.showErrorMessage('Upload failed: ' + error.message);
@@ -1328,6 +1330,8 @@ function activate(context) {
                 if (!fs.existsSync(gDeviceCodeDir) || !fs.statSync(gDeviceCodeDir).isDirectory()) {
                     throw new Error('Project code directory does not exist: ' + gDeviceCodeDir);
                 }
+                const fileCount = countLocalUploadFiles(gDeviceCodeDir);
+                if (!fileCount) throw new Error('Project code directory is empty: ' + gDeviceCodeDir);
                 const dest = isXBeeDevice() ? '/flash' : '/';
                 operation.progress(gDeviceCodeDir + ' → ' + dest);
                 if (connectionManager.isConnected &&
@@ -1349,7 +1353,7 @@ function activate(context) {
                         return;
                     }
                 }
-                operation.success(gDeviceCodeDir + ' → ' + dest);
+                operation.success(fileCount + ' file(s): ' + gDeviceCodeDir + ' → ' + dest);
             } catch (error) {
                 operation.fail(error);
                 vscode.window.showErrorMessage('Upload failed: ' + error.message);
