@@ -1177,6 +1177,7 @@ function activate(context) {
                 vscode.window.showWarningMessage('Simulator filesystem is read-only. Use Run MCU instead.');
                 return;
             }
+            const operation = createDeviceOperation(outputChannel, 'File upload', filePath);
             try {
                 const document = vscode.workspace.textDocuments.find(doc => doc.fileName === filePath && doc.isDirty);
                 if (document && !(await document.save())) {
@@ -1188,7 +1189,7 @@ function activate(context) {
                 const deviceRoot = isXBeeDevice() ? '/flash' : '/';
                 const destPath = fileRemotePath(filePath, gDeviceCodeDir, deviceRoot);
                 const destDir = path.posix.dirname(destPath);
-                outputChannel.appendLine('[UPLOAD] ' + filePath + ' → ' + destPath +
+                operation.progress(filePath + ' → ' + destPath +
                     ' (' + redactDevicePort(gRemoteDevicePort) + ')');
 
                 if (connectionManager.isConnected &&
@@ -1208,12 +1209,15 @@ function activate(context) {
                         [scriptPath, '--python', venvPython, 'upload',
                             '--port', gRemoteDevicePort, '--source', filePath, '--dest', destDir],
                         () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
-                    if (!completed) return;
+                    if (!completed) {
+                        operation.cancel('Overwrite not confirmed; existing device files unchanged.');
+                        return;
+                    }
                 }
-                outputChannel.appendLine('[UPLOAD] Completed: ' + destPath);
+                operation.success(filePath + ' → ' + destPath);
             } catch (error) {
+                operation.fail(error);
                 vscode.window.showErrorMessage('Upload failed: ' + error.message);
-                outputChannel.appendLine('[UPLOAD ERROR] ' + error.message);
             }
         })
     );
@@ -1247,13 +1251,14 @@ function activate(context) {
                 vscode.window.showWarningMessage('Simulator filesystem is read-only. Use Run MCU instead.');
                 return;
             }
+            const operation = createDeviceOperation(outputChannel, 'Folder upload', folderPath);
             try {
                 if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
                     throw new Error('Local folder does not exist: ' + folderPath);
                 }
                 const deviceRoot = isXBeeDevice() ? '/flash' : '/';
                 const dest = folderRemotePath(folderPath, gDeviceCodeDir, deviceRoot);
-                outputChannel.appendLine('[UPLOAD] Folder ' + folderPath + ' → ' + dest);
+                operation.progress(folderPath + ' → ' + dest);
                 if (connectionManager.isConnected &&
                     samePort(connectionManager.portName, gRemoteDevicePort)) {
                     if (connectionManager.isSuspended || connectionManager.isReconnecting) {
@@ -1268,12 +1273,15 @@ function activate(context) {
                         [scriptPath, '--python', venvPython, 'upload',
                             '--port', gRemoteDevicePort, '--source', folderPath, '--dest', dest],
                         () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
-                    if (!completed) return;
+                    if (!completed) {
+                        operation.cancel('Overwrite not confirmed; existing device files unchanged.');
+                        return;
+                    }
                 }
-                outputChannel.appendLine('[UPLOAD] Folder completed: ' + dest);
+                operation.success(folderPath + ' → ' + dest);
             } catch (error) {
+                operation.fail(error);
                 vscode.window.showErrorMessage('Upload failed: ' + error.message);
-                outputChannel.appendLine('[UPLOAD ERROR] ' + error.message);
             }
         })
     );
@@ -1315,12 +1323,13 @@ function activate(context) {
                 vscode.window.showWarningMessage('Simulator filesystem is read-only. Use Run MCU instead.');
                 return;
             }
+            const operation = createDeviceOperation(outputChannel, 'Project upload', gDeviceCodeDir);
             try {
                 if (!fs.existsSync(gDeviceCodeDir) || !fs.statSync(gDeviceCodeDir).isDirectory()) {
                     throw new Error('Project code directory does not exist: ' + gDeviceCodeDir);
                 }
                 const dest = isXBeeDevice() ? '/flash' : '/';
-                outputChannel.appendLine('[UPLOAD] Project ' + gDeviceCodeDir + ' → ' + dest);
+                operation.progress(gDeviceCodeDir + ' → ' + dest);
                 if (connectionManager.isConnected &&
                     samePort(connectionManager.portName, gRemoteDevicePort)) {
                     if (connectionManager.isSuspended || connectionManager.isReconnecting) {
@@ -1335,12 +1344,15 @@ function activate(context) {
                         [scriptPath, '--python', venvPython, 'upload',
                             '--port', gRemoteDevicePort, '--source', gDeviceCodeDir, '--dest', dest],
                         () => { if (deviceFileExplorer) deviceFileExplorer.refresh(); });
-                    if (!completed) return;
+                    if (!completed) {
+                        operation.cancel('Overwrite not confirmed; existing device files unchanged.');
+                        return;
+                    }
                 }
-                outputChannel.appendLine('[UPLOAD] Project completed: ' + dest);
+                operation.success(gDeviceCodeDir + ' → ' + dest);
             } catch (error) {
+                operation.fail(error);
                 vscode.window.showErrorMessage('Upload failed: ' + error.message);
-                outputChannel.appendLine('[UPLOAD ERROR] ' + error.message);
             }
         })
     );
