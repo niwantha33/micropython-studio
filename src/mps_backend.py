@@ -1095,10 +1095,12 @@ l()
                 for i in range(0, len(hex_str), CHUNK):
                     lines.append(f"_f.write(_b.unhexlify({hex_str[i:i+CHUNK]!r}))")
                 lines.append("_f.close()")
-                lines.append("print('OK_PUT')")
+                lines.append(f"if _o.stat({dest!r})[6] != {len(data)}: raise OSError('Upload size mismatch')")
+                lines.append(f"print('OK_PUT:{len(data)}')")
                 code = "\n".join(lines)
                 rc, stdout, _ = self._exec_raw_no_exit(code, timeout=60)
-                if b'OK_PUT' not in stdout:
+                expected = f"OK_PUT:{len(data)}".encode()
+                if rc != 0 or expected not in stdout.splitlines():
                     return 1
                 return 0
 
@@ -1192,7 +1194,8 @@ for d in {all_target_dirs!r}:
                 sys.stderr.write(f"INFO: [{i}/{len(files)}] Uploading {rel} -> {remote_path}\n")
                 # We can't use put_file directly because it manages its own raw REPL session
                 # So we inline the logic here to stay in the SAME raw REPL session
-                self._put_file_internal(f, remote_path)
+                if self._put_file_internal(f, remote_path) != 0:
+                    raise RuntimeError(f"Upload failed for {remote_path}; folder upload incomplete")
         finally:
             if MPS_DEBUG: sys.stderr.write("INFO: Exiting raw REPL.\n")
             self._exit_raw_repl()
@@ -1217,12 +1220,14 @@ for d in {all_target_dirs!r}:
         for i in range(0, len(hex_str), CHUNK):
             lines.append(f"_f.write(_b.unhexlify({hex_str[i:i+CHUNK]!r}))")
         lines.append("_f.close()")
-        lines.append("print('OK_PUT')")
+        lines.append(f"if _o.stat({dest!r})[6] != {len(data)}: raise OSError('Upload size mismatch')")
+        lines.append(f"print('OK_PUT:{len(data)}')")
         code = "\n".join(lines)
 
         rc, stdout, _ = self._exec_raw_no_exit(code, timeout=60, stream_stdout=False)
-        if b'OK_PUT' not in stdout:
-            sys.stderr.write(f"   [ERROR] Upload of {dest} did not finish (no OK_PUT)\n")
+        expected = f"OK_PUT:{len(data)}".encode()
+        if rc != 0 or expected not in stdout.splitlines():
+            sys.stderr.write(f"   [ERROR] Upload of {dest} failed size/ack verification\n")
             return 1
         return 0
 
