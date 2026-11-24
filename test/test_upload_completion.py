@@ -44,6 +44,15 @@ class UploadCompletionTests(unittest.TestCase):
         device._exec_raw_no_exit = lambda code, **kwargs: (0, reply, b'')
         return device
 
+    def test_package_download_must_contain_actual_files(self):
+        package_dir = self.root / 'lib'
+        package_dir.mkdir()
+        self.assertFalse(self.backend._has_package_files(package_dir))
+        self.assertFalse(self.backend._has_package_files(self.root / 'missing'))
+        (package_dir / 'lib').mkdir()
+        (package_dir / 'lib' / 'module.py').write_text('a = 1')
+        self.assertTrue(self.backend._has_package_files(package_dir))
+
     def test_single_file_requires_matching_byte_count_from_target(self):
         source = self.root / 'main.py'
         source.write_bytes(b'abc')
