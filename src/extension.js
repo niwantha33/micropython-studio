@@ -43,7 +43,7 @@ const { startSimulator, stopSimulator } = require('./simulator');
 
 // ─── Global State ────────────────────────────────────────────────────────────
 
-const outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
+const outputChannel = require('./studioOutput').getStudioOutputChannel();
 
 let gMpremoteTerminal = null;
 let gRemoteDevicePort = null;
