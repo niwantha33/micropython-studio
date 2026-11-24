@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "reference": "2.6.1 reported working serial behaviour; proposed contracts, not captured hardware measurements",
+  "contracts": [
+    {
+      "id": "SER-001",
+      "test": "test_SER_001_friendly_stream_and_interrupt",
+      "expected": "Ordered byte-exact friendly REPL output, split UTF-8 preserved; Ctrl+C returns prompt without soft reset."
+    },
+    {
+      "id": "SER-002",
+      "test": "test_SER_002_raw_paste_credit_and_output",
+      "expected": "Raw-paste honors device credits, uploads exact source once, streams output and exits raw mode."
+    },
+    {
+      "id": "SER-003",
+      "test": "test_SER_003_foreground_stream_stop_and_reuse",
+      "expected": "Live output before completion; busy handoff rejected; Stop interrupts execution and REPL remains usable."
+    },
+    {
+      "id": "SER-004",
+      "test": "test_SER_004_suspend_resume_releases_real_lock",
+      "expected": "Repeated simulated port handoff releases and reacquires the daemon lock; no reset or interrupt bytes."
+    }
+  ]
+}
