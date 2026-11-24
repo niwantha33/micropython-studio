@@ -5,14 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
 
-let outputChannel = null;
-
 function getOutputChannel() {
-    if (!outputChannel) {
-        const vscode = require('vscode');
-        outputChannel = vscode.window.createOutputChannel('MicroPython IDE');
-    }
-    return outputChannel;
+    return require('./studioOutput').getStudioOutputChannel();
 }
 
 function logToFile() {
