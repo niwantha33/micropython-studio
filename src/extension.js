@@ -1770,38 +1770,44 @@ function activate(context) {
                 const autoSync = vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
                     .get('autoSyncAfterInstall', false);
 
-                /** Called when circup process exits */
+                /** Called only after circup exits successfully (code 0). */
                 const afterInstall = async () => {
                     if (deviceFileExplorer) deviceFileExplorer.refresh();
-
                     const drive = findCircuitPyDrive();
                     if (!drive || !localDest) return;
 
-                    if (autoSync) {
-                        // Auto-sync enabled — do it silently
-                        const result = syncFromCircuitPyDrive(drive, localDest);
-                        outputChannel.appendLine(`[SUCCESS] Auto-sync: ${result.copied} file(s) copied from ${drive} to local.`);
-                        outputChannel.show(true);
-                    } else {
-                        // Offer sync via notification
-                        const choice = await vscode.window.showInformationMessage(
-                            `Package installed. Sync files from ${drive} to local main/ folder? (settings.toml excluded)`,
-                            'Sync Now',
-                            'Enable Auto-Sync',
-                            'Skip'
-                        );
-                        if (choice === 'Sync Now') {
+                    const syncFiles = (automatic = false) => {
+                        const operation = createDeviceOperation(outputChannel,
+                            'CircuitPython sync', drive + ' → ' + localDest);
+                        try {
                             const result = syncFromCircuitPyDrive(drive, localDest);
-                            outputChannel.appendLine(`[SUCCESS] Sync: ${result.copied} file(s) copied from ${drive} to local.`);
-                            if (result.errors.length) result.errors.forEach(e => outputChannel.appendLine(`[ERROR] ${e}`));
-                            outputChannel.show(true);
-                        } else if (choice === 'Enable Auto-Sync') {
-                            await vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
-                                .update('autoSyncAfterInstall', true, vscode.ConfigurationTarget.Global);
-                            const result = syncFromCircuitPyDrive(drive, localDest);
-                            outputChannel.appendLine(`[SUCCESS] Sync: ${result.copied} file(s) copied. Auto-sync enabled for future installs.`);
-                            outputChannel.show(true);
+                            const errors = Array.isArray(result.errors) ? result.errors : [];
+                            if (errors.length) {
+                                throw new Error(errors.length + ' file(s) could not be synchronized: ' +
+                                    errors.join('; '));
+                            }
+                            operation.success(result.copied + ' file(s) copied to local project' +
+                                (automatic ? ' (auto-sync)' : ''));
+                        } catch (error) {
+                            operation.fail(error);
+                            vscode.window.showErrorMessage('CircuitPython sync failed: ' + error.message);
                         }
+                    };
+                    if (autoSync) {
+                        syncFiles(true);
+                        return;
+                    }
+                    const choice = await vscode.window.showInformationMessage(
+                        'Package installed. Sync files from ' + drive +
+                        ' to local main/ folder? (settings.toml excluded)',
+                        'Sync Now', 'Enable Auto-Sync', 'Skip'
+                    );
+                    if (choice === 'Sync Now') {
+                        syncFiles();
+                    } else if (choice === 'Enable Auto-Sync') {
+                        await vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
+                            .update('autoSyncAfterInstall', true, vscode.ConfigurationTarget.Global);
+                        syncFiles(true);
                     }
                 };
 
