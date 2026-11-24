@@ -1759,79 +1759,79 @@ function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.installPackage', async () => {
             try {
-            if (gDeviceFirmware === 'CircuitPython') {
-                // Resolve a real local destination — never the drive itself
-                let localDest = gDeviceCodeDir;
-                if (localDest && /^[A-Za-z]:[/\\]?$/.test(localDest.replace(/[/\\]+$/, '') + '\\')) {
-                    const wsFolders = vscode.workspace.workspaceFolders;
-                    const wsPath = wsFolders && wsFolders.length > 0 ? wsFolders[0].uri.fsPath : null;
-                    const mainPath = wsPath ? path.join(wsPath, 'main') : null;
-                    localDest = (mainPath && require('fs').existsSync(mainPath)) ? mainPath : wsPath;
-                }
+                if (gDeviceFirmware === 'CircuitPython') {
+                    // Resolve a real local destination — never the drive itself
+                    let localDest = gDeviceCodeDir;
+                    if (localDest && /^[A-Za-z]:[/\\]?$/.test(localDest.replace(/[/\\]+$/, '') + '\\')) {
+                        const wsFolders = vscode.workspace.workspaceFolders;
+                        const wsPath = wsFolders && wsFolders.length > 0 ? wsFolders[0].uri.fsPath : null;
+                        const mainPath = wsPath ? path.join(wsPath, 'main') : null;
+                        localDest = (mainPath && require('fs').existsSync(mainPath)) ? mainPath : wsPath;
+                    }
 
-                const autoSync = vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
-                    .get('autoSyncAfterInstall', false);
+                    const autoSync = vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
+                        .get('autoSyncAfterInstall', false);
 
-                /** Called only after circup exits successfully (code 0). */
-                const afterInstall = async () => {
-                    if (deviceFileExplorer) deviceFileExplorer.refresh();
-                    const drive = findCircuitPyDrive();
-                    if (!drive || !localDest) return;
+                    /** Called only after circup exits successfully (code 0). */
+                    const afterInstall = async () => {
+                        if (deviceFileExplorer) deviceFileExplorer.refresh();
+                        const drive = findCircuitPyDrive();
+                        if (!drive || !localDest) return;
 
-                    const syncFiles = (automatic = false) => {
-                        const operation = createDeviceOperation(outputChannel,
-                            'CircuitPython sync', drive + ' → ' + localDest);
-                        try {
-                            const result = syncFromCircuitPyDrive(drive, localDest);
-                            const errors = Array.isArray(result.errors) ? result.errors : [];
-                            if (errors.length) {
-                                throw new Error(errors.length + ' file(s) could not be synchronized: ' +
-                                    errors.join('; '));
+                        const syncFiles = (automatic = false) => {
+                            const operation = createDeviceOperation(outputChannel,
+                                'CircuitPython sync', drive + ' → ' + localDest);
+                            try {
+                                const result = syncFromCircuitPyDrive(drive, localDest);
+                                const errors = Array.isArray(result.errors) ? result.errors : [];
+                                if (errors.length) {
+                                    throw new Error(errors.length + ' file(s) could not be synchronized: ' +
+                                        errors.join('; '));
+                                }
+                                operation.success(result.copied + ' file(s) copied to local project' +
+                                    (automatic ? ' (auto-sync)' : ''));
+                            } catch (error) {
+                                operation.fail(error);
+                                vscode.window.showErrorMessage('CircuitPython sync failed: ' + error.message);
                             }
-                            operation.success(result.copied + ' file(s) copied to local project' +
-                                (automatic ? ' (auto-sync)' : ''));
-                        } catch (error) {
-                            operation.fail(error);
-                            vscode.window.showErrorMessage('CircuitPython sync failed: ' + error.message);
+                        };
+                        if (autoSync) {
+                            syncFiles(true);
+                            return;
+                        }
+                        const choice = await vscode.window.showInformationMessage(
+                            'Package installed. Sync files from ' + drive +
+                            ' to local main/ folder? (settings.toml excluded)',
+                            'Sync Now', 'Enable Auto-Sync', 'Skip'
+                        );
+                        if (choice === 'Sync Now') {
+                            syncFiles();
+                        } else if (choice === 'Enable Auto-Sync') {
+                            await vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
+                                .update('autoSyncAfterInstall', true, vscode.ConfigurationTarget.Global);
+                            syncFiles(true);
                         }
                     };
-                    if (autoSync) {
-                        syncFiles(true);
+
+                    await openCircuitPythonPackageManager(
+                        gDeviceCodeDir,
+                        runPythonProcess,
+                        findCircuitPyDrive,
+                        getConfigValue,
+                        afterInstall,
+                        outputChannel
+                    );
+                } else {
+                    if (gRemoteDevicePort && gRemoteDevicePort.startsWith('tcp:')) {
+                        vscode.window.showWarningMessage(
+                            'Cannot install packages directly on the simulator because the emulated device\'s filesystem is read-only. ' +
+                            'Please install package libraries locally in a "lib/" folder inside your workspace instead.'
+                        );
                         return;
                     }
-                    const choice = await vscode.window.showInformationMessage(
-                        'Package installed. Sync files from ' + drive +
-                        ' to local main/ folder? (settings.toml excluded)',
-                        'Sync Now', 'Enable Auto-Sync', 'Skip'
-                    );
-                    if (choice === 'Sync Now') {
-                        syncFiles();
-                    } else if (choice === 'Enable Auto-Sync') {
-                        await vscode.workspace.getConfiguration('micropythonStudio.circuitpython')
-                            .update('autoSyncAfterInstall', true, vscode.ConfigurationTarget.Global);
-                        syncFiles(true);
-                    }
-                };
-
-                await openCircuitPythonPackageManager(
-                    gDeviceCodeDir,
-                    runPythonProcess,
-                    findCircuitPyDrive,
-                    getConfigValue,
-                    afterInstall,
-                    outputChannel
-                );
-            } else {
-                if (gRemoteDevicePort && gRemoteDevicePort.startsWith('tcp:')) {
-                    vscode.window.showWarningMessage(
-                        'Cannot install packages directly on the simulator because the emulated device\'s filesystem is read-only. ' +
-                        'Please install package libraries locally in a "lib/" folder inside your workspace instead.'
-                    );
-                    return;
+                    await openPackageManager(context, gRemoteDevicePort, runPythonProcess, isXBeeDevice(), outputChannel);
                 }
-                await openPackageManager(context, gRemoteDevicePort, runPythonProcess, isXBeeDevice(), outputChannel);
-            }
-            // Package-manager callbacks refresh only after a verified successful install.
+                // Package-manager callbacks refresh only after a verified successful install.
             } catch (error) {
                 outputChannel.show(true);
                 outputChannel.appendLine('[ERROR] Package manager setup failed: ' + error.message);
