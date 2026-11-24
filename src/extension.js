@@ -1758,6 +1758,7 @@ function activate(context) {
     // Install package from micropython-lib via mip
     context.subscriptions.push(
         vscode.commands.registerCommand('micropython-ide.installPackage', async () => {
+            try {
             if (gDeviceFirmware === 'CircuitPython') {
                 // Resolve a real local destination — never the drive itself
                 let localDest = gDeviceCodeDir;
@@ -1831,6 +1832,11 @@ function activate(context) {
                 await openPackageManager(context, gRemoteDevicePort, runPythonProcess, isXBeeDevice(), outputChannel);
             }
             // Package-manager callbacks refresh only after a verified successful install.
+            } catch (error) {
+                outputChannel.show(true);
+                outputChannel.appendLine('[ERROR] Package manager setup failed: ' + error.message);
+                vscode.window.showErrorMessage('Package manager setup failed: ' + error.message);
+            }
         })
     );
 
