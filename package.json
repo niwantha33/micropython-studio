@@ -595,7 +595,9 @@
     "vscode:prepublish": "node scripts/generate-build-info.js",
     "lint": "eslint .",
     "pretest": "npm run lint",
-    "test": "node ./test/runTest.js"
+    "test": "node ./test/runTest.js",
+    "qualify": "node test/qualification/launch.cjs",
+    "qualify:quick": "node test/qualification/launch.cjs --quick"
   },
   "devDependencies": {
     "@types/glob": "^8.1.0",

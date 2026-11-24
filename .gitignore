@@ -66,3 +66,6 @@ mpremotesubpro.py.tmp
 _mps_ls.py
 device.cfg
 .python_history
+
+# Generated qualification evidence
+reports/qualification/
