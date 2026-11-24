@@ -34,6 +34,7 @@ const { MemoryAnalyzer } = require('./memoryAnalyzer');
 const { comparePythonSource, isInsideProject } = require('./deviceSourceCheck');
 const { samePort } = require('./devicePortSelection');
 const { fileRemotePath, folderRemotePath } = require('./deviceUploadPaths');
+const { createDeviceOperation } = require('./deviceOperationLog');
 const { openWebReplTerminal } = require('./webreplBridge.js');
 const { startSimulator, stopSimulator } = require('./simulator');
 
@@ -174,7 +175,7 @@ async function _buildRunPortOptions() {
 
 
 
-function runPythonProcess(exe, args, onComplete) {
+function runPythonProcess(exe, args, onComplete, options = {}) {
     const channel = outputChannel;
     channel.show(true);
     channel.appendLine('─'.repeat(50));
@@ -230,8 +231,10 @@ function runPythonProcess(exe, args, onComplete) {
         }
         aiAssistanceProvider?.recordDeviceOutput(fullOutput);
         _notifyAiOnError(fullOutput, args);
-        channel.appendLine(code === 0 ? '[SUCCESS] Task complete.' :
-            `[ERROR] Task failed${code === null ? ' (connection or process error)' : ' with exit code ' + code}.`);
+        if (!options.suppressTaskSummary) {
+            channel.appendLine(code === 0 ? '[SUCCESS] Task complete.' :
+                `[ERROR] Task failed${code === null ? ' (connection or process error)' : ' with exit code ' + code}.`);
+        }
         if (onComplete) onComplete(code);
     })().catch(err => {
         channel.appendLine(`[ERROR] Task failed unexpectedly: ${err.message}`);
@@ -1788,7 +1791,8 @@ function activate(context) {
                     runPythonProcess,
                     findCircuitPyDrive,
                     getConfigValue,
-                    afterInstall
+                    afterInstall,
+                    outputChannel
                 );
             } else {
                 if (gRemoteDevicePort && gRemoteDevicePort.startsWith('tcp:')) {
@@ -1798,9 +1802,9 @@ function activate(context) {
                     );
                     return;
                 }
-                await openPackageManager(context, gRemoteDevicePort, runPythonProcess, isXBeeDevice());
+                await openPackageManager(context, gRemoteDevicePort, runPythonProcess, isXBeeDevice(), outputChannel);
             }
-            setTimeout(() => { if (deviceFileExplorer) deviceFileExplorer.refresh(); }, 5000);
+            // Package-manager callbacks refresh only after a verified successful install.
         })
     );
 
