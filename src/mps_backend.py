@@ -1511,7 +1511,10 @@ print("<<MIP_DONE>>")
             if not actual_source.exists() or not actual_source.is_dir():
                 print(f"Upload failed: No files downloaded to {actual_source}", file=sys.stderr)
                 sys.exit(1)
-            
+            if not any(p.is_file() for p in actual_source.rglob('*')):
+                print(f"Package installation failed: Downloaded folder {actual_source} is empty", file=sys.stderr)
+                sys.exit(1)
+
             sys.stderr.write(f"   Finalizing upload from {actual_source} to {dest}\n")
             conn.put_directory(actual_source, dest)
             print(f"Package '{package}' installed successfully via PC fallback.")
