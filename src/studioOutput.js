@@ -13,4 +13,10 @@ function getStudioOutputChannel() {
     return channel;
 }
 
-module.exports = { getStudioOutputChannel };
+function disposeStudioOutputChannel() {
+    if (!channel) return;
+    try { channel.dispose(); }
+    finally { channel = null; }
+}
+
+module.exports = { getStudioOutputChannel, disposeStudioOutputChannel };
