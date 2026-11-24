@@ -1380,6 +1380,11 @@ def _acquire_port_friendly(python_exe, port, retries=4):
     return False
 
 
+def _has_package_files(directory: Path) -> bool:
+    """A successful download must have at least one regular file to install."""
+    return directory.is_dir() and any(f.is_file() for f in directory.rglob('*'))
+
+
 def cmd_mip(python_exe: str, port: str, package: str, index: str = None, dest: str = '/lib'):
     """Install a package on-device, falling back to PC-side download if needed."""
     sys.stderr.write(f"   Starting mip installation for '{package}' on {port}\n")
@@ -1511,7 +1516,7 @@ print("<<MIP_DONE>>")
             if not actual_source.exists() or not actual_source.is_dir():
                 print(f"Upload failed: No files downloaded to {actual_source}", file=sys.stderr)
                 sys.exit(1)
-            if not any(p.is_file() for p in actual_source.rglob('*')):
+            if not _has_package_files(actual_source):
                 print(f"Package installation failed: Downloaded folder {actual_source} is empty", file=sys.stderr)
                 sys.exit(1)
 
