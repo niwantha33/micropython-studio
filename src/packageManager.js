@@ -3,7 +3,7 @@ const https = require('https');
 const path = require('path');
 const { execFile } = require('child_process');
 const { getDeviceSecret } = require('./deviceSecrets');
-const { getVenvPythonPathFolder, getVenvPythonPath } = require('./commonFxn');
+const { getVenvPythonPathFolder, getVenvPythonPath, redactDevicePort } = require('./commonFxn');
 const wsQueue = require('./wsQueue');
 const { createDeviceOperation, waitForProcess, assertSuccessfulExit } = require('./deviceOperationLog');
 
@@ -144,7 +144,7 @@ async function openPackageManager(context, currentDevicePort, runProcess, isXBee
                     'Install MicroPython Package'
                 );
                 assertSuccessfulExit(code, 'Package ' + selected.pkgName);
-                operation.success('Installed ' + selected.pkgName + ' on ' + currentDevicePort);
+                operation.success('Installed ' + selected.pkgName + ' on ' + redactDevicePort(currentDevicePort));
             } catch (error) {
                 operation.fail(error);
                 vscode.window.showErrorMessage('Package installation failed: ' + error.message);
