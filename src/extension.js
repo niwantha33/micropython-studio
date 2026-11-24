@@ -1007,58 +1007,61 @@ function activate(context) {
      * @param {string}   localRoot    Strip this prefix when computing dest relative path
      */
     async function cpUploadFiles(localFiles, localRoot) {
-        // ── Path 1: USB drive ─────────────────────────────────────────────────
-        const drive = findCircuitPyDrive();
-        if (drive) {
-            const info = readCircuitPyBootInfo(drive);
-            const boardLabel = info ? info.board : drive;
-            let copied = 0;
-            for (const f of localFiles) {
-                try {
-                    const dest = copyToCircuitPyDrive(drive, f, localRoot);
-                    outputChannel.appendLine(`[UPLOAD] ${path.relative(localRoot, f)} → ${dest}`);
-                    copied++;
-                } catch (err) {
-                    outputChannel.appendLine(`[ERROR] Failed to copy ${f}: ${err.message}`);
+        const count = Array.isArray(localFiles) ? localFiles.length : 0;
+        const operation = createDeviceOperation(outputChannel, 'File upload',
+            count + ' CircuitPython file(s) from ' + String(localRoot || '(no source directory)'));
+        let completed = 0;
+        try {
+            if (!localRoot || !fs.existsSync(localRoot)) {
+                throw new Error('Local source directory does not exist: ' + localRoot);
+            }
+            if (!count) throw new Error('No local files selected for upload.');
+
+            const drive = findCircuitPyDrive();
+            if (drive) {
+                for (const file of localFiles) {
+                    const dest = copyToCircuitPyDrive(drive, file, localRoot);
+                    completed++;
+                    operation.progress(path.relative(localRoot, file) + ' → ' + dest);
                 }
+                if (deviceFileExplorer) deviceFileExplorer.refresh();
+                operation.success(completed + '/' + count + ' file(s) copied to CIRCUITPY ' + drive);
+                return true;
             }
-            outputChannel.show(true);
-            outputChannel.appendLine(`[SUCCESS] Copied ${copied} file(s) to ${boardLabel} (${drive})`);
-            return;
-        }
 
-        // ── Path 2: Web Workflow (HTTP) ───────────────────────────────────────
-        const cfgPath = path.join(path.dirname(localRoot), 'device.cfg');
-        const wwIp = await getConfigValue(cfgPath, 'remote', 'webworkflow_ip').catch(() => '');
-        const wwPass = await getDeviceSecret(cfgPath, 'webworkflow_password').catch(() => '');
-        const wwPort = parseInt(await getConfigValue(cfgPath, 'remote', 'webworkflow_port').catch(() => '80') || '80', 10);
-
-        if (wwIp && wwPass) {
+            // CircuitPython Web Workflow is the fallback only when no USB drive
+            // is mounted. Never report success on a failed HTTP file transfer.
+            const cfgPath = gDeviceConfigPath || path.join(path.dirname(localRoot), 'device.cfg');
+            const wwIp = await getConfigValue(cfgPath, 'remote', 'webworkflow_ip').catch(() => '');
+            const wwPass = await getDeviceSecret(cfgPath, 'webworkflow_password').catch(() => '');
+            const wwPort = parseInt(await getConfigValue(cfgPath, 'remote', 'webworkflow_port')
+                .catch(() => '80') || '80', 10);
+            if (!wwIp || !wwPass) {
+                throw new Error('CIRCUITPY drive not found and Web Workflow is not configured.');
+            }
             const { putFile, makeDir } = require('./circuitpyWebWorkflow');
-            const fsSync = require('fs');
-            outputChannel.show(true);
-            outputChannel.appendLine(`🌐 USB drive not found — uploading via Web Workflow to ${wwIp}:${wwPort}`);
-            let ok = 0;
-            for (const f of localFiles) {
-                const rel = path.relative(localRoot, f).replace(/\\/g, '/');
+            for (const file of localFiles) {
+                const rel = path.relative(localRoot, file).replace(/\\/g, '/');
+                if (!rel || rel === '..' || rel.startsWith('../') || path.isAbsolute(rel)) {
+                    throw new Error('Selected file is outside the configured source directory: ' + file);
+                }
                 const remotePath = '/' + rel;
-                // Ensure parent directory exists
-                const remoteDir = remotePath.substring(0, remotePath.lastIndexOf('/'));
-                if (remoteDir && remoteDir !== '/') await makeDir(wwIp, wwPass, remoteDir, wwPort);
-                const content = fsSync.readFileSync(f);
+                const remoteDir = path.posix.dirname(remotePath);
+                if (remoteDir !== '/') await makeDir(wwIp, wwPass, remoteDir, wwPort);
+                const content = fs.readFileSync(file);
                 const success = await putFile(wwIp, wwPass, remotePath, content, wwPort);
-                outputChannel.appendLine(success ? `[UPLOAD] ${remotePath}` : `[ERROR] Failed: ${remotePath}`);
-                if (success) ok++;
+                if (!success) throw new Error('Device did not confirm upload of ' + remotePath);
+                completed++;
+                operation.progress(file + ' → ' + remotePath);
             }
-            outputChannel.appendLine(`[SUCCESS] Web Workflow upload: ${ok}/${localFiles.length} file(s)`);
-            return;
+            if (deviceFileExplorer) deviceFileExplorer.refresh();
+            operation.success(completed + '/' + count + ' file(s) uploaded via Web Workflow to ' + wwIp);
+            return true;
+        } catch (error) {
+            operation.fail(error.message + ' (' + completed + '/' + count + ' file(s) completed)');
+            vscode.window.showErrorMessage('CircuitPython upload failed: ' + error.message);
+            return false;
         }
-
-        // ── No path available ─────────────────────────────────────────────────
-        vscode.window.showErrorMessage(
-            'CircuitPython drive (CIRCUITPY) not found and no Web Workflow configured. ' +
-            'Connect via USB or configure Wi-Fi in the Dashboard.'
-        );
     }
 
     /**
