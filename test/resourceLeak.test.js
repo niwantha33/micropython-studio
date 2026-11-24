@@ -44,7 +44,8 @@ suite('Resource leak regression', () => {
 
     test('subprocess helpers reuse the extension-wide output channel', () => {
         const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'extension.js'), 'utf8');
-        assert.ok(source.includes("const outputChannel = require('./studioOutput').getStudioOutputChannel();"));
+        assert.ok(source.includes("let outputChannel = require('./studioOutput').getStudioOutputChannel();"));
+        assert.ok(source.includes("require('./studioOutput').disposeStudioOutputChannel()"));
         assert.ok(!source.includes("createOutputChannel('MicroPython Studio')"));
         assert.ok(source.includes('const channel = outputChannel;'));
     });
