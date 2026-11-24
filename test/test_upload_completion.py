@@ -44,6 +44,12 @@ class UploadCompletionTests(unittest.TestCase):
         device._exec_raw_no_exit = lambda code, **kwargs: (0, reply, b'')
         return device
 
+    def test_package_logs_never_expose_webrepl_password(self):
+        self.assertEqual(
+            self.backend._safe_package_port_label('ws:192.168.1.2,private-secret'),
+            'ws:192.168.1.2 [credential hidden]')
+        self.assertEqual(self.backend._safe_package_port_label('COM7'), 'COM7')
+
     def test_package_download_must_contain_actual_files(self):
         package_dir = self.root / 'lib'
         package_dir.mkdir()
