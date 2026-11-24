@@ -5,7 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
-    relativeInside, remoteJoin, resolveProjectCodeDir, fileRemotePath, folderRemotePath
+    relativeInside, remoteJoin, resolveProjectCodeDir, fileRemotePath, folderRemotePath,
+    countLocalUploadFiles
 } = require('../src/deviceUploadPaths');
 const { canUseSharedSerial } = require('../src/deviceFileExplorer');
 
@@ -19,12 +20,23 @@ suite('MicroPython upload source and destination paths', () => {
             fs.writeFileSync(path.join(main, 'main.py'), 'print(1)\n');
             fs.writeFileSync(path.join(lib, 'driver.py'), 'print(2)\n');
             assert.strictEqual(resolveProjectCodeDir(root, main), main);
+            assert.strictEqual(countLocalUploadFiles(main), 2);
             assert.strictEqual(fileRemotePath(path.join(main, 'main.py'), main), '/main.py');
             assert.strictEqual(fileRemotePath(path.join(lib, 'driver.py'), main), '/lib/driver.py');
             assert.strictEqual(folderRemotePath(main, main), '/');
             assert.strictEqual(folderRemotePath(lib, main), '/lib');
             assert.strictEqual(folderRemotePath(main, main, '/flash'), '/flash');
             assert.strictEqual(fileRemotePath(path.join(lib, 'driver.py'), main, '/flash'), '/flash/lib/driver.py');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    test('empty source folders cannot be reported as completed uploads', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mps-upload-empty-'));
+        try {
+            assert.strictEqual(countLocalUploadFiles(root), 0);
+            assert.throws(() => countLocalUploadFiles(path.join(root, 'missing')));
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }
