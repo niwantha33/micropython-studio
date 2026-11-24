@@ -72,4 +72,24 @@ function folderRemotePath(folderPath, codeRoot, deviceRoot = '/') {
     return remoteJoin(deviceRoot, relative === null ? api.basename(folderPath) : relative);
 }
 
-module.exports = { relativeInside, remoteJoin, resolveProjectCodeDir, fileRemotePath, folderRemotePath };
+/** Avoid treating an empty source folder as a successful device upload. */
+function countLocalUploadFiles(folder, fileSystem = fs) {
+    if (!folder || !fileSystem.statSync(folder).isDirectory()) {
+        throw new Error('Upload source must be an existing folder: ' + folder);
+    }
+    let count = 0;
+    const walk = directory => {
+        for (const item of fileSystem.readdirSync(directory, { withFileTypes: true })) {
+            const full = path.join(directory, item.name);
+            if (item.isDirectory()) walk(full);
+            else count++;
+        }
+    };
+    walk(folder);
+    return count;
+}
+
+module.exports = {
+    relativeInside, remoteJoin, resolveProjectCodeDir, fileRemotePath,
+    folderRemotePath, countLocalUploadFiles
+};
