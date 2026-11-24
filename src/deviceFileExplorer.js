@@ -269,7 +269,7 @@ class DeviceFileExplorerProvider {
             }
         };
 
-        return wsQueue.run(lsOp, 'List Files', true);
+        return wsQueue.run(lsOp, 'List Files', true, this._port);
     }
 
     /**
@@ -471,17 +471,19 @@ async function readDeviceFile(port, deviceFilePath) {
         },
         async () => {
             try {
-                let content;
-                const connectionManager = require('./connectionManager');
-                if (canUseSharedSerial(connectionManager, port)) {
-                    content = await wsQueue.run(() => connectionManager.catFile(deviceFilePath), 'Read File', true);
-                } else {
+                // Choose the transport after prior uploads/reset operations
+                // have finished and restored the shared REPL, not at click time.
+                const content = await wsQueue.run(async () => {
+                    const connectionManager = require('./connectionManager');
+                    if (canUseSharedSerial(connectionManager, port)) {
+                        return connectionManager.catFile(deviceFilePath);
+                    }
                     const scriptPath = pathMod.join(__dirname, 'mps_backend.py');
                     const args = [scriptPath, "--python", venvPython, "cat", "--port", port, "--path", deviceFilePath];
-                    const execOp = () => execFileAsync(venvPython, args, { timeout: 15000, maxBuffer: 1024 * 1024, windowsHide: true });
-                    const { stdout } = await wsQueue.run(execOp);
-                    content = Buffer.from(stdout);
-                }
+                    const { stdout } = await execFileAsync(venvPython, args,
+                        { timeout: 15000, maxBuffer: 1024 * 1024, windowsHide: true });
+                    return Buffer.from(stdout);
+                }, 'Read File', true, port);
                 const fileName = deviceFilePath.split('/').pop();
                 const lang = fileName.endsWith('.py') ? 'python'
                            : fileName.endsWith('.json') ? 'json' : 'plaintext';
