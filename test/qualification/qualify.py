@@ -69,6 +69,17 @@ def feature_status(required, results):
     return "NOT RUN"
 
 
+def js_suite_results(files, records):
+    grouped = {name: [] for name in files}
+    for record in records:
+        if record.get("file") in grouped:
+            grouped[record["file"]].append(record)
+    return {name: {"status": "FAIL" if any(r["status"] == "fail" for r in rows)
+                   else "PASS" if rows and all(r["status"] == "pass" for r in rows)
+                   else "NOT RUN", "tests": rows}
+            for name, rows in grouped.items()}
+
+
 def write_report(data):
     REPORT.mkdir(parents=True, exist_ok=True)
     (REPORT / "report.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -119,6 +130,7 @@ def main():
                 if args.quick else set(python_files))
     for filename in sorted(selected):
         results[filename] = python_job(filename)
+    js_results = {}
     if not args.quick:
         # npm test invokes lint and the real VS Code extension host.
         # npm is a .cmd on Windows; use the Node CLI path supplied by npm,
@@ -130,19 +142,31 @@ def main():
             argv = ["npm.cmd" if os.name == "nt" else "npm", "test"]
         if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
             argv = ["xvfb-run", "-a", *argv]
-        results["VS Code suite"] = run_job("VS Code suite", argv, timeout=600)
+        REPORT.mkdir(parents=True, exist_ok=True)
+        result_file = REPORT / "js-results.json"
+        result_file.unlink(missing_ok=True)
+        env = dict(os.environ, MPS_QUALIFY_JS_RESULTS=str(result_file))
+        results["VS Code suite"] = run_job("VS Code suite", argv, timeout=600, env=env)
+        if result_file.exists():
+            try:
+                js_results = js_suite_results(js_files, json.loads(result_file.read_text(encoding="utf-8")))
+            except (ValueError, OSError, TypeError, KeyError):
+                results["VS Code suite"]["status"] = "ERROR"
+        if not js_results or any(r["status"] != "PASS" for r in js_results.values()):
+            if results["VS Code suite"]["status"] == "PASS":
+                results["VS Code suite"]["status"] = "ERROR"
     rows = []
     for f in features:
-        evidence = f["python"] + (["VS Code suite"] if f["js"] else [])
+        evidence = f["python"] + f["js"]
         rows.append({"id": f["id"], "name": f["name"],
-                     "status": feature_status(evidence, results),
+                     "status": feature_status(evidence, {**results, **js_results}),
                      "affected": f["id"] in affected,
                      "evidence": f["python"] + f["js"]})
     failed = any(j["status"] != "PASS" for j in results.values())
     data = {"mode": "quick" if args.quick else "full", "commit": commit,
             "working_tree": "dirty" if dirty else "clean", "base": args.base,
             "changes": changes, "status": "FAIL" if failed else "AUTOMATED CHECKS PASS",
-            "features": rows, "jobs": list(results.values())}
+            "features": rows, "jobs": list(results.values()), "js_results": js_results}
     write_report(data)
     print("Report:", REPORT / "index.html")
     return int(failed)

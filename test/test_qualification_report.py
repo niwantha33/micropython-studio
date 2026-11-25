@@ -25,3 +25,11 @@ class QualificationReportTests(unittest.TestCase):
         with patch.object(runner, "git", side_effect=["src/new.js", "", ""]):
             _, affected = runner.impact("base", features)
         self.assertEqual(affected, {"A", "B"})
+
+    def test_js_evidence_is_per_file(self):
+        records = [{"file": "a.test.js", "status": "pass"},
+                   {"file": "b.test.js", "status": "fail"}]
+        result = runner.js_suite_results(["a.test.js", "b.test.js", "c.test.js"], records)
+        self.assertEqual(result["a.test.js"]["status"], "PASS")
+        self.assertEqual(result["b.test.js"]["status"], "FAIL")
+        self.assertEqual(result["c.test.js"]["status"], "NOT RUN")

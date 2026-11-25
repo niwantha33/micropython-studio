@@ -157,7 +157,10 @@ suite('MicroPython debugger adapter selection and persistence', () => {
     test('native debugger and legacy path use the shared saved adapter', async () => {
         const { resolveDebugPort } = require('../src/debugProjectConfig');
         fs.appendFileSync(cfg, '[debug]\nadapter_port = "COM13"\n');
-        const selected = await resolveDebugPort({ uri: { fsPath: code } }, 'COM5');
+        const selected = await resolveDebugPort({ uri: { fsPath: code } }, 'COM5', '', false, {
+            devices: dualCdc,
+            showQuickPick: () => { throw new Error('confirmed adapter must not prompt'); }
+        });
         assert.strictEqual(selected, 'COM13');
     });
 });
