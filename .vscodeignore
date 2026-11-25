@@ -62,3 +62,6 @@ todo.md
 /*.html
 docs/**
 .github/**
+
+# Local qualification reports
+reports/**

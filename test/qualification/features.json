@@ -1,0 +1,247 @@
+{
+  "schema": 1,
+  "note": "Initial evidence mapping; untested behaviour is not approved.",
+  "features": [
+    {
+      "id": "SER",
+      "name": "Serial / Shell / Stop",
+      "python": [
+        "test_serial_streaming.py",
+        "test_virtual_serial_baseline.py",
+        "test_repl_reset_ownership.py"
+      ],
+      "js": [
+        "serialStreamingReliability.test.js",
+        "shellLiveOutput.test.js",
+        "stopExecution.test.js",
+        "replStability.test.js",
+        "serialFileHandoff.test.js",
+        "serialForegroundDebug.test.js",
+        "replResetOwnership.test.js",
+        "runTargetLifecycle.test.js"
+      ],
+      "paths": [
+        "src/connectionManager.js",
+        "src/deviceTerminal.js",
+        "src/mpy_daemon.py",
+        "src/stopExecution.js",
+        "src/mps_backend.py"
+      ],
+      "critical": true
+    },
+    {
+      "id": "DBG",
+      "name": "Debugger / breakpoints",
+      "python": [
+        "test_debug_bridge_stream.py",
+        "test_virtual_debug_baseline.py"
+      ],
+      "js": [
+        "breakpointClear.test.js",
+        "breakpointManager.test.js",
+        "debugAdapterConfig.test.js",
+        "debugTransportLifecycle.test.js",
+        "nativeDapWorkflow.test.js",
+        "frozenDebuggerConnectOnly.test.js",
+        "debugFirmwareSafety.test.js"
+      ],
+      "paths": [
+        "src/dbg_bridge.py",
+        "src/mpyDebugger.js",
+        "src/nativeDebugger.js",
+        "src/debugProjectConfig.js"
+      ],
+      "critical": true
+    },
+    {
+      "id": "FILE",
+      "name": "Files / packages",
+      "python": [
+        "test_upload_completion.py"
+      ],
+      "js": [
+        "deviceUploadPaths.test.js",
+        "deviceOperationCompletion.test.js",
+        "mipExitStatus.test.js",
+        "processStatus.test.js"
+      ],
+      "paths": [
+        "src/mps_backend.py",
+        "src/connectionManager.js"
+      ],
+      "critical": true
+    },
+    {
+      "id": "CFG",
+      "name": "Device settings",
+      "python": [],
+      "js": [
+        "devicePortPersistence.test.js",
+        "debugAdapterConfig.test.js"
+      ],
+      "paths": [
+        "src/extension.js",
+        "src/debugProjectConfig.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "DASH",
+      "name": "Dashboard / connectivity",
+      "python": [],
+      "js": [
+        "pinoutResolver.test.js",
+        "wifiScan.test.js",
+        "webreplConnection.test.js",
+        "webreplSession.test.js"
+      ],
+      "paths": [
+        "src/extension.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "MEM",
+      "name": "Memory / GC",
+      "python": [],
+      "js": [
+        "nativeDebuggerMemory.test.js",
+        "debugDetailsGcSourceSync.test.js"
+      ],
+      "paths": [
+        "src/nativeDebugger.js",
+        "src/mpyDebugger.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "RTA",
+      "name": "Runtime analysis",
+      "python": [],
+      "js": [
+        "rtaLiveNameReply.test.js",
+        "rtaSymbolPacing.test.js",
+        "rtaTracePump.test.js",
+        "rtaViewer.test.js"
+      ],
+      "paths": [
+        "src/dbg_bridge.py",
+        "src/mpyDebugger.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "FW",
+      "name": "Firmware workflow",
+      "python": [],
+      "js": [
+        "simpleFirmwareDownload.test.js",
+        "debugFirmwareSafety.test.js"
+      ],
+      "paths": [
+        "src/extension.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "AI",
+      "name": "Private AI",
+      "python": [],
+      "js": [
+        "localAiReliability.test.js"
+      ],
+      "paths": [
+        "src/extension.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "SEC",
+      "name": "Security / lifecycle",
+      "python": [
+        "test_safe_extract.py"
+      ],
+      "js": [
+        "safeCondition.test.js",
+        "securityHardening.test.js",
+        "resourceLeak.test.js",
+        "auditRegression.test.js"
+      ],
+      "paths": [
+        "src/mps_backend.py",
+        "src/extension.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "PKG",
+      "name": "Extension integration / metadata",
+      "python": [],
+      "js": [
+        "extension.test.js",
+        "buildIdentity.test.js",
+        "discoverability.test.js",
+        "siteDocumentation.test.js"
+      ],
+      "paths": [
+        "package.json",
+        "src/extension.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "MUT",
+      "name": "Mutation detection",
+      "python": [
+        "test_mutation_baseline.py"
+      ],
+      "js": [],
+      "paths": [
+        "src/mpy_daemon.py",
+        "src/dbg_bridge.py"
+      ],
+      "critical": false
+    },
+    {
+      "id": "HW",
+      "name": "Physical hardware qualification",
+      "python": [],
+      "js": [],
+      "paths": [],
+      "critical": false
+    },
+    {
+      "id": "PROJECT",
+      "name": "Project creation / bytecode / flowchart",
+      "python": [],
+      "js": [],
+      "paths": [
+        "src/extension.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "SIM",
+      "name": "User-facing simulator",
+      "python": [],
+      "js": [],
+      "paths": [
+        "src/extension.js"
+      ],
+      "critical": false
+    },
+    {
+      "id": "QUAL",
+      "name": "Qualification infrastructure",
+      "python": [
+        "test_qualification_report.py"
+      ],
+      "js": [],
+      "paths": [
+        "test/qualification/qualify.py",
+        "test/qualification/launch.cjs"
+      ],
+      "critical": true
+    }
+  ]
+}
