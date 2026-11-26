@@ -639,7 +639,8 @@
     "pretest": "npm run lint",
     "test": "node ./test/runTest.js",
     "qualify": "node test/qualification/launch.cjs",
-    "qualify:quick": "node test/qualification/launch.cjs --quick"
+    "qualify:quick": "node test/qualification/launch.cjs --quick",
+    "qualify:hardware": "node test/qualification/launch-hardware.cjs"
   },
   "devDependencies": {
     "@types/glob": "^8.1.0",

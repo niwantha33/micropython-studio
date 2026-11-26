@@ -1,0 +1,18 @@
+{
+  "board": "rp2350",
+  "cycles": 100,
+  "identity": "micropython\r\n(sysname='rp2', nodename='rp2', release='1.30.0-preview', version='v1.30.0-preview.105.ga129b2fba1.dirty on 2026-11-16 (GNU 14.2.1 MinSizeRel)', machine='Raspberry Pi Pico 2 W with RP2350')",
+  "source_commit": "09bd9d5d43308d93c9923a2271767e994f3baf51",
+  "source_working_tree": "dirty",
+  "note": "Provisional single Windows observation; not a clean release qualification.",
+  "seconds": {
+    "HIL-001": 0.064,
+    "HIL-003": 0.147,
+    "HIL-004": 0.857,
+    "HIL-005": 16.005,
+    "HIL-007": 2.396,
+    "HIL-008": 1.463,
+    "HIL-009": 3.254,
+    "HIL-010": 2.039
+  }
+}
