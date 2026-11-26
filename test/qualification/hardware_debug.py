@@ -37,7 +37,7 @@ finally:
         return {"status": "UNAVAILABLE", "error": str(exc)}
 
 
-def probe(root, port):
+def probe(root, port, observe=None):
     evidence = []
     for cycle in range(1, 4):
         phase = 'open'
@@ -75,10 +75,16 @@ def probe(root, port):
         primary_failure = False
         try:
             wait(lambda e: e["evt"] == "open")
+            if observe:
+                phase = "live DTR observation"
+                observe(cycle, "open-before-write")
             phase = "pump_info"
             send("pump_info")
             reply = wait(lambda e: e["evt"] == "reply" and e.get("text", "").startswith("pump_info="))
             evidence.append(reply["text"])
+            if observe:
+                phase = "live receive counters"
+                observe(cycle, "after-pump-info")
             print(f"  Debug cycle {cycle}/3: {reply['text']}", flush=True)
             phase = "rta_off acknowledgement"
             send("rta_off")

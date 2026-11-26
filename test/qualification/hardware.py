@@ -97,7 +97,12 @@ def main():
     parser.add_argument("--debug-execution", action="store_true", help="Run temporary breakpoint and RTA fixture")
     parser.add_argument("--compare-baseline", action="store_true", help="Compare matching measured RP2350 timing baseline")
     parser.add_argument("--debug-first", action="store_true", help="Probe debugger immediately after MCU identification, before REPL stress tests")
+    parser.add_argument("--debug-live-diagnostics", action="store_true", help="Read pump state over REPL while debug CDC is open")
     args = parser.parse_args()
+    if args.debug_live_diagnostics and not args.debug_port:
+        parser.error("--debug-live-diagnostics requires --debug-port")
+    if args.debug_live_diagnostics and args.compare_baseline:
+        parser.error("Live debug diagnostics change timing workload")
     if args.debug_first and not args.debug_port:
         parser.error("--debug-first requires --debug-port")
     if args.debug_first and args.compare_baseline:
@@ -166,7 +171,11 @@ def main():
             diagnostics = report.setdefault("debug_diagnostics", {})
             diagnostics["before"] = pump_snapshot(session)
             try:
-                return probe(ROOT, args.debug_port)
+                def observe(cycle, phase):
+                    snapshot = pump_snapshot(session)
+                    diagnostics.setdefault("live", []).append({"cycle": cycle, "phase": phase, **snapshot})
+                    print("  Live debug state: " + json.dumps(diagnostics["live"][-1]), flush=True)
+                return probe(ROOT, args.debug_port, observe=observe if args.debug_live_diagnostics else None)
             finally:
                 diagnostics["after"] = pump_snapshot(session)
                 print("  Debug diagnostics: " + json.dumps(diagnostics), flush=True)
