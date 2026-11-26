@@ -14,6 +14,8 @@ class Bridge:
     def __init__(self, root, port):
         self.events = queue.Queue(maxsize=8192)
         self.overflow = threading.Event()
+        self.eof = threading.Event()
+        self.history = []
         self.proc = subprocess.Popen(
             [sys.executable, "-u", str(root / "src" / "dbg_bridge.py"), port],
             cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -29,7 +31,7 @@ class Bridge:
                 except queue.Full:
                     self.overflow.set()
         finally:
-            self.overflow.set()
+            self.eof.set()
 
     def send(self, op, **fields):
         self.proc.stdin.write(json.dumps(dict(op=op, **fields)) + "\n")
@@ -43,14 +45,19 @@ class Bridge:
             try:
                 event = self.events.get(timeout=min(.1, max(.001, deadline-time.monotonic())))
             except queue.Empty:
+                if self.eof.is_set():
+                    raise RuntimeError("Debug bridge exited; events=" + repr(self.history))
                 continue
+            self.history.append(event)
+            if len(self.history) > 30:
+                self.history.pop(0)
             if event["evt"] in ("error", "transport_lost", "exception"):
                 raise RuntimeError(str(event))
             if event["evt"] == "reply" and event.get("text", "").startswith("err:"):
                 raise RuntimeError(event["text"])
             if predicate(event):
                 return event
-        raise TimeoutError("Expected physical debugger event not received")
+        raise TimeoutError("Expected physical debugger event not received; events=" + repr(self.history))
 
     def reply(self, op, prefix, **fields):
         self.send(op, **fields)
@@ -59,7 +66,10 @@ class Bridge:
 
     def close(self):
         if self.proc.poll() is None:
-            self.send("quit")
+            try:
+                self.send("quit")
+            except BrokenPipeError:
+                pass
         self.proc.stdin.close()
         try:
             self.proc.wait(timeout=5)
@@ -71,11 +81,25 @@ class Bridge:
         self.proc.stdout.close()
         if self.proc.returncode:
             raise RuntimeError("Debugger bridge exited unsuccessfully")
+        self.wait(lambda event: event["evt"] == "closed", timeout=1)
 
 
 def require(ok, reason):
     if not ok:
         raise RuntimeError(reason)
+
+
+def finish_fixture(bridge, session, slot, running):
+    """Clear owned breakpoint, resume finite code and await completion.
+    No concurrent Ctrl+C: the two USB interfaces have independent ordering.
+    """
+    if slot is not None:
+        bridge.reply("clear_bp", "cleared bp ", slot=slot)
+    if running:
+        bridge.send("continue")
+        result = session.event("terminal_run_finished")
+        require(result.get("success"), "Fixture did not finish after Continue: " + repr(result))
+    bridge.reply("pump_info", "pump_info=")
 
 
 def exercise(root, port, session, check):
@@ -198,19 +222,29 @@ def exercise(root, port, session, check):
                 bridge.reply("rta_off", "RTA trace disabled")
         check("HIL-015 physical RTA events", rta)
     finally:
-        # Resume only our explicitly started fixture; never resume on passive attach.
-        try:
-            if bridge:
-                if slot is not None:
-                    bridge.reply("clear_bp", "cleared bp ", slot=slot)
-                if running:
-                    bridge.send("continue")
-                    session.input(b"\x03")
-                    session.event("terminal_run_finished")
-        finally:
+        # Preserve primary failure and record cleanup failures separately.
+        # Avoid deleting a module whose function could still be executing.
+        primary = sys.exc_info()[1]
+        errors = []
+        safe = bridge is None and not running
+        if bridge:
             try:
-                if bridge:
-                    bridge.close()
-            finally:
+                finish_fixture(bridge, session, slot, running)
+                safe = True
+            except Exception as exc:
+                errors.append("fixture finish: " + str(exc))
+            try:
+                bridge.close()
+            except Exception as exc:
+                errors.append("bridge close: " + str(exc))
+        if safe:
+            try:
                 session.code("import os,sys\nsys.modules.pop("+repr(module)+",None)\n"
                              "globals().pop("+repr(module)+",None)\nos.remove("+repr(path)+")")
+            except Exception as exc:
+                errors.append("fixture removal: " + str(exc))
+        else:
+            errors.append("fixture retained for safety: " + path)
+        if errors:
+            raise RuntimeError(("primary: " + str(primary) + "; " if primary else "") +
+                               "cleanup: " + "; ".join(errors)) from primary

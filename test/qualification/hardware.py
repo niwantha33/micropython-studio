@@ -291,6 +291,7 @@ def main():
         if args.debug_execution:
             from hardware_execution import exercise
             exercise(ROOT, args.debug_port, session, check)
+            check("HIL-019 post-execution debugger reattach", debug_probe)
         if args.compare_baseline:
             from hardware_performance import compare
             report["performance"] = compare(report, ROOT / "test" / "baselines" / "hardware-rp2350.json")
