@@ -81,10 +81,9 @@ def require(ok, reason):
 def exercise(root, port, session, check):
     module = "mpshil_" + uuid.uuid4().hex[:12]
     path = "/" + module + ".py"
-    # The sentinel local is already initialized at the breakpoint line.
+    # Argument is initialized on frame entry, independently of line mapping.
     source = ("HIL_GLOBAL = 73419\n"
-              "def worker():\n"
-              "    local = 17321\n"
+              "def worker(local):\n"
               "    local += 1\n"
               "    local += 2\n"
               "    return local\n")
@@ -95,22 +94,24 @@ def exercise(root, port, session, check):
     running = False
     paused = False
     slot = None
+    fun = None
+    ip = None
     try:
         session.code("import " + module)
         bridge = Bridge(root, port)
         bridge.wait(lambda e: e["evt"] == "open")
         bridge.reply("pump_info", "pump_info=")
         def breakpoint():
-            nonlocal slot, running, paused
-            reply = bridge.reply("set_bp", "bp ", module=module, func="worker", line=4)
+            nonlocal slot, running, paused, fun, ip
+            reply = bridge.reply("set_bp", "bp ", module=module, func="worker", line=3)
             match = re.fullmatch(r"bp (\d+) @ " + re.escape(module) +
-                                 r"\.worker:4 ip=(\d+) fun=(\d+)", reply)
+                                 r"\.worker:3 ip=(\d+) fun=(\d+)", reply)
             require(match is not None, "Unexpected registration: " + reply)
             slot, ip, fun = map(int, match.groups())
             require(slot < 256 and fun > 0, "Invalid breakpoint identity")
             session.output.clear()
             running = True
-            session.send(action="run_in_terminal", code="print('HIL_DONE', "+module+".worker())")
+            session.send(action="run_in_terminal", code="print('HIL_DONE', "+module+".worker(17321))")
             session.event("terminal_run_started")
             hit = bridge.wait(lambda e: e["evt"] == "bp_hit")
             paused = True
@@ -120,12 +121,23 @@ def exercise(root, port, session, check):
 
         def variables():
             local = bridge.reply("locals", "depth=")
-            state = ast.literal_eval(local.split("state=", 1)[1])
-            require(17321 in state, "Expected initialized local missing")
+            # Preserve exact wire evidence even on failure. A firmware may
+            # return repr strings rather than native Python values.
+            stack = bridge.reply("call_stack", "stack=")
             global_reply = bridge.reply("globals", "depth=")
-            values = ast.literal_eval(global_reply.split("globals=", 1)[1])
-            require(str(values.get("HIL_GLOBAL")) == "73419", "Expected module global missing")
-            return {"locals": local, "globals": global_reply}
+            evidence = {"locals": local, "globals": global_reply, "stack": stack}
+            try:
+                state = ast.literal_eval(local.split("state=", 1)[1])
+                require(isinstance(state, (list, tuple)), "Unexpected local state type")
+                require(any(type(v) is int and v == 17321 or
+                            type(v) is str and v == "17321" for v in state),
+                        "Expected argument missing")
+                values = ast.literal_eval(global_reply.split("globals=", 1)[1])
+                require(isinstance(values, dict) and str(values.get("HIL_GLOBAL")) == "73419",
+                        "Expected module global missing")
+            except (ValueError, SyntaxError, IndexError, RuntimeError) as exc:
+                raise RuntimeError(str(exc) + "; raw replies=" + json.dumps(evidence)) from exc
+            return evidence
         check("HIL-013 paused variables", variables)
 
         def step_continue():
@@ -133,7 +145,9 @@ def exercise(root, port, session, check):
             bridge.send("step")
             hit = bridge.wait(lambda e: e["evt"] == "bp_hit")
             local = bridge.reply("locals", "depth=")
-            require("state=" in local, "No paused frame after step")
+            require(hit.get("fun") == fun and hit.get("ip") != ip,
+                    "Step did not advance in fixture: " + repr(hit))
+            require("state=" in local, "No paused frame after step: " + local)
             bridge.reply("clear_bp", "cleared bp ", slot=slot)
             slot = None
             bridge.send("continue")
@@ -152,7 +166,7 @@ def exercise(root, port, session, check):
             try:
                 running = True
                 session.output.clear()
-                session.send(action="run_in_terminal", code="for _ in range(5):\n "+module+".worker()\nprint('HIL_RTA_DONE')")
+                session.send(action="run_in_terminal", code="for _ in range(5):\n "+module+".worker(17321)\nprint('HIL_RTA_DONE')")
                 session.event("terminal_run_started")
                 entries, durations = [], []
                 deadline = time.monotonic()+10
