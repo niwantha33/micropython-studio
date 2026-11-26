@@ -68,7 +68,7 @@ function parseDebuggerReply(text, localNames = []) {
         }
         for (const part of entries) {
             const match = part.match(/^(['"])([^'"]+)\1\s*:\s*([\s\S]+)$/);
-            if (!match) continue;
+            if (!match) return { kind: 'globals', values: [], diagnostic: 'Malformed firmware globals entry.' };
             values.push({ name: match[2], value: match[3], variablesReference: 0 });
         }
         return { kind: 'globals', values };

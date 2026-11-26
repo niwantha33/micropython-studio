@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { buildProbeScript, parseMemorySample, summarizeMemory } = require('../src/memoryProbe');
-const { splitReprEntries, parseDebuggerReply } = require('../src/nativeDebugParser');
+const { splitReprEntries, parseDebuggerReply, sanitizeTargetGlobals } = require('../src/nativeDebugParser');
 
 suite('Native Debug Adapter + Memory and GC analyzer', () => {
     test('heap sampling is read-only and does not force GC', () => {
@@ -78,6 +78,25 @@ suite('Native Debug Adapter + Memory and GC analyzer', () => {
         assert.strictEqual(globals.values[0].value, "'test, value'");
         assert.strictEqual(parseDebuggerReply('stack=[(23, 10), (42, 2)]').frames.length, 2);
         assert.deepStrictEqual(splitReprEntries("1, 'unterminated"), []);
+    });
+
+    test('globals scope must be complete and must not expose debugger internals', () => {
+        const incomplete = "depth=0 globals={'PUMP_PROTOCOL': '5', 'get_taskmap': '<functi";
+        const rejected = parseDebuggerReply(incomplete);
+        assert.strictEqual(rejected.kind, 'globals');
+        assert.deepStrictEqual(rejected.values, []);
+        assert.match(rejected.diagnostic, /Incomplete/);
+        const unavailable = parseDebuggerReply('depth=0 globals_unavailable=native scope API missing');
+        assert.match(unavailable.diagnostic, /native scope API missing/);
+        const internal = parseDebuggerReply("depth=0 globals={'PUMP_PROTOCOL': '5', 'bytes_in': '134'}");
+        assert.ok(sanitizeTargetGlobals(internal.values).diagnostic);
+        const actual = parseDebuggerReply("depth=0 globals={'HIL_GLOBAL': '73419'}");
+        assert.deepStrictEqual(sanitizeTargetGlobals(actual.values), {
+            values: [{ name: 'HIL_GLOBAL', value: "'73419'", variablesReference: 0 }],
+            diagnostic: null
+        });
+        const locals = parseDebuggerReply('depth=0 state=[None, None, 17321]', ['local']);
+        assert.strictEqual(locals.values[0].value, '17321');
     });
 
     test('native adapter only shares existing bridge; no firmware upload or extra COM owner', () => {
