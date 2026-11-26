@@ -78,7 +78,33 @@ class DebugBridgeOutputTests(unittest.TestCase):
             module.main()
         self.assertEqual(operations[:2], [b'\xaa\x1c\x00', b'\xaa\x1d\x00'])
         self.assertNotIn(b'\xaa\x10\x00', operations)
-        self.assertLess(operations.index('flush'), operations.index('close'))
+        self.assertEqual(operations[-1], 'close')
+        self.assertNotIn('flush', operations)
+
+    def test_failed_write_never_retries_cleanup_on_dead_endpoint(self):
+        module = self.load_bridge()
+        writes, events = [], []
+
+        class Port:
+            def open(self):
+                pass
+            def write(self, data):
+                writes.append(data)
+                raise OSError("Write timeout")
+            def close(self):
+                events.append({"closed_port": True})
+
+        module.serial.Serial = Port
+        module.say = lambda **event: events.append(event)
+        with patch.object(sys, 'argv', ['dbg_bridge.py', 'COM5']), \
+             patch.object(sys, 'stdin', io.StringIO('{"op":"pump_info"}\n')), \
+             patch.object(module.threading, 'Thread'), \
+             patch.object(module.time, 'sleep'):
+            module.main()
+        self.assertEqual(writes, [b'\xaa\x22\x00'])
+        self.assertTrue(any(e.get('op') == 'pump_info' and e.get('evt') == 'transport_lost'
+                            for e in events))
+        self.assertEqual(events[-1], {'evt': 'closed'})
 
     def test_reader_and_command_events_remain_atomic_json_lines(self):
         serial_stub = types.ModuleType("serial")

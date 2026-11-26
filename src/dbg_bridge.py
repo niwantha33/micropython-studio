@@ -251,10 +251,18 @@ def main():
         ser.write_timeout = 1.0
         ser.dsrdtr = False
         ser.rtscts = False
-        ser.dtr = True
+        ser.dtr = False
         ser.rts = False
         ser.open()
+        # Present an explicit closed-to-open DTR edge to the firmware pump.
+        time.sleep(0.10)
+        ser.dtr = True
     except Exception as e:
+        if "ser" in locals():
+            try:
+                ser.close()
+            except Exception:
+                pass
         say(evt="error", msg=f"open {port}: {e}")
         sys.exit(1)
 
@@ -278,6 +286,8 @@ def main():
                 say(evt="error", msg=f"bad json: {line!r}")
                 continue
             op = msg.get("op")
+            if stop_evt.is_set():
+                break
             if op == "quit":
                 break
             code = CMDS.get(op)
@@ -311,30 +321,41 @@ def main():
                     ser.write(bytes([0xAA, code, 0x00]))
                 say(evt="sent", op=op)
             except Exception as e:
-                say(evt="transport_lost", msg=f"write: {e}")
+                say(evt="transport_lost", msg=f"write {op}: {e}", op=op)
                 stop_evt.set()
                 break
     finally:
         # Transport cleanup must not execute/resume the user's application.
         # Continue is sent only by an explicit Continue/Step/Stop operation.
-        for command in (0x1C, 0x1D):
-            try:
-                ser.write(bytes([0xAA, command, 0x00]))
-            except Exception:
-                pass
-        try:
-            ser.flush()
-        except Exception:
-            pass
-        # Keep DTR asserted while the device pump consumes the queued commands.
-        # Flushing the host driver alone does not mean the VM has resumed.
-        time.sleep(0.20)
+        # A failed transport cannot safely accept more frames. Do not retry
+        # cleanup on a stalled OUT endpoint, and never hide cleanup failures.
+        if not stop_evt.is_set():
+            for command in (0x1C, 0x1D):
+                if stop_evt.is_set():
+                    break
+                try:
+                    ser.write(bytes([0xAA, command, 0x00]))
+                    time.sleep(0.10)
+                except Exception as e:
+                    say(evt="transport_lost", msg=f"cleanup 0x{command:02x}: {e}")
+                    stop_evt.set()
+                    break
+            # No unbounded serial.flush(): on Windows it can wait indefinitely
+            # for a stalled device. Bounded writes plus a drain interval only.
+            if not stop_evt.is_set():
+                time.sleep(0.20)
         stop_evt.set()
         t.join(timeout=0.3)
         try:
+            ser.dtr = False
+            # Allow the pump to observe the disconnected state before reopen.
+            time.sleep(0.10)
+        except Exception as e:
+            say(evt="error", msg=f"release DTR: {e}")
+        try:
             ser.close()
-        except Exception:
-            pass
+        except Exception as e:
+            say(evt="error", msg=f"close {port}: {e}")
         say(evt="closed")
 
 
