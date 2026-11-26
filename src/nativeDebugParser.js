@@ -52,13 +52,23 @@ function parseDebuggerReply(text, localNames = []) {
             name, value: values[count - i - 1] ?? '<unavailable>', variablesReference: 0
         })) };
     }
+    const unavailable = text.match(/^depth=\d+\s+globals_unavailable=(.*)$/);
+    if (unavailable) {
+        return { kind: 'globals', values: [], diagnostic: 'Firmware globals unavailable: ' + unavailable[1] };
+    }
     const index = text.indexOf('globals={');
+    if (index >= 0 && !text.trimEnd().endsWith('}')) {
+        return { kind: 'globals', values: [], diagnostic: 'Incomplete firmware globals reply; update debugger firmware. No partial values accepted.' };
+    }
     if (index >= 0 && text.trimEnd().endsWith('}')) {
         const entries = splitReprEntries(text.slice(index + 'globals={'.length, text.lastIndexOf('}')));
         const values = [];
+        if (!entries.length && text.slice(index + 'globals={'.length, text.lastIndexOf('}')).trim()) {
+            return { kind: 'globals', values: [], diagnostic: 'Malformed firmware globals reply.' };
+        }
         for (const part of entries) {
             const match = part.match(/^(['"])([^'"]+)\1\s*:\s*([\s\S]+)$/);
-            if (!match) continue;
+            if (!match) return { kind: 'globals', values: [], diagnostic: 'Malformed firmware globals entry.' };
             values.push({ name: match[2], value: match[3], variablesReference: 0 });
         }
         return { kind: 'globals', values };

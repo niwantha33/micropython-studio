@@ -95,7 +95,9 @@ class VirtualDebugBaselineTests(unittest.TestCase):
             b"\xaa\x15\x0b\x04main\x03fxn\x09\x00",
             b"\xaa\x10\x00", b"\xaa\x11\x00", b"\xaa\x12\x00",
             b"\xaa\x1c\x00", b"\xaa\x1d\x00"])
-        self.assertTrue(port.flushed and port.closed)
+        self.assertTrue(port.closed)
+        self.assertFalse(port.flushed)
+        self.assertFalse(port.dtr)
         self.assertEqual(events[-1], {"evt": "closed"})
 
     def test_DBG_002_read_loss_is_reported(self):

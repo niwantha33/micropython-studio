@@ -131,7 +131,10 @@ class NativeMicroPythonAdapter {
             const parsed = parseDebuggerReply(msg.text, this.localNames);
             if (parsed?.kind === 'locals') this.locals = parsed.values;
             if (parsed?.kind === 'globals') {
-                const checked = sanitizeTargetGlobals(parsed.values);
+                const checked = parsed.diagnostic ? {
+                    values: [{ name: '[unavailable]', value: parsed.diagnostic, variablesReference: 0 }],
+                    diagnostic: parsed.diagnostic
+                } : sanitizeTargetGlobals(parsed.values);
                 this.globals = checked.values;
                 if (checked.diagnostic) {
                     this.sendEvent('output', { category: 'stderr', output: checked.diagnostic + '\n' });

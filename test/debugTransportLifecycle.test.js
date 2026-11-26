@@ -7,20 +7,21 @@ const path = require('path');
 const vm = require('vm');
 
 function fixture(withBreakpoint = false) {
-    const processes = [], views = [], events = [], logs = [], timers = new Set();
+    const processes = [], views = [], events = [], logs = [], warnings = [], commands = [], timers = new Set();
     const vscode = {
         SourceBreakpoint: class { constructor() {
             this.enabled = true;
             this.location = { uri: { fsPath: '/test/main.py' }, range: { start: { line: 2 } } };
         } },
         ViewColumn: { Beside: 2 },
+        commands: { executeCommand(command) { commands.push(command); return Promise.resolve(); } },
         workspace: { workspaceFolders: [] },
         debug: { breakpoints: [], onDidChangeBreakpoints() { return { dispose() {} }; } },
-        window: { createOutputChannel() { return { appendLine(line) { logs.push(line); } }; }, createWebviewPanel() {
+        window: { showWarningMessage(message, ...actions) { warnings.push({message, actions}); return Promise.resolve(undefined); }, createOutputChannel() { return { appendLine(line) { logs.push(line); } }; }, createWebviewPanel() {
             let dispose;
             const view = {
                 webview: { postMessage() { return Promise.resolve(true); },
-                    onDidReceiveMessage() { return { dispose() {} }; } },
+                    onDidReceiveMessage(handler) { view.receive = handler; return { dispose() {} }; } },
                 reveal() {}, onDidDispose(fn) { dispose = fn; },
                 dispose() { dispose?.(); }
             };
@@ -63,7 +64,7 @@ function fixture(withBreakpoint = false) {
     });
     const api = module.exports;
     const open = () => api.connectNativeDebugger({ extensionPath: '/extension' }, 'COM5', 'python', event => events.push(event));
-    return { api, processes, views, events, logs, timers, open };
+    return { api, processes, views, events, logs, warnings, commands, timers, open };
 }
 
 suite('Debugger process lifecycle (real controller with fake child transport)', () => {
@@ -132,6 +133,41 @@ suite('Debugger process lifecycle (real controller with fake child transport)', 
         assert.strictEqual(f.events.length, 0);
         assert.strictEqual(f.api.sendNativeCommand('continue'), true);
         assert.strictEqual(next.commands.at(-1).op, 'continue');
+        f.api.disconnectNativeDebugger();
+    });
+
+    test('CDC timeout shows recovery once without reset or replay', () => {
+        const f = fixture();
+        f.open();
+        const child = f.processes[0];
+        child.stdout.emit('data', Buffer.from('{"evt":"open","port":"COM5"}\n'));
+        const failure = Buffer.from('{"evt":"transport_lost","msg":"write clear_all_bp: Write timeout"}\n');
+        child.stdout.emit('data', failure);
+        child.stdout.emit('data', failure);
+        assert.strictEqual(f.warnings.length, 1);
+        assert.ok(f.warnings[0].message.includes('power-cycle'));
+        assert.ok(f.warnings[0].message.includes('COM5'));
+        assert.ok(f.logs.some(line => line.includes('Write timeout')));
+        assert.strictEqual(f.api.sendNativeCommand('continue'), false);
+        assert.deepStrictEqual(child.commands.map(c => c.op), ['clear_all_bp', 'quit']);
+        assert.ok(!child.killed, 'Allow bridge to close before forced termination');
+        f.api.disconnectNativeDebugger();
+    });
+
+    test('Stop uses REPL when CDC has failed or closed', () => {
+        const f = fixture();
+        f.open();
+        const child = f.processes[0];
+        const view = f.views[0];
+        child.stdout.emit('data', Buffer.from('{"evt":"transport_lost","msg":"write timeout"}\n'));
+        const before = child.commands.length;
+        view.receive({ op: 'continue' });
+        view.receive({ op: 'stop' });
+        assert.deepStrictEqual(f.commands, ['micropython-ide.stopRun']);
+        assert.strictEqual(child.commands.length, before);
+        child.emit('close', 0, null);
+        view.receive({ op: 'stop' });
+        assert.deepStrictEqual(f.commands, ['micropython-ide.stopRun', 'micropython-ide.stopRun']);
         f.api.disconnectNativeDebugger();
     });
 
