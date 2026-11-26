@@ -89,6 +89,28 @@ def require(ok, reason):
         raise RuntimeError(reason)
 
 
+def verify_step(bridge, fun, initial_ip, expected_local):
+    """Validate actual execution, not simply receipt of a stop event."""
+    previous_ip = initial_ip
+    evidence = []
+    for _ in range(16):
+        bridge.send("step")
+        hit = bridge.wait(lambda event: event["evt"] == "bp_hit")
+        local = bridge.reply("locals", "depth=")
+        evidence.append({"hit": hit, "locals": local})
+        require(hit.get("fun") == fun and hit.get("ip") != previous_ip,
+                "Step repeated instruction or changed function: " +
+                repr({"expected_fun": fun, "previous_ip": previous_ip, "steps": evidence}))
+        previous_ip = hit["ip"]
+        state = ast.literal_eval(local.split("state=", 1)[1])
+        require(isinstance(state, (list, tuple)) and bool(state), "Missing paused state: " + local)
+        # MicroPython's state layout puts the first argument at the end.
+        if state[-1] == expected_local:
+            return evidence
+        require(state[-1] == expected_local - 1, "Unexpected argument value: " + local)
+    raise RuntimeError("Step did not execute the expected increment: " + repr(evidence))
+
+
 def finish_fixture(bridge, session, slot, running):
     """Clear owned breakpoint, resume finite code and await completion.
     No concurrent Ctrl+C: the two USB interfaces have independent ordering.
@@ -174,12 +196,7 @@ def exercise(root, port, session, check):
 
         def step_continue():
             nonlocal paused, running, slot
-            bridge.send("step")
-            hit = bridge.wait(lambda e: e["evt"] == "bp_hit")
-            local = bridge.reply("locals", "depth=")
-            require(hit.get("fun") == fun and hit.get("ip") != ip,
-                    "Step did not advance in fixture: " + repr({"initial_fun": fun, "initial_ip": ip, "step_hit": hit, "step_locals": local}))
-            require("state=" in local, "No paused frame after step: " + local)
+            steps = verify_step(bridge, fun, ip, 17322)
             bridge.reply("clear_bp", "cleared bp ", slot=slot)
             slot = None
             bridge.send("continue")
@@ -188,7 +205,7 @@ def exercise(root, port, session, check):
             running = False
             require(result.get("success") and b"HIL_DONE 17324" in session.output,
                     "Continue failed to finish fixture")
-            return {"step_hit": hit, "step_locals": local, "result": 17324}
+            return {"steps": steps, "result": 17324}
         check("HIL-012 step and continue", step_continue)
 
         def rta():

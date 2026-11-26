@@ -1,4 +1,5 @@
 """Physical bridge protocol probe; no breakpoint or application execution."""
+import ast
 import json
 import queue
 import subprocess
@@ -6,6 +7,22 @@ import sys
 import threading
 import time
 
+
+SCOPE_STEP_REVISION = 1
+
+def verify_fixed_firmware(value):
+    if not isinstance(value, dict) or value.get("scope_step_revision") != SCOPE_STEP_REVISION or value.get("globals_api") is not True:
+        raise RuntimeError("Install the RP2 scope/step candidate firmware before execution qualification; observed " + repr(value))
+    return value
+
+def require_fixed_firmware(session):
+    # Read-only capability query: no reset, no firmware installation.
+    reply = session.code("import dbg; print({'scope_step_revision': dbg.scope_step_revision() if hasattr(dbg,'scope_step_revision') else None, 'globals_api': hasattr(dbg,'globals')})").strip()
+    try:
+        identity = ast.literal_eval(reply)
+    except (ValueError, SyntaxError) as exc:
+        raise RuntimeError("Cannot parse native debugger firmware identity: " + reply) from exc
+    return verify_fixed_firmware(identity)
 
 def pump_snapshot(session):
     """Observe loaded firmware modules; never import/start/restart the pump."""

@@ -152,6 +152,12 @@ def main():
                 js_results = js_suite_results(js_files, json.loads(result_file.read_text(encoding="utf-8")))
             except (ValueError, OSError, TypeError, KeyError):
                 results["VS Code suite"]["status"] = "ERROR"
+        for filename, result in js_results.items():
+            if result["status"] != "PASS":
+                print(f"  {filename}: {result['status']}", flush=True)
+                for case in result["tests"]:
+                    if case["status"] != "pass":
+                        print("    " + str(case.get("title", "")) + ": " + str(case.get("error", case["status"])), flush=True)
         if not js_results or any(r["status"] != "PASS" for r in js_results.values()):
             if results["VS Code suite"]["status"] == "PASS":
                 results["VS Code suite"]["status"] = "ERROR"

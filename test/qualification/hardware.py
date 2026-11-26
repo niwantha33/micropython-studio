@@ -167,6 +167,10 @@ def main():
             return value.strip()
         check("HIL-002 board identity", identify)
 
+        if args.debug_execution and report["board"] in ("rp2040", "rp2350"):
+            from hardware_debug import require_fixed_firmware
+            check("HIL-020 scope/step firmware identity", lambda: require_fixed_firmware(session))
+
         def debug_probe():
             from hardware_debug import probe, pump_snapshot
             diagnostics = report.setdefault("debug_diagnostics", {})
