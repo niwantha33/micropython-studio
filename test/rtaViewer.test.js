@@ -7,7 +7,7 @@ suite('Live RTA viewer', () => {
     const source = fs.readFileSync(
         path.resolve(__dirname, '..', 'src', 'mpyDebugger.js'),
         'utf8'
-    );
+    ).replace(/\r\n/g, '\n');
 
     test('renders a FreeRTOS-style live runtime table', () => {
         assert.ok(source.includes('LIVE RTA · TASK / FUNCTION VIEWER'));

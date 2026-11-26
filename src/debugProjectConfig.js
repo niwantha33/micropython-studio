@@ -44,11 +44,12 @@ async function resolveReplPort(configPort, runtimePort, folder) {
  * Never infer debugger CDC from VID:PID or lowest COM index. Use an explicitly
  * saved interface while present; otherwise require a human choice.
  */
-async function resolveDebugPort(folder, replPort, explicitPort = '', forcePicker = false) {
+async function resolveDebugPort(folder, replPort, explicitPort = '', forcePicker = false, adapterOptions = {}) {
     const cfg = await findDebugCfgPath(folder);
     if (!cfg) throw new Error('No MicroPython project device.cfg found. Open or refresh your project.');
     // Keep native and legacy debugging on the same confirmed CDC adapter.
     return chooseDebugAdapter(cfg, normalizeSerialPort(replPort), {
+        ...adapterOptions,
         requestedPort: normalizeSerialPort(explicitPort),
         force: forcePicker
     });
