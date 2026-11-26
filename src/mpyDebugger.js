@@ -2902,7 +2902,12 @@ window.addEventListener('message', (e) => {
     
     // Parse globals
     const globIdx = m.text.indexOf("globals={");
-    if (globIdx !== -1) {
+    const globalsUnavailable = m.text.indexOf('globals_unavailable=');
+    if (globalsUnavailable !== -1 || (globIdx !== -1 && !m.text.trimEnd().endsWith('}'))) {
+      const message = globalsUnavailable !== -1 ? m.text.slice(globalsUnavailable + 'globals_unavailable='.length) : 'Incomplete firmware globals reply. Update debugger firmware.';
+      document.getElementById('globals-body').textContent = 'Unavailable: ' + message;
+      add('err', message);
+    } else if (globIdx !== -1) {
       let str = m.text.slice(globIdx + 9);
       if (str.endsWith("}")) {
         str = str.slice(0, -1);
@@ -2925,7 +2930,12 @@ window.addEventListener('message', (e) => {
         html += '<tr><td class="k">' + escapeHtml(k) + '</td><td class="vg" contenteditable="true" data-name="' + escapeHtml(k) + '" data-val="' + escapeHtml(val) + '">' + escapeHtml(val) + '</td></tr>';
       });
       html += '</table>';
-      document.getElementById('globals-body').innerHTML = keys.length ? html : '(empty)';
+      const pumpMarkers = ['PUMP_PROTOCOL', 'PUMP_BUILD', '_running', 'bytes_in', 'continues', 'cmds'];
+      if (pumpMarkers.filter(k => keys.includes(k)).length >= 2) {
+        document.getElementById('globals-body').textContent = 'Unavailable: firmware returned internal debugger globals.';
+      } else {
+        document.getElementById('globals-body').innerHTML = keys.length ? html : '(empty)';
+      }
     }
 
     const sm = m.text.match(/^stack=\\[(.*)\\]$/);

@@ -134,7 +134,7 @@ def main():
     session = None
     active = False
 
-    def check(name, fn):
+    def check(name, fn, defer_failure=False):
         start = time.monotonic()
         row = {"name": name, "status": "FAIL"}
         report["tests"].append(row)
@@ -144,7 +144,8 @@ def main():
         except Exception as exc:
             row["error"] = str(exc)
             print("  ERROR: " + str(exc), flush=True)
-            raise
+            if not defer_failure:
+                raise
         finally:
             row["seconds"] = round(time.monotonic()-start, 3)
             print(name + ": " + row["status"], flush=True)
@@ -294,7 +295,11 @@ def main():
             from hardware_performance import compare
             report["performance"] = compare(report, ROOT / "test" / "baselines" / "hardware-rp2350.json")
             require(report["performance"]["status"] == "PASS", "Performance comparison failed or not comparable")
-        report["status"] = "PASS"
+        failed = [row["name"] for row in report["tests"] if row["status"] == "FAIL"]
+        if failed:
+            report["error"] = "Failed checks: " + ", ".join(failed)
+        else:
+            report["status"] = "PASS"
     except Exception as exc:
         report["error"] = str(exc)
     finally:

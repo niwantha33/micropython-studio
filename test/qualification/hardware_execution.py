@@ -119,26 +119,34 @@ def exercise(root, port, session, check):
             return {"registration": reply, "hit": hit}
         check("HIL-011 physical breakpoint", breakpoint)
 
-        def variables():
+        def locals_check():
             local = bridge.reply("locals", "depth=")
-            # Preserve exact wire evidence even on failure. A firmware may
-            # return repr strings rather than native Python values.
             stack = bridge.reply("call_stack", "stack=")
-            global_reply = bridge.reply("globals", "depth=")
-            evidence = {"locals": local, "globals": global_reply, "stack": stack}
             try:
                 state = ast.literal_eval(local.split("state=", 1)[1])
                 require(isinstance(state, (list, tuple)), "Unexpected local state type")
                 require(any(type(v) is int and v == 17321 or
                             type(v) is str and v == "17321" for v in state),
                         "Expected argument missing")
+            except (ValueError, SyntaxError, IndexError, RuntimeError) as exc:
+                raise RuntimeError(str(exc) + "; raw locals=" + local) from exc
+            return {"locals": local, "stack": stack}
+        check("HIL-013 paused locals", locals_check)
+
+        # A malformed value reply is independent of stepping, but a transport
+        # failure must still abort. Obtain the actual reply before deferring
+        # the semantic assertion.
+        global_reply = bridge.reply("globals", "depth=")
+        def globals_check():
+            try:
+                require("globals=" in global_reply, "Firmware globals unavailable")
                 values = ast.literal_eval(global_reply.split("globals=", 1)[1])
                 require(isinstance(values, dict) and str(values.get("HIL_GLOBAL")) == "73419",
                         "Expected module global missing")
+                return {"globals": global_reply}
             except (ValueError, SyntaxError, IndexError, RuntimeError) as exc:
-                raise RuntimeError(str(exc) + "; raw replies=" + json.dumps(evidence)) from exc
-            return evidence
-        check("HIL-013 paused variables", variables)
+                raise RuntimeError(str(exc) + "; raw globals=" + global_reply) from exc
+        check("HIL-018 paused globals", globals_check, defer_failure=True)
 
         def step_continue():
             nonlocal paused, running, slot

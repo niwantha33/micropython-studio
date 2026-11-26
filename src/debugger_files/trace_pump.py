@@ -377,47 +377,32 @@ def _pump():
                 except Exception:
                     pass
             elif cmd_type == 0x1A:
-                # globals: return dictionary of user globals
+                # Never fall back to the pump or __main__: these are not the
+                # paused function's module. Reject oversized replies before
+                # framing, rather than emitting invalid Python syntax.
+                depth = cmd_buf[3] if cmd_len > 0 else 0
+                prefix = "depth=%d " % depth
                 try:
-                    depth = cmd_buf[3] if cmd_len > 0 else 0
-                    try:
-                        if hasattr(dbg, 'globals'):
-                            g = dbg.globals(depth)
-                            while g is not None and g.get('__name__') == 'trace_pump':
-                                try:
-                                    next_g = dbg.globals(depth + 1)
-                                    if next_g is None:
-                                        break
-                                    depth += 1
-                                    g = next_g
-                                except ValueError:
-                                    break
-                        else:
-                            g = None
-                    except ValueError:
-                        g = None
-                    if g is None:
-                        try:
-                            paused = dbg.locals(0) is not None
-                        except Exception:
-                            paused = True
-                        if paused:
-                            try:
-                                import sys
-                                g = sys.modules['__main__'].__dict__
-                            except Exception:
-                                g = globals()
-                    if g is None:
-                        text = "(not paused)"
+                    if not hasattr(dbg, 'globals'):
+                        text = prefix + "globals_unavailable=native scope API missing"
                     else:
-                        user_globals = {}
-                        for k, v in g.items():
-                            if not k.startswith("__"):
-                                user_globals[k] = repr(v)
-                        text = "depth=%d globals=%r" % (depth, user_globals)
-                except Exception as e:
-                    text = "err: " + repr(e)
-                payload = text.encode()[:250]
+                        g = dbg.globals(depth)
+                        if g is None:
+                            text = prefix + "globals_unavailable=no paused user frame"
+                        elif (g.get('__name__') in ('trace_pump', 'mpy_studio_pico_trace_pump')
+                              or g is globals()):
+                            text = prefix + "globals_unavailable=internal debugger scope"
+                        else:
+                            user_globals = {}
+                            for k, v in g.items():
+                                if not k.startswith("__"):
+                                    user_globals[k] = repr(v)
+                            text = prefix + "globals=" + repr(user_globals)
+                            if len(text.encode()) > 250:
+                                text = prefix + "globals_unavailable=scope exceeds single frame; pagination required"
+                except Exception:
+                    text = prefix + "globals_unavailable=scope inspection failed"
+                payload = text.encode()
                 frame = bytes([0xAA, 0x03, len(payload)]) + payload
                 try:
                     cdc.write(frame)
