@@ -178,7 +178,7 @@ def exercise(root, port, session, check):
             hit = bridge.wait(lambda e: e["evt"] == "bp_hit")
             local = bridge.reply("locals", "depth=")
             require(hit.get("fun") == fun and hit.get("ip") != ip,
-                    "Step did not advance in fixture: " + repr(hit))
+                    "Step did not advance in fixture: " + repr({"initial_fun": fun, "initial_ip": ip, "step_hit": hit, "step_locals": local}))
             require("state=" in local, "No paused frame after step: " + local)
             bridge.reply("clear_bp", "cleared bp ", slot=slot)
             slot = None
