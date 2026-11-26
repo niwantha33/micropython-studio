@@ -113,17 +113,20 @@ def main():
         parser.error("Use a dedicated idle test board. Tests interrupt execution and change REPL state.")
     from serial.tools.list_ports import comports
     port = args.port.upper() if os.name == "nt" else args.port
-    matches = [p for p in comports() if p.device == port and p.vid is not None]
+    ports = list(comports())
+    usb_ports = [p for p in ports if p.vid is not None and p.pid is not None]
+    inventory = ", ".join("%s (%04x:%04x, %s)" % (p.device, p.vid, p.pid, p.location or "location unknown") for p in usb_ports) or "none"
+    matches = [p for p in usb_ports if p.device == port]
     if len(matches) != 1:
-        parser.error("Selected port must be an enumerated physical USB serial device")
+        parser.error("Selected port %s must be an enumerated physical USB serial device. USB ports detected: %s. Recheck COM assignments after flashing with python -m serial.tools.list_ports -v." % (port, inventory))
     device = matches[0]
     if args.board.startswith("rp") and device.vid != 0x2e8a:
         parser.error("Selected port does not have Raspberry Pi USB VID")
     if args.debug_port:
         args.debug_port = args.debug_port.upper() if os.name == "nt" else args.debug_port
-        peers = [p for p in comports() if p.device == args.debug_port and p.device != port and p.vid is not None and p.vid == device.vid and p.pid == device.pid and p.serial_number and p.serial_number == device.serial_number]
+        peers = [p for p in usb_ports if p.device == args.debug_port and p.device != port and p.vid is not None and p.vid == device.vid and p.pid == device.pid and p.serial_number and p.serial_number == device.serial_number]
         if len(peers) != 1:
-            parser.error("Debug port must be a separate USB interface with matching board identity")
+            parser.error("Debug port %s must be a separate USB interface with matching board identity. USB ports detected: %s." % (args.debug_port, inventory))
     report = {"board": args.board, "port": port, "usb_vid_pid": "%04x:%04x" % (device.vid, device.pid),
               "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
               "working_tree": "dirty" if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip() else "clean",

@@ -1263,7 +1263,8 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
             vscode.commands.executeCommand('micropython-ide.stopRun');
             return;
         }
-        if (!bridge || child.transportFailed) return;
+        if (!bridge) return;
+        if (child.transportFailed) return;
         if (!sessionReady && ['continue', 'step', 'step_in', 'step_out', 'globals', 'call_stack', 'rta_on'].includes(msg.op)) {
             panel.webview.postMessage({ evt: 'error', msg: 'Firmware has not acknowledged the debug connection. Command was not sent.' });
             return;
