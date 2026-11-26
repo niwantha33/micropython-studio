@@ -7,6 +7,10 @@ export default [{
         "bin/**",
         "resource/webrepl/**/*.js",
         "tmp/**",
+        "testenv/**",
+        "venv/**",
+        ".venv/**",
+        "reports/**",
     ],
 }, {
     files: ["**/*.js"],
