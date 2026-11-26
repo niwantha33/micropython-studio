@@ -7,6 +7,36 @@ import threading
 import time
 
 
+def pump_snapshot(session):
+    """Observe loaded firmware modules; never import/start/restart the pump."""
+    source = """def _mps_hil_snapshot():
+    import sys
+    p=sys.modules.get('trace_pump')
+    r=sys.modules.get('dbgref')
+    result={'pump_loaded':p is not None,'dbgref_loaded':r is not None}
+    if p is not None:
+        for k in ('_running','PUMP_PROTOCOL','PUMP_BUILD','bytes_in','cmds','continues'):
+            result[k]=getattr(p,k,None)
+    if r is not None:
+        c=getattr(r,'cdc',None)
+        result['cdc_present']=c is not None
+        if c is not None:
+            try: result['cdc_open']=bool(c.is_open())
+            except Exception as e: result['cdc_open_error']=repr(e)
+            try: result['cdc_dtr']=bool(c.dtr)
+            except Exception as e: result['cdc_dtr_error']=repr(e)
+    print(result)
+try:
+    _mps_hil_snapshot()
+finally:
+    del _mps_hil_snapshot
+"""
+    try:
+        return {"status": "OBSERVED", "reply": session.code(source).strip()}
+    except Exception as exc:
+        return {"status": "UNAVAILABLE", "error": str(exc)}
+
+
 def probe(root, port):
     evidence = []
     for cycle in range(1, 4):
@@ -49,6 +79,7 @@ def probe(root, port):
             send("pump_info")
             reply = wait(lambda e: e["evt"] == "reply" and e.get("text", "").startswith("pump_info="))
             evidence.append(reply["text"])
+            print(f"  Debug cycle {cycle}/3: {reply['text']}", flush=True)
             phase = "rta_off acknowledgement"
             send("rta_off")
             wait(lambda e: e["evt"] == "reply" and e.get("text") == "RTA trace disabled")

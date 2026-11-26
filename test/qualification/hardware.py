@@ -96,7 +96,12 @@ def main():
     parser.add_argument("--debug-port", help="Optional dedicated debug CDC port for protocol probe")
     parser.add_argument("--debug-execution", action="store_true", help="Run temporary breakpoint and RTA fixture")
     parser.add_argument("--compare-baseline", action="store_true", help="Compare matching measured RP2350 timing baseline")
+    parser.add_argument("--debug-first", action="store_true", help="Probe debugger immediately after MCU identification, before REPL stress tests")
     args = parser.parse_args()
+    if args.debug_first and not args.debug_port:
+        parser.error("--debug-first requires --debug-port")
+    if args.debug_first and args.compare_baseline:
+        parser.error("Early debug probe changes the baseline workload order")
     if args.debug_execution and not args.debug_port:
         parser.error("--debug-execution requires --debug-port")
     if not args.confirm_dedicated_board:
@@ -119,6 +124,7 @@ def main():
               "working_tree": "dirty" if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip() else "clean",
               "scope": "Physical production REPL, transfer backend and optional debugger bridge; not VS Code UI",
               "cycles": args.cycles,
+              "debug_port": args.debug_port, "debug_first": args.debug_first,
               "tests": [], "status": "FAIL"}
     session = None
     active = False
@@ -132,6 +138,7 @@ def main():
             row["status"] = "PASS"
         except Exception as exc:
             row["error"] = str(exc)
+            print("  ERROR: " + str(exc), flush=True)
             raise
         finally:
             row["seconds"] = round(time.monotonic()-start, 3)
@@ -153,6 +160,19 @@ def main():
             report["board"] = detected
             return value.strip()
         check("HIL-002 board identity", identify)
+
+        def debug_probe():
+            from hardware_debug import probe, pump_snapshot
+            diagnostics = report.setdefault("debug_diagnostics", {})
+            diagnostics["before"] = pump_snapshot(session)
+            try:
+                return probe(ROOT, args.debug_port)
+            finally:
+                diagnostics["after"] = pump_snapshot(session)
+                print("  Debug diagnostics: " + json.dumps(diagnostics), flush=True)
+
+        if args.debug_first:
+            check("HIL-010 debug protocol / attach-detach", debug_probe)
 
         def finite():
             marker = uuid.uuid4().hex
@@ -256,9 +276,8 @@ def main():
                 cleanup = "import os\nfor p in " + repr([remote+"/nested/second.bin", remote+"/payload.bin"]) + ":\n try: os.remove(p)\n except OSError as e:\n  if e.args[0] != 2: raise\nfor p in " + repr([remote+"/nested", remote]) + ":\n try: os.rmdir(p)\n except OSError as e:\n  if e.args[0] != 2: raise"
                 session.code(cleanup)
                 finite()
-        if args.debug_port:
-            from hardware_debug import probe
-            check("HIL-010 debug protocol / attach-detach", lambda: probe(ROOT, args.debug_port))
+        if args.debug_port and not args.debug_first:
+            check("HIL-010 debug protocol / attach-detach", debug_probe)
         if args.debug_execution:
             from hardware_execution import exercise
             exercise(ROOT, args.debug_port, session, check)
