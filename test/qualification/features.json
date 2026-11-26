@@ -101,6 +101,22 @@
       "critical": false
     },
     {
+      "id": "MCU",
+      "name": "MCU Project / Runtime sidebar",
+      "python": [],
+      "js": [
+        "mcuSidebar.test.js"
+      ],
+      "paths": [
+        "src/mcuSidebar.js",
+        "src/mcuSidebarModel.js",
+        "src/memoryAnalyzer.js",
+        "src/extension.js",
+        "package.json"
+      ],
+      "critical": false
+    },
+    {
       "id": "MEM",
       "name": "Memory / GC",
       "python": [],

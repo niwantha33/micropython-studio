@@ -70,6 +70,21 @@
       ]
     },
     "views": {
+      "debug": [
+        {
+          "id": "micropython-ide-mcu-project",
+          "name": "MCU Project",
+          "icon": "$(circuit-board)",
+          "when": "micropythonStudio.hasMcuProject"
+        },
+        {
+          "id": "micropython-ide-mcu-runtime",
+          "name": "MCU Runtime",
+          "icon": "$(pulse)",
+          "when": "micropythonStudio.hasMcuProject",
+          "visibility": "collapsed"
+        }
+      ],
       "micropython-ide-launch": [
         {
           "id": "micropython-ide-launch-view",
@@ -99,6 +114,23 @@
       }
     ],
     "commands": [
+      {
+        "command": "micropython-ide.refreshMcuSidebar",
+        "title": "MicroPython: Refresh MCU Information",
+        "category": "MicroPython Studio",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "micropython-ide.openMcuConfig",
+        "title": "MicroPython: Open MCU Project Configuration",
+        "category": "MicroPython Studio",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "micropython-ide.openMcuRuntimeTool",
+        "title": "MicroPython: Open MCU Runtime Tool",
+        "category": "MicroPython Studio"
+      },
       {
         "command": "micropython-ide.setupEnvironment",
         "title": "MicroPython: Setup Development Environment",
@@ -443,6 +475,16 @@
       ],
       "view/title": [
         {
+          "command": "micropython-ide.refreshMcuSidebar",
+          "when": "view == micropython-ide-mcu-project || view == micropython-ide-mcu-runtime",
+          "group": "navigation"
+        },
+        {
+          "command": "micropython-ide.openMcuConfig",
+          "when": "view == micropython-ide-mcu-project",
+          "group": "navigation"
+        },
+        {
           "command": "micropython-ide.refreshDeviceFiles",
           "when": "view == micropython-ide-device-files",
           "group": "navigation"
@@ -613,6 +655,7 @@
     "jsdom": "^29.0.2"
   },
   "activationEvents": [
+    "workspaceContains:**/device.cfg",
     "onDebugInitialConfigurations:micropython-studio",
     "onDebugDynamicConfigurations:micropython-studio",
     "onDebugResolve:micropython-studio"
