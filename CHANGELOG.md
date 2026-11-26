@@ -4,19 +4,26 @@ All notable changes to the "micropython-studio" extension will be documented in 
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [Unreleased] — Native debugging and Memory/GC candidate
+## [2.7.0] — Native debugging and MCU visibility
 
 ### Added
 - Native VS Code Debug Adapter Protocol support through the existing firmware-first debugger bridge, with standard debugger panes and read-only expression lookup.
 - Explicit Memory & Garbage Collection Analyzer with pre/post GC counters, on-demand measurement and CSV export.
 - Firmware/board support qualification guide and focused regression tests.
 
+- MCU Project and MCU Runtime views in Run and Debug: board configuration, separate CDC ports, passive connection status and scoped memory snapshots.
+- Opt-in physical hardware qualification runner covering REPL, file transfers and debugger execution.
+- Actual debugger and RTA screenshots in the README and website.
+
 ### Fixed
 - Device Dashboard no longer triggers an unsolicited garbage collection before displaying heap metrics.
 - Removed unregistered placeholder debug adapter that required an undeclared package.
 - Updated Start Debug workflow and obsolete status-bar wording.
 
-> Hardware acceptance and CI are required before a release. No new board or firmware is approved by this change.
+### Validation
+- Reported physical RP2350 qualification passed with the 100-cycle configuration, including serial recovery, file integrity, paused scopes, stepping, RTA and reattach.
+- Reported production dependency audit found zero vulnerabilities. Development dependency findings remain separate.
+- Final release commit requires automated qualification and packaging checks. No additional board or firmware is approved by this change.
 
 ## [0.9.1] - 2026-04-23
 

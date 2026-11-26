@@ -8,13 +8,25 @@
 [![CircuitPython](https://img.shields.io/badge/CircuitPython-10.x-purple?logo=adafruit&logoColor=white)](https://circuitpython.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
-## Native VS Code debugging and memory diagnostics (development branch)
+## Real debugging on real hardware — 2.7.0
 
-> **New 2.7 candidate functionality — hardware validation required before release.** The existing Pico 2 W debugger workflow remains the tested baseline. This change does not approve additional boards or automatically install/flash any debugger firmware.
+![MicroPython Studio native VS Code debugging on Pico 2 W, paused at a source breakpoint with locals, call stack, MCU Project, MCU Runtime and REPL output](resource/mps_v270_debugger_main.png)
+
+*Actual 2.7.0 development build: Pico 2 W, native Run and Debug with separate REPL and debugger CDC ports.*
+
+![MicroPython Studio debugger details showing recorded RTA task and function timing, debug console, verified breakpoint and REPL output](resource/mps_v270_debugger_rta.png)
+
+*Actual 2.7.0 development build: captured RTA statistics after tracing was switched off. Invalid trace events are reported, not counted as valid measurements.*
+
+Physical hardware qualification passed on a dedicated RP2350 test board with compatible scope/step firmware, using the 100-cycle configuration and separate REPL/debug CDC ports. The reported checks covered raw execution, streaming and Ctrl+C recovery, COM handoff, heap sampling, GC recovery, file transfer integrity, breakpoint execution, paused locals/globals, stepping, RTA events and debugger reattach. This is evidence for the tested build and board, not blanket approval of every firmware, target or final release commit.
+
+## Native VS Code debugging and memory diagnostics
+
+- **MCU Project and MCU Runtime:** project-scoped board and saved port details, passive connection state and timestamped heap snapshots from the existing analyzer. Refreshing these views does not probe the MCU. Third-party Python views can be hidden manually.
 
 - **Native Run and Debug:** use VS Code F5 / Run and Debug with MicroPython Studio's Debug Adapter Protocol (DAP) integration. Standard Breakpoints, Variables, Watch (read-only lookup), Call Stack, and stepping connect to the **existing frozen-firmware debugger bridge**, not a second serial transport. Source frames are displayed only when mapping is available. The existing RTA webview remains available while a native session runs.
 - **Memory & Garbage Collection Analyzer:** open `MicroPython: Memory & Garbage Collection Analyzer` or the **Memory & GC** status-bar item. **Sample heap** reads `gc.mem_alloc()` and `gc.mem_free()` without forcing garbage collection. **Collect GC + compare** explicitly runs `gc.collect()`, reports reclaimed bytes and measured collection duration when supported. Export snapshots to CSV, compare observed peaks and growth.
-- **Safe measurements:** the Memory Analyzer uses an already-connected, idle USB REPL and refuses to create a competing COM connection. Do not sample a busy application; evaluating code via REPL may interrupt user code. It blocks requests while a native debug session is active. Heap totals reflect the GC-managed heap, not every RAM allocation or physical memory bank. Rising samples alone do not establish a memory leak.
+- **Safe measurements:** the Memory Analyzer uses an already-connected, idle USB REPL and refuses to create a competing COM connection. Do not sample a busy application; evaluating code via REPL may interrupt user code. Sampling during a native debug session requires explicitly stopping the session first. Heap totals reflect the GC-managed heap, not every RAM allocation or physical memory bank. Rising samples alone do not establish a memory leak.
 
 ### Start native debugging
 
