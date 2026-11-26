@@ -94,7 +94,11 @@ def main():
     parser.add_argument("--cycles", type=int, choices=range(1, 101), default=10, metavar="1..100")
     parser.add_argument("--files", action="store_true", help="Write and remove only a unique test directory")
     parser.add_argument("--debug-port", help="Optional dedicated debug CDC port for protocol probe")
+    parser.add_argument("--debug-execution", action="store_true", help="Run temporary breakpoint and RTA fixture")
+    parser.add_argument("--compare-baseline", action="store_true", help="Compare matching measured RP2350 timing baseline")
     args = parser.parse_args()
+    if args.debug_execution and not args.debug_port:
+        parser.error("--debug-execution requires --debug-port")
     if not args.confirm_dedicated_board:
         parser.error("Use a dedicated idle test board. Tests interrupt execution and change REPL state.")
     from serial.tools.list_ports import comports
@@ -113,7 +117,8 @@ def main():
     report = {"board": args.board, "port": port, "usb_vid_pid": "%04x:%04x" % (device.vid, device.pid),
               "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
               "working_tree": "dirty" if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip() else "clean",
-              "scope": "Physical production REPL daemon only; not VS Code UI or debugger qualification",
+              "scope": "Physical production REPL, transfer backend and optional debugger bridge; not VS Code UI",
+              "cycles": args.cycles,
               "tests": [], "status": "FAIL"}
     session = None
     active = False
@@ -254,6 +259,13 @@ def main():
         if args.debug_port:
             from hardware_debug import probe
             check("HIL-010 debug protocol / attach-detach", lambda: probe(ROOT, args.debug_port))
+        if args.debug_execution:
+            from hardware_execution import exercise
+            exercise(ROOT, args.debug_port, session, check)
+        if args.compare_baseline:
+            from hardware_performance import compare
+            report["performance"] = compare(report, ROOT / "test" / "baselines" / "hardware-rp2350.json")
+            require(report["performance"]["status"] == "PASS", "Performance comparison failed or not comparable")
         report["status"] = "PASS"
     except Exception as exc:
         report["error"] = str(exc)
