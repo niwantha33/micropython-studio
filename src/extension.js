@@ -31,6 +31,7 @@ const { registerNativeDebugger } = require('./nativeDebugger');
 const { resolveReplPort } = require('./debugProjectConfig');
 const { chooseDebugAdapter, findPotentialDebugPorts } = require('./debugAdapterConfig');
 const { MemoryAnalyzer } = require('./memoryAnalyzer');
+const { registerMcuSidebar } = require('./mcuSidebar');
 const { comparePythonSource, isInsideProject } = require('./deviceSourceCheck');
 const { samePort } = require('./devicePortSelection');
 const { fileRemotePath, folderRemotePath, countLocalUploadFiles } = require('./deviceUploadPaths');
@@ -595,6 +596,12 @@ function activate(context) {
         if (session.type === 'micropython-studio') void updateDebugAdapterStatusBar();
     }));
     const memoryAnalyzer = new MemoryAnalyzer(context, () => gRemoteDevicePort);
+    const mcuSidebar = registerMcuSidebar(context, {
+        connection: connectionManager,
+        getSelection: () => ({ configPath: gDeviceConfigPath, port: gRemoteDevicePort }),
+        memoryAnalyzer
+    });
+    memoryAnalyzer.getSidebarScope = () => mcuSidebar.getScope();
     context.subscriptions.push({ dispose: () => memoryAnalyzer.dispose() });
 
     // Stop VS Code's Python extension from auto-typing the venv activate path

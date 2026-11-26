@@ -107,6 +107,7 @@ class MemoryAnalyzer {
         this.currentPort = null;
         this.panel = null;
         this.busy = false;
+        this.sidebarSample = null;
     }
 
     open() {
@@ -126,6 +127,7 @@ class MemoryAnalyzer {
             if (message.op === 'sample') await this.sample(message.collect === true);
             else if (message.op === 'clear') {
                 this.samples = [];
+                this.sidebarSample = null;
                 this.publish();
                 this.status('History cleared.');
             } else if (message.op === 'export') await this.exportCsv();
@@ -148,6 +150,7 @@ class MemoryAnalyzer {
         if (this.busy) return;
         this.busy = true;
         try {
+            const sidebarScope = this.getSidebarScope?.();
             const port = this.getPort();
             if (!port || port === '-' || port.startsWith('ws:')) {
                 throw new Error('Select and connect the USB device REPL before sampling.');
@@ -193,6 +196,8 @@ class MemoryAnalyzer {
             }, 'Memory / GC snapshot', true);
             const sample = parseMemorySample(output, collect);
             this.samples.push(sample);
+            this.sidebarSample = sidebarScope && sidebarScope === this.getSidebarScope?.()
+                ? { scope: sidebarScope, sample } : null;
             if (this.samples.length > MAX_SAMPLES) this.samples.shift();
             this.publish();
             this.status(collect ? 'Manual GC completed and before/after heap counters captured.' : 'Heap sampled without forcing garbage collection.');
