@@ -26,7 +26,7 @@ function logDebug(message) {
 }
 
 function sendNativeCommand(op) {
-    if (!activeBridge || !activeBridge.stdin || activeBridge.killed) return false;
+    if (!activeBridge || !activeBridge.stdin || activeBridge.killed || activeBridge.transportFailed) return false;
     if (!['continue', 'step', 'step_in', 'step_out', 'locals', 'globals', 'call_stack'].includes(op)) return false;
     try {
         activeBridge.stdin.write(JSON.stringify({ op }) + '\n');
@@ -357,6 +357,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     // Spawn the Python bridge
     let bridgeExpectedShutdown = false;
     let bridgeTransportFailureReported = false;
+    let recoveryNotified = false;
     const script = path.join(context.extensionPath, 'src', 'dbg_bridge.py');
     const pyCmd = venvPython || (process.platform === 'win32' ? 'python' : 'python3');
     const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0] ? vscode.workspace.workspaceFolders[0].uri.fsPath : '';
@@ -383,6 +384,21 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     let legacyProbePending = false;
     let targetBreakpointList = [];
     let detailsPaused = false;
+
+    function notifyRecovery(reason) {
+        if (recoveryNotified) return;
+        recoveryNotified = true;
+        const guidance = `MicroPython debugger (${port}) is not responding. Stop debugging, power-cycle the board (disconnect USB and any external power), confirm the COM ports, then start debugging again. This interrupts the running program. Studio has not reset or reflashed the board.`;
+        logDebug(guidance + ' Cause: ' + reason);
+        if (panel) panel.webview.postMessage({ evt: 'recovery_required', msg: guidance });
+        // Never reset a target or replay a failed command automatically. This
+        // could restart user code, target the wrong board, or duplicate an op.
+        if (typeof vscode.window.showWarningMessage === 'function') {
+            Promise.resolve(vscode.window.showWarningMessage(guidance, 'Show Debugger Output'))
+                .then(choice => { if (choice === 'Show Debugger Output' && debugLog) debugLog.show(true); })
+                .catch(error => logDebug('Recovery notification: ' + String(error)));
+        }
+    }
 
     function getBreakpointInfo(bp) {
         if (!(bp instanceof vscode.SourceBreakpoint)) return null;
@@ -699,9 +715,13 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                 if (msg.evt === 'reply' && /^(cleared|bp |err:|no code)/.test(msg.text || '')) logDebug(msg.text);
 
                 if (msg.evt === 'transport_lost') {
+                    if (bridgeTransportFailureReported) continue;
                     bridgeTransportFailureReported = true;
+                    child.transportFailed = true;
                     sessionReady = false;
                     if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+                    if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
+                    notifyRecovery(msg.msg || 'Debug CDC transport lost');
                     if (panel) {
                         panel.webview.postMessage({
                             evt: 'transport_lost',
@@ -709,7 +729,16 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                         });
                     }
                     emitNative({ evt: 'transport_lost', msg: msg.msg || 'Debug CDC transport lost' });
-                    try { bridge.kill(); } catch (e) {}
+                    // Native DAP may synchronously dispose the panel above.
+                    // Otherwise let the child release DTR and close its COM
+                    // handle, with the existing bounded kill as a fallback.
+                    if (!bridgeExpectedShutdown && bridge) {
+                        try { child.stdin.write(JSON.stringify({ op: 'quit' }) + '\n'); } catch (_) {}
+                        shutdownTimer = setTimeout(() => {
+                            try { child.kill(); } catch (_) {}
+                        }, 2000);
+                        shutdownTimer.unref();
+                    }
                     continue;
                 }
 
@@ -731,6 +760,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                             if (!sessionReady && panel) {
                                 const error = 'Debugger port opened but firmware did not answer. Check the dedicated debug COM and matching debugger-enabled firmware.';
                                 logDebug(error);
+                                notifyRecovery(error);
                                 panel.webview.postMessage({ evt: 'handshake_timeout', msg: error });
                                 emitNative({ evt: 'handshake_timeout', msg: error });
                             }
@@ -1190,8 +1220,14 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
     });
     const onBridgeError = error => {
         if (bridgeExpectedShutdown || activeBridge !== child) return;
+        if (bridgeTransportFailureReported) return;
         bridgeTransportFailureReported = true;
+        child.transportFailed = true;
+        sessionReady = false;
+        if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+        if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
         const message = 'MicroPython debugger transport error: ' + error.message;
+        notifyRecovery(message);
         logDebug(message);
         if (panel) panel.webview.postMessage({ evt: 'error', msg: message });
         emitNative({ evt: 'transport_lost', msg: message });
@@ -1208,6 +1244,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
                 '(exit=' + (code === null ? 'unknown' : code) +
                 ', signal=' + (signal || 'none') +
                 '). Check the MicroPython IDE Output and verify the dedicated debug COM port.';
+            notifyRecovery(diagnostic);
             if (panel) panel.webview.postMessage({ evt: 'error', msg: diagnostic });
             emitNative({ evt: 'transport_lost', msg: diagnostic });
             logDebug(diagnostic);
@@ -1226,7 +1263,7 @@ function openDebuggerPanel(context, port, venvPython, nativeOnly = false) {
             vscode.commands.executeCommand('micropython-ide.stopRun');
             return;
         }
-        if (!bridge) return;
+        if (!bridge || child.transportFailed) return;
         if (!sessionReady && ['continue', 'step', 'step_in', 'step_out', 'globals', 'call_stack', 'rta_on'].includes(msg.op)) {
             panel.webview.postMessage({ evt: 'error', msg: 'Firmware has not acknowledged the debug connection. Command was not sent.' });
             return;
@@ -2829,6 +2866,9 @@ window.addEventListener('message', (e) => {
     updateRtaControls(false);
     setConnectionLabel('attached');
     add('reply', 'DEBUG CDC READY · transport confirmed' + (m.legacy ? ' · legacy pump' : ''));
+  }
+  else if (m.evt === 'recovery_required') {
+    add('err', m.msg);
   }
   else if (m.evt === 'handshake_timeout') {
     debugReady = false;

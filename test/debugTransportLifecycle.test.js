@@ -7,7 +7,7 @@ const path = require('path');
 const vm = require('vm');
 
 function fixture(withBreakpoint = false) {
-    const processes = [], views = [], events = [], logs = [], timers = new Set();
+    const processes = [], views = [], events = [], logs = [], warnings = [], timers = new Set();
     const vscode = {
         SourceBreakpoint: class { constructor() {
             this.enabled = true;
@@ -16,7 +16,7 @@ function fixture(withBreakpoint = false) {
         ViewColumn: { Beside: 2 },
         workspace: { workspaceFolders: [] },
         debug: { breakpoints: [], onDidChangeBreakpoints() { return { dispose() {} }; } },
-        window: { createOutputChannel() { return { appendLine(line) { logs.push(line); } }; }, createWebviewPanel() {
+        window: { showWarningMessage(message, ...actions) { warnings.push({message, actions}); return Promise.resolve(undefined); }, createOutputChannel() { return { appendLine(line) { logs.push(line); } }; }, createWebviewPanel() {
             let dispose;
             const view = {
                 webview: { postMessage() { return Promise.resolve(true); },
@@ -63,7 +63,7 @@ function fixture(withBreakpoint = false) {
     });
     const api = module.exports;
     const open = () => api.connectNativeDebugger({ extensionPath: '/extension' }, 'COM5', 'python', event => events.push(event));
-    return { api, processes, views, events, logs, timers, open };
+    return { api, processes, views, events, logs, warnings, timers, open };
 }
 
 suite('Debugger process lifecycle (real controller with fake child transport)', () => {
@@ -132,6 +132,24 @@ suite('Debugger process lifecycle (real controller with fake child transport)', 
         assert.strictEqual(f.events.length, 0);
         assert.strictEqual(f.api.sendNativeCommand('continue'), true);
         assert.strictEqual(next.commands.at(-1).op, 'continue');
+        f.api.disconnectNativeDebugger();
+    });
+
+    test('CDC timeout shows recovery once without reset or replay', () => {
+        const f = fixture();
+        f.open();
+        const child = f.processes[0];
+        child.stdout.emit('data', Buffer.from('{"evt":"open","port":"COM5"}\n'));
+        const failure = Buffer.from('{"evt":"transport_lost","msg":"write clear_all_bp: Write timeout"}\n');
+        child.stdout.emit('data', failure);
+        child.stdout.emit('data', failure);
+        assert.strictEqual(f.warnings.length, 1);
+        assert.ok(f.warnings[0].message.includes('power-cycle'));
+        assert.ok(f.warnings[0].message.includes('COM5'));
+        assert.ok(f.logs.some(line => line.includes('Write timeout')));
+        assert.strictEqual(f.api.sendNativeCommand('continue'), false);
+        assert.deepStrictEqual(child.commands.map(c => c.op), ['clear_all_bp', 'quit']);
+        assert.ok(!child.killed, 'Allow bridge to close before forced termination');
         f.api.disconnectNativeDebugger();
     });
 
