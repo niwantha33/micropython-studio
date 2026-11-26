@@ -1,5 +1,7 @@
 """Opt-in physical REPL qualification using the production daemon subprocess."""
 import argparse
+import hashlib
+import tempfile
 import base64
 import json
 import os
@@ -87,8 +89,11 @@ class Session:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True)
-    parser.add_argument("--board", choices=["rp2040", "rp2350", "esp32"], required=True)
+    parser.add_argument("--board", choices=["auto", "rp2040", "rp2350", "esp32"], default="auto")
     parser.add_argument("--confirm-dedicated-board", action="store_true")
+    parser.add_argument("--cycles", type=int, choices=range(1, 101), default=10, metavar="1..100")
+    parser.add_argument("--files", action="store_true", help="Write and remove only a unique test directory")
+    parser.add_argument("--debug-port", help="Optional dedicated debug CDC port for protocol probe")
     args = parser.parse_args()
     if not args.confirm_dedicated_board:
         parser.error("Use a dedicated idle test board. Tests interrupt execution and change REPL state.")
@@ -100,6 +105,11 @@ def main():
     device = matches[0]
     if args.board.startswith("rp") and device.vid != 0x2e8a:
         parser.error("Selected port does not have Raspberry Pi USB VID")
+    if args.debug_port:
+        args.debug_port = args.debug_port.upper() if os.name == "nt" else args.debug_port
+        peers = [p for p in comports() if p.device == args.debug_port and p.device != port and p.vid is not None and p.vid == device.vid and p.pid == device.pid and p.serial_number and p.serial_number == device.serial_number]
+        if len(peers) != 1:
+            parser.error("Debug port must be a separate USB interface with matching board identity")
     report = {"board": args.board, "port": port, "usb_vid_pid": "%04x:%04x" % (device.vid, device.pid),
               "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
               "working_tree": "dirty" if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip() else "clean",
@@ -132,7 +142,10 @@ def main():
         def identify():
             value = session.code("import os,sys; print(sys.implementation.name); print(os.uname())")
             require("micropython" in value.lower(), "Not MicroPython")
-            require(args.board in value.lower(), "Board identity mismatch: " + value)
+            detected = next((b for b in ("rp2350", "rp2040", "esp32") if b in value.lower()), None)
+            require(detected is not None, "Unsupported board: " + value)
+            require(args.board == "auto" or args.board == detected, "Board identity mismatch: " + value)
+            report["board"] = detected
             return value.strip()
         check("HIL-002 board identity", identify)
 
@@ -164,13 +177,13 @@ def main():
         check("HIL-004 stream / Ctrl+C / reuse", stream)
 
         def handoff():
-            for _ in range(5):
+            for _ in range(args.cycles):
                 session.send(action="suspend")
                 session.event("suspended")
                 session.send(action="resume")
                 session.event("resumed")
                 finite()
-            return "5 suspend/resume cycles with successful REPL queries"
+            return f"{args.cycles} suspend/resume cycles with successful REPL queries"
         check("HIL-005 COM handoff", handoff)
 
         def memory():
@@ -179,6 +192,68 @@ def main():
             require(len(numbers) == 2 and min(numbers) >= 0, "Invalid memory sample")
             return {"free": numbers[0], "allocated": numbers[1]}
         check("HIL-006 read-only heap sample", memory)
+        def gc_recovery():
+            value = session.code("import gc\ngc.collect()\na=gc.mem_alloc()\nb=bytearray(4096)\nc=gc.mem_alloc()\ndel b\ngc.collect()\nprint(a,c,gc.mem_alloc())")
+            before, allocated, after = map(int, value.split())
+            require(allocated-before >= 4096 and allocated-after >= 4096,
+                    "Heap allocation or collection not observed")
+            return {"before": before, "allocated": allocated, "after": after}
+        check("HIL-014 GC recovery", gc_recovery)
+
+        if args.files:
+            remote = "/mps_hil_" + uuid.uuid4().hex
+            # Atomic mkdir proves ownership; never touch an existing directory.
+            session.code("import os; os.mkdir(" + repr(remote) + ")")
+            try:
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    src = root / "source"
+                    (src / "nested").mkdir(parents=True)
+                    samples = {"payload.bin": bytes(range(256))*8,
+                               "nested/second.bin": b"MicroPython HIL\x00\xff"*33}
+                    for name, data in samples.items():
+                        (src / name).write_bytes(data)
+                    session.send(action="suspend")
+                    session.event("suspended")
+                    try:
+                        # Use the actual production transfer implementation and
+                        # acquire its normal cooperative serial lock.
+                        sys.path.insert(0, str(ROOT / "src"))
+                        import mps_backend as backend
+                        require(backend._acquire_port_friendly(sys.executable, port),
+                                "Backend could not acquire serial port")
+                        conn = backend.SerialConnection(port)
+                        try:
+                            conn.connect()
+                            check("HIL-007 single file upload", lambda:
+                                  require(conn.put_file(src / "payload.bin", remote + "/payload.bin") == 0,
+                                          "Production upload failed") or "2048 bytes acknowledged")
+                            def verify(name):
+                                target = root / "download.bin"
+                                target.unlink(missing_ok=True)
+                                require(conn.get_file(remote + "/" + name, target) == 0,
+                                        "Production download failed")
+                                require(target.read_bytes() == samples[name], "Downloaded bytes differ")
+                                return hashlib.sha256(target.read_bytes()).hexdigest()
+                            check("HIL-008 download integrity", lambda: verify("payload.bin"))
+                            def nested():
+                                conn.put_directory(src / "nested", remote + "/nested")
+                                return verify("nested/second.bin")
+                            check("HIL-009 nested folder transfer", nested)
+                        finally:
+                            conn.close()
+                            backend._release_lock_if_owned(backend._get_lock_path(port))
+                    finally:
+                        session.send(action="resume")
+                        session.event("resumed")
+            finally:
+                # Only known fixtures in the unique directory; no recursive delete.
+                cleanup = "import os\nfor p in " + repr([remote+"/nested/second.bin", remote+"/payload.bin"]) + ":\n try: os.remove(p)\n except OSError as e:\n  if e.args[0] != 2: raise\nfor p in " + repr([remote+"/nested", remote]) + ":\n try: os.rmdir(p)\n except OSError as e:\n  if e.args[0] != 2: raise"
+                session.code(cleanup)
+                finite()
+        if args.debug_port:
+            from hardware_debug import probe
+            check("HIL-010 debug protocol / attach-detach", lambda: probe(ROOT, args.debug_port))
         report["status"] = "PASS"
     except Exception as exc:
         report["error"] = str(exc)
@@ -198,7 +273,7 @@ def main():
                 report["status"] = "FAIL"
         out = ROOT / "reports" / "qualification"
         out.mkdir(parents=True, exist_ok=True)
-        path = out / ("hardware-" + args.board + ".json")
+        path = out / ("hardware-" + report["board"] + ".json")
         path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print("Physical REPL qualification:", report["status"], "\nReport:", path)
     return int(report["status"] != "PASS")
