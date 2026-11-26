@@ -22,6 +22,21 @@ suite('GitHub Pages public documentation', () => {
         }
     });
 
+    test('real debugger gallery is present in the published site and packaged README', () => {
+        const home = content('index.html');
+        const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+        for (const file of ['mps_v270_debugger_main.png', 'mps_v270_debugger_rta.png']) {
+            const asset = 'resource/' + file;
+            assert.ok(home.includes('./' + asset));
+            assert.ok(readme.includes('(' + asset + ')'));
+            const a = fs.readFileSync(path.join(root, asset));
+            const b = fs.readFileSync(path.join(published, asset));
+            assert.ok(a.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])));
+            assert.ok(a.equals(b), file + ' differs from published copy');
+        }
+        assert.ok(home.includes('captured RTA statistics after tracing was switched off'));
+    });
+
     test('all new landing pages have a title, canonical URL and accessible main content', () => {
         for (const name of publishedPages.filter(x => x !== 'index.html')) {
             const page = content(name);

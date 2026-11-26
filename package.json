@@ -2,7 +2,7 @@
   "name": "micropython-studio",
   "displayName": "MicroPython Studio",
   "description": "Native VS Code MicroPython debugger for Pico 2 W: real-device breakpoints, stepping, locals and RTA; memory & GC analyzer, REPL, ESP32 and CircuitPython tools.",
-  "version": "2.6.1",
+  "version": "2.7.0",
   "publisher": "niwantha33",
   "license": "MIT",
   "author": {

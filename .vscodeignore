@@ -34,6 +34,8 @@ resource/*.exe
 !resource/micropython_studio_icon_128.png
 !resource/project.png
 !resource/wizard.png
+!resource/mps_v270_debugger_main.png
+!resource/mps_v270_debugger_rta.png
 
 # Local Python environments
 testenv/**
